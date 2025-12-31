@@ -1,0 +1,38 @@
+{
+  "id": "goblin",
+  "name": "Goblin",
+  "image": "goblin.png",
+
+  "hp": { "min": 5, "max": 8 },
+  "armor": { "min": 1, "max": 1 },
+  "magicArmor": { "min": 0, "max": 0 },
+
+  "draws": 1,
+  "movement": 5,
+  "coreDeck": "basic",
+
+  "specials": [
+    {
+      "id": "goblin_s1",
+      "title": "Piercing Jab",
+      "effects": [{ "type": "attack", "amount": 2, "modifiers": ["pierce"] }]
+    },
+    {
+      "id": "goblin_s2",
+      "title": "Dirty Stab",
+      "effects": [{ "type": "attack", "amount": 4, "modifiers": ["stab"] }]
+    },
+    {
+      "id": "goblin_s3",
+      "title": "Stab & Guard",
+      "effects": [
+        { "type": "attack", "amount": 2, "modifiers": ["stab"] },
+        { "type": "block", "amount": 3 }
+      ]
+    }
+  ],
+
+  "loot": [
+    { "type": "currency", "kind": "cp", "min": 0, "max": 30 }
+  ]
+}

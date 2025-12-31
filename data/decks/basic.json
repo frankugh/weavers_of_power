@@ -1,0 +1,12 @@
+{
+  "id": "basic",
+  "name": "Basic",
+  "cards": [
+    { "id": "basic_a2",     "title": "Attack 2",             "effects": [{"type":"attack","amount":2}], "weight": 1 },
+    { "id": "basic_a2b1",   "title": "Attack 2 + Block 1",   "effects": [{"type":"attack","amount":2},{"type":"block","amount":1}], "weight": 1 },
+    { "id": "basic_a3b1",   "title": "Attack 3 + Block 1",   "effects": [{"type":"attack","amount":3},{"type":"block","amount":1}], "weight": 1 },
+    { "id": "basic_a3",     "title": "Attack 3",             "effects": [{"type":"attack","amount":3}], "weight": 1 },
+    { "id": "basic_a1",     "title": "Attack 1",             "effects": [{"type":"attack","amount":1}], "weight": 1 },
+    { "id": "basic_a4",     "title": "Attack 4",             "effects": [{"type":"attack","amount":4}], "weight": 1 }
+  ]
+}

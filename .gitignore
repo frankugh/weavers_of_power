@@ -1,0 +1,68 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+pip-wheel-metadata/
+.uv/
+
+# --- Packaging / build ---
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-log.txt
+
+# --- Test / coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# --- Type check / lint ---
+.mypy_cache/
+.pyre/
+.ruff_cache/
+
+# --- IDEs ---
+.vscode/
+.idea/
+*.iml
+
+# --- OS / Editor junk ---
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+
+# --- Logs ---
+*.log
+
+# --- NiceGUI / FastAPI / runtime temp ---
+*.bak
+*.tmp
+
+# --- Project-specific: generated runtime state ---
+saves/
+# If you DO want to version example saves, remove the line above and use:
+# saves/*
+# !saves/README.md
+
+# --- Secrets / local config ---
+.env
+.env.*
+*.secret
+*.key
+
+# --- Local data that shouldn't be tracked ---
+# Uncomment if you generate images locally and don't want them committed:
+# images/generated/
