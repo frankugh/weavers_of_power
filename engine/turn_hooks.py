@@ -10,8 +10,8 @@ class TurnHookLog:
     phase: str  # "start" | "end"
     hp_before: int
     hp_after: int
-    block_before: int
-    block_after: int
+    guard_before: int
+    guard_after: int
     removed_statuses: tuple[str, ...] = ()
     dot_damage: int = 0
 
@@ -26,12 +26,12 @@ def _get_stacks(statuses: dict, key: str) -> int:
 
 def on_turn_start(enemy: EnemyInstance) -> TurnHookLog:
     hp_b = enemy.hp_current
-    block_b = enemy.block_current
+    guard_b = enemy.guard_current
 
-    # 1) reset block
-    enemy.block_current = 0
+    # 1) reset guard
+    enemy.guard_current = int(getattr(enemy, "guard_base", 0))
 
-    # 2) apply DOT (ignores armor/block)
+    # 2) apply DOT (ignores armor/guard)
     burn = _get_stacks(enemy.statuses, "burn")
     poison = _get_stacks(enemy.statuses, "poison")
     dot = max(0, burn) + max(0, poison)
@@ -44,15 +44,15 @@ def on_turn_start(enemy: EnemyInstance) -> TurnHookLog:
         phase="start",
         hp_before=hp_b,
         hp_after=enemy.hp_current,
-        block_before=block_b,
-        block_after=enemy.block_current,
+        guard_before=guard_b,
+        guard_after=enemy.guard_current,
         dot_damage=dot,
     )
 
 
 def on_turn_end(enemy: EnemyInstance) -> TurnHookLog:
     hp_b = enemy.hp_current
-    block_b = enemy.block_current
+    guard_b = enemy.guard_current
 
     removed: list[str] = []
     for k in ("paralyzed", "slowed"):
@@ -65,7 +65,7 @@ def on_turn_end(enemy: EnemyInstance) -> TurnHookLog:
         phase="end",
         hp_before=hp_b,
         hp_after=enemy.hp_current,
-        block_before=block_b,
-        block_after=enemy.block_current,
+        guard_before=guard_b,
+        guard_after=enemy.guard_current,
         removed_statuses=tuple(removed),
     )

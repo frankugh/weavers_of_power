@@ -24,7 +24,9 @@ class EnemyInstance:
     magic_armor_current: int
     magic_armor_max: int
 
-    block_current: int = 0
+    guard_base: int = 0
+    guard_current: int = 0
+
 
     draws_base: int = 1
     movement: int = 0

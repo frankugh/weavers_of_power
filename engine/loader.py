@@ -82,6 +82,7 @@ def load_enemies(enemies_dir: Path, decks: dict[str, Deck], images_dir: Path) ->
             image=raw.get("image"),
 
             hp=_parse_range(raw["hp"], f"{p.name}.hp"),
+            baseGuard=_parse_range(raw.get("baseGuard", {"min": 0, "max": 0}), f"{p.name}.baseGuard"),
             armor=_parse_range(raw["armor"], f"{p.name}.armor"),
             magicArmor=_parse_range(raw.get("magicArmor", {"min": 0, "max": 0}), f"{p.name}.magicArmor"),
 

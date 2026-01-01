@@ -104,8 +104,8 @@ def card_to_effect_text(card_id: str) -> str:
                 parts.append(f"Attack {eff.amount} ({', '.join(eff.modifiers)})")
             else:
                 parts.append(f"Attack {eff.amount}")
-        elif eff.type == "block":
-            parts.append(f"Block {eff.amount}")
+        elif eff.type == "guard":
+            parts.append(f"Guard {eff.amount}")
         else:
             parts.append(eff.type)
     return " + ".join(parts) if parts else (c.title or card_id)
@@ -151,7 +151,7 @@ def spawn_custom_enemy(
         armor_max=armor,
         magic_armor_current=magic_armor,
         magic_armor_max=magic_armor,
-        block_current=0,
+        guard_current=0,
         draws_base=draws,
         movement=movement,
         deck_state=DeckState(draw_pile=draw_pile, discard_pile=[], hand=[]),
@@ -172,7 +172,7 @@ def spawn_player(name: str) -> EnemyInstance:
         armor_max=0,
         magic_armor_current=0,
         magic_armor_max=0,
-        block_current=0,
+        guard_current=0,
         draws_base=0,
         movement=0,
         deck_state=DeckState(draw_pile=[], discard_pile=[], hand=[]),
@@ -371,7 +371,7 @@ def index(request: Request):
                     active = (inst_id == active_turn_id)
                     player = is_player(e)
 
-                    classes = "w-80"
+                    classes = "w-80 md:w-96"
                     if sel:
                         classes += " ring-2 ring-blue-500"
                     if active:
@@ -400,8 +400,11 @@ def index(request: Request):
                                           on_click=lambda iid=inst_id: ui_delete_item(iid)
                                           ).props("flat dense").classes("text-red-600")
 
-                        # show "top" of image (often head)
-                        ui.image(image_url_for(e)).classes("w-full h-40 object-cover object-top bg-gray-50")
+                        # larger image + click to zoom
+                        img_src = image_url_for(e)
+                        ui.image(img_src).classes("w-full h-112 object-cover object-center bg-gray-50 cursor-zoom-in").on(
+                            "click", lambda src=img_src, name=e.name: open_image_preview(src, name)
+                        )
 
                         if player:
                             ui.label("Player card").classes("text-sm text-gray-700")
@@ -411,7 +414,7 @@ def index(request: Request):
                                 f"Armor {e.armor_current}/{e.armor_max} | "
                                 f"Magic {e.magic_armor_current}/{e.magic_armor_max}"
                             )
-                            ui.label(f"Block {e.block_current} | Draws {e.draws_base} | Move {effective_movement(e)}")
+                            ui.label(f"Guard {e.guard_current} | Draws {e.draws_base} | Move {effective_movement(e)}")
                             ui.label(f"Statuses: {format_statuses(e.statuses)}").classes("text-sm text-gray-700")
 
                             current_draw = list(e.deck_state.hand)
@@ -455,7 +458,10 @@ def index(request: Request):
 
             with ui.card().classes("w-full"):
                 with ui.row().classes("items-start gap-4"):
-                    ui.image(image_url_for(e)).classes("w-40 h-40 object-contain bg-gray-50")
+                    img_src = image_url_for(e)
+                    ui.image(img_src).classes("w-72 h-108 object-cover object-center bg-gray-50 cursor-zoom-in").on(
+                        "click", lambda src=img_src, name=e.name: open_image_preview(src, name)
+                    )
 
                     with ui.column().classes("gap-1 w-full"):
                         with ui.row().classes("items-center gap-2"):
@@ -503,7 +509,7 @@ def index(request: Request):
                     f"Armor {e.armor_current}/{e.armor_max} | "
                     f"Magic {e.magic_armor_current}/{e.magic_armor_max}"
                 )
-                ui.label(f"Block {e.block_current} | Draws {e.draws_base} | Move {effective_movement(e)}")
+                ui.label(f"Guard {e.guard_current} | Draws {e.draws_base} | Move {effective_movement(e)}")
                 ui.label(f"Statuses: {format_statuses(e.statuses)}").classes("text-sm text-gray-700")
 
                 ui.separator()
@@ -600,14 +606,14 @@ def index(request: Request):
         res = enemy_turn(e, rnd=session_rng)
         e.last_drawn = list(res.drawn)
 
-        # Auto-apply block immediately (so it shows right away)
+        # Auto-apply guard immediately (so it shows right away)
         for cid in res.drawn:
             c = card_index.get(cid)
             if not c:
                 continue
             for eff in c.effects:
-                if eff.type == "block":
-                    apply_heal(e, block=int(eff.amount))
+                if eff.type == "guard":
+                    apply_heal(e, guard=int(eff.amount))
 
     @mutate
     def ui_enemy_turn_no_draw() -> None:
@@ -684,6 +690,8 @@ def index(request: Request):
     save_dialog = ui.dialog()
     load_dialog = ui.dialog()
 
+    image_dialog = ui.dialog()
+
     def open_attack_dialog() -> None:
         attack_damage.value = 1
         mod_stab.value = False
@@ -702,11 +710,22 @@ def index(request: Request):
         heal_hp.value = 0
         heal_armor.value = 0
         heal_magic.value = 0
-        heal_block.value = 0
+        heal_guard.value = 0
         heal_dialog.open()
 
     def open_custom_dialog() -> None:
         custom_dialog.open()
+
+    def open_image_preview(src: str, title: str) -> None:
+        # Lightweight "lightbox" so images are actually enjoyable to look at
+        image_dialog.clear()
+        with image_dialog:
+            with ui.card().classes("p-0 w-[90vw] max-w-[900px]"):
+                with ui.row().classes("items-center justify-between p-3"):
+                    ui.label(title).classes("text-lg font-semibold")
+                    ui.button(icon="close", on_click=image_dialog.close).props("flat dense")
+                ui.image(src).classes("w-full max-h-[96vh] object-contain bg-black")
+        image_dialog.open()
 
     @mutate
     def ui_apply_attack() -> None:
@@ -752,7 +771,7 @@ def index(request: Request):
             hp=int(heal_hp.value or 0),
             armor=int(heal_armor.value or 0),
             magic_armor=int(heal_magic.value or 0),
-            block=int(heal_block.value or 0),
+            guard=int(heal_guard.value or 0),
         )
         heal_dialog.close()
 
@@ -847,7 +866,7 @@ def index(request: Request):
         heal_hp = ui.number("Heal HP", value=0, min=0, step=1)
         heal_armor = ui.number("Restore Armor", value=0, min=0, step=1)
         heal_magic = ui.number("Restore Magic Armor", value=0, min=0, step=1)
-        heal_block = ui.number("Add Block", value=0, min=0, step=1)
+        heal_guard = ui.number("Add Guard", value=0, min=0, step=1)
 
         with ui.row().classes("justify-end gap-2"):
             ui.button("Cancel", on_click=heal_dialog.close).props("flat")

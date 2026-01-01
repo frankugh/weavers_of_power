@@ -48,6 +48,7 @@ def spawn_enemy(
     hp_max = roll_range(template.hp, rnd=rnd)
     armor_max = roll_range(template.armor, rnd=rnd)
     magic_max = roll_range(template.magicArmor, rnd=rnd)
+    base_guard = roll_range(template.baseGuard, rnd=rnd)
 
     core_deck = decks[template.coreDeck]
     card_ids = build_deck_card_ids(core_deck, template.specials)
@@ -68,7 +69,8 @@ def spawn_enemy(
         magic_armor_current=magic_max,
         magic_armor_max=magic_max,
 
-        block_current=0,
+        guard_base=base_guard,
+        guard_current=0,
 
         draws_base=template.draws,
         movement=template.movement,
@@ -153,7 +155,7 @@ def end_turn(enemy: EnemyInstance) -> None:
 
 def enemy_turn(enemy: EnemyInstance, *, rnd: Optional[random.Random] = None) -> DrawResult:
     """
-    Start of turn: reset block + apply DOT.
+    Start of turn: reset guard + apply DOT.
     Then draw cards (paralyzed => -1 draw).
     Dead enemies (hp<=0) do not draw.
     """

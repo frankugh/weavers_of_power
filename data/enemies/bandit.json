@@ -1,0 +1,40 @@
+{
+  "id": "bandit",
+  "name": "Bandit",
+  "image": "bandit.png",
+
+  "hp": { "min": 7, "max": 9 },
+  "baseGuard": { "min": 1, "max": 2 },
+  "armor": { "min": 0, "max": 0 },
+  "magicArmor": { "min": 0, "max": 0 },
+
+  "draws": 1,
+  "movement": 6,
+  "coreDeck": "basic",
+
+  "specials": [
+    {
+      "id": "bandit_s1",
+      "title": "Clubbing Blow",
+      "effects": [{ "type": "attack", "amount": 5, "modifiers": ["push 5ft"] }]
+    },
+    {
+      "id": "bandit_s2",
+      "title": "Dirty Stab",
+      "effects": [{ "type": "attack", "amount": 4, "modifiers": ["stab"] }]
+    },
+    {
+      "id": "bandit_s3",
+      "title": "Multi-attack",
+      "effects": [
+        { "type": "attack", "amount": 3 },
+        { "type": "attack", "amount": 3 }
+      ]
+    }
+  ],
+
+  "loot": [
+    { "type": "currency", "kind": "cp", "min": 0, "max": 30 },    
+    { "type": "currency", "kind": "sp", "min": 0, "max": 30 }
+  ]
+}

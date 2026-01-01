@@ -3,9 +3,9 @@
   "name": "Boss",
   "cards": [
     { "id": "boss_a4",    "title": "Attack 4",             "effects": [{"type":"attack","amount":4}], "weight": 1 },
-    { "id": "boss_a3b2",  "title": "Attack 3 + Block 2",   "effects": [{"type":"attack","amount":3},{"type":"block","amount":2}], "weight": 1 },
-    { "id": "boss_a3b1",  "title": "Attack 3 + Block 1",   "effects": [{"type":"attack","amount":3},{"type":"block","amount":1}], "weight": 1 },
-    { "id": "boss_a3b3",  "title": "Attack 3 + Block 3",   "effects": [{"type":"attack","amount":3},{"type":"block","amount":3}], "weight": 1 },
+    { "id": "boss_a3g2",  "title": "Attack 3 + Guard 2",   "effects": [{"type":"attack","amount":3},{"type":"guard","amount":2}], "weight": 1 },
+    { "id": "boss_a3g1",  "title": "Attack 3 + Guard 1",   "effects": [{"type":"attack","amount":3},{"type":"guard","amount":1}], "weight": 1 },
+    { "id": "boss_a3g3",  "title": "Attack 3 + Guard 3",   "effects": [{"type":"attack","amount":3},{"type":"guard","amount":3}], "weight": 1 },
     { "id": "boss_a2",    "title": "Attack 2",             "effects": [{"type":"attack","amount":2}], "weight": 1 },
     { "id": "boss_a7",    "title": "Attack 7",             "effects": [{"type":"attack","amount":7}], "weight": 1 }
   ]

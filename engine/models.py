@@ -6,7 +6,7 @@ from typing import Literal, Optional
 # --- Enums / literals ---
 
 Modifier = Literal["stab", "pierce", "magic_pierce", "sunder", "paralyse"]
-EffectType = Literal["attack", "block"]
+EffectType = Literal["attack", "guard"]
 
 LootType = Literal["currency", "resource", "other"]
 CurrencyKind = Literal["cp", "sp", "gp"]
@@ -154,6 +154,7 @@ class EnemyTemplate:
     hp: RangeInt
     armor: RangeInt
     magicArmor: RangeInt
+    baseGuard: RangeInt
 
     draws: int
     movement: int
@@ -172,6 +173,7 @@ class EnemyTemplate:
         errs += self.hp.validate(f"{path}.hp")
         errs += self.armor.validate(f"{path}.armor")
         errs += self.magicArmor.validate(f"{path}.magicArmor")
+        errs += self.baseGuard.validate(f"{path}.baseGuard")
 
         if self.draws <= 0:
             errs.append(f"{path}.draws must be > 0 (got {self.draws})")
