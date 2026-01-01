@@ -1,4 +1,3 @@
-# app.py
 from __future__ import annotations
 
 from pathlib import Path
@@ -58,8 +57,43 @@ def is_player(e: EnemyInstance) -> bool:
     return getattr(e, "template_id", "") == "player"
 
 
+def is_down(e: EnemyInstance) -> bool:
+    """True if this non-player is at 0 HP (or below)."""
+    return (not is_player(e)) and int(getattr(e, "hp_current", 0)) <= 0
+
+
 def image_url_for(e: EnemyInstance) -> str:
-    img = getattr(e, "image", None) or "anonymous.png"
+    img = getattr(e, "image", None) or ""
+
+    # allow absolute URLs
+    if img.startswith("http://") or img.startswith("https://"):
+        return img
+
+    # normalize slashes + remove leading slash
+    img = img.replace("\\", "/").lstrip("/")
+
+    # handle stored paths like "images/bandit.png" or "/images/bandit.png"
+    if img.startswith("images/"):
+        img = img[len("images/"):]
+    if img.startswith("images/"):  # (just in case, harmless)
+        img = img[len("images/"):]
+
+    # legacy typo
+    if img == "bandid.png":
+        img = "bandit.png"
+
+    # fallback to template image if missing/invalid
+    if not img or not (IMAGES_DIR / img).exists():
+        tpl = enemy_templates.get(getattr(e, "template_id", ""))
+        tpl_img = getattr(tpl, "image", None) if tpl else None
+        tpl_img = (tpl_img or "").replace("\\", "/").lstrip("/")
+        if tpl_img.startswith("images/"):
+            tpl_img = tpl_img[len("images/"):]
+        if tpl_img and (IMAGES_DIR / tpl_img).exists():
+            img = tpl_img
+        else:
+            img = "anonymous.png"
+
     return f"/images/{img}"
 
 
@@ -371,7 +405,7 @@ def index(request: Request):
                     active = (inst_id == active_turn_id)
                     player = is_player(e)
 
-                    classes = "w-80 md:w-96"
+                    classes = "w-80"
                     if sel:
                         classes += " ring-2 ring-blue-500"
                     if active:
@@ -390,21 +424,41 @@ def index(request: Request):
                             with ui.row().classes("items-center gap-1"):
                                 if active:
                                     ui.badge("ACTIVE TURN").props("color=green")
-                                ui.button(icon="arrow_upward",
-                                          on_click=lambda iid=inst_id: (move_in_order(iid, -1), autosave(), render_overview(), render_detail())
-                                          ).props("flat dense")
-                                ui.button(icon="arrow_downward",
-                                          on_click=lambda iid=inst_id: (move_in_order(iid, +1), autosave(), render_overview(), render_detail())
-                                          ).props("flat dense")
-                                ui.button(icon="delete",
-                                          on_click=lambda iid=inst_id: ui_delete_item(iid)
-                                          ).props("flat dense").classes("text-red-600")
+                                ui.button(
+                                    icon="arrow_upward",
+                                    on_click=lambda iid=inst_id: (
+                                        move_in_order(iid, -1),
+                                        autosave(),
+                                        render_overview(),
+                                        render_detail(),
+                                    ),
+                                ).props("flat dense")
+                                ui.button(
+                                    icon="arrow_downward",
+                                    on_click=lambda iid=inst_id: (
+                                        move_in_order(iid, +1),
+                                        autosave(),
+                                        render_overview(),
+                                        render_detail(),
+                                    ),
+                                ).props("flat dense")
+                                ui.button(icon="delete", on_click=lambda iid=inst_id: ui_delete_item(iid)).props(
+                                    "flat dense"
+                                ).classes("text-red-600")
 
-                        # larger image + click to zoom
                         img_src = image_url_for(e)
-                        ui.image(img_src).classes("w-full h-112 object-cover object-center bg-gray-50 cursor-zoom-in").on(
-                            "click", lambda src=img_src, name=e.name: open_image_preview(src, name)
-                        )
+                        dead = is_down(e)
+
+                        # Use a real <img> element here (no ui.html -> no sanitize issues; no q-img -> no blank images)
+                        with ui.element("div").classes("relative w-full h-40 bg-gray-50 overflow-hidden"):
+                            ui.element("img")\
+                                .props(f"src={img_src}")\
+                                .classes("w-full h-full object-cover object-top" + (" grayscale opacity-60" if dead else ""))\
+                                .on("click", lambda _=None, s=img_src, n=e.name: open_image_preview(s, n))
+                            if dead:
+                                ui.label("☠").classes(
+                                    "absolute inset-0 flex items-center justify-center text-white text-6xl bg-black/40 pointer-events-none"
+                                )
 
                         if player:
                             ui.label("Player card").classes("text-sm text-gray-700")
@@ -459,9 +513,14 @@ def index(request: Request):
             with ui.card().classes("w-full"):
                 with ui.row().classes("items-start gap-4"):
                     img_src = image_url_for(e)
-                    ui.image(img_src).classes("w-72 h-108 object-cover object-center bg-gray-50 cursor-zoom-in").on(
-                        "click", lambda src=img_src, name=e.name: open_image_preview(src, name)
-                    )
+                    dead = is_down(e)
+                    with ui.element("div").classes("relative"):
+                        img_classes = "w-40 h-40 object-contain bg-gray-50" + (" grayscale opacity-60" if dead else "")
+                        ui.image(img_src).classes(img_classes).on("click", lambda _=None, s=img_src, n=e.name: open_image_preview(s, n))
+                        if dead:
+                            ui.label("☠").classes(
+                                "absolute inset-0 flex items-center justify-center text-white text-6xl bg-black/40 pointer-events-none"
+                            )
 
                     with ui.column().classes("gap-1 w-full"):
                         with ui.row().classes("items-center gap-2"):
@@ -543,6 +602,7 @@ def index(request: Request):
             render_overview()
             render_detail()
             return result
+
         return _wrapped
 
     # ---------- actions ----------
@@ -692,6 +752,17 @@ def index(request: Request):
 
     image_dialog = ui.dialog()
 
+    def open_image_preview(src: str, title: str) -> None:
+        """Open a large preview of an enemy image."""
+        image_dialog.clear()
+        with image_dialog:
+            with ui.card().classes("p-0 w-[90vw] max-w-[1100px]"):
+                with ui.row().classes("items-center justify-between p-3"):
+                    ui.label(title).classes("text-lg font-semibold")
+                    ui.button(icon="close", on_click=image_dialog.close).props("flat dense")
+                ui.image(src).classes("w-full max-h-[85vh] object-contain bg-black")
+        image_dialog.open()
+
     def open_attack_dialog() -> None:
         attack_damage.value = 1
         mod_stab.value = False
@@ -715,17 +786,6 @@ def index(request: Request):
 
     def open_custom_dialog() -> None:
         custom_dialog.open()
-
-    def open_image_preview(src: str, title: str) -> None:
-        # Lightweight "lightbox" so images are actually enjoyable to look at
-        image_dialog.clear()
-        with image_dialog:
-            with ui.card().classes("p-0 w-[90vw] max-w-[900px]"):
-                with ui.row().classes("items-center justify-between p-3"):
-                    ui.label(title).classes("text-lg font-semibold")
-                    ui.button(icon="close", on_click=image_dialog.close).props("flat dense")
-                ui.image(src).classes("w-full max-h-[96vh] object-contain bg-black")
-        image_dialog.open()
 
     @mutate
     def ui_apply_attack() -> None:
@@ -912,12 +972,12 @@ def index(request: Request):
     # ---------- build UI ----------
     load_or_init_current()
 
-    # Header: keep it simple in your NiceGUI version
+    # Header
     with ui.header():
         ui.label("Weavers of Power - Battle Simulator").classes("text-xl font-semibold")
         ui.badge(f"sid: {sid}").props("color=grey").classes("text-xs")
 
-    # Save/Load/New bar under header (robust)
+    # Save/Load/New bar
     with ui.card().classes("w-full"):
         with ui.row().classes("items-center justify-between"):
             ui.label("Session").classes("text-lg font-semibold")
