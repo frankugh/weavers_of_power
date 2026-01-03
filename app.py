@@ -990,8 +990,8 @@ def index(request: Request):
                 ui.button("Save As…", on_click=open_save_dialog).props("outline")
                 ui.button("Load…", on_click=open_load_dialog).props("outline")
 
-    with ui.row().classes("w-full gap-4 items-start flex-nowrap"):
-        with ui.column().classes("min-w-0 flex-1 gap-3"):
+    with ui.row().classes("w-full gap-4 items-start flex-col md:flex-row"):
+        with ui.column().classes("min-w-0 w-full md:flex-1 gap-3"):
             with ui.card().classes("w-full"):
                 ui.label("Round order").classes("text-lg font-semibold")
                 with ui.row().classes("items-center gap-2 flex-wrap"):
@@ -999,7 +999,7 @@ def index(request: Request):
                         options={k: v.name for k, v in enemy_templates.items()},
                         value=next(iter(enemy_templates.keys())) if enemy_templates else None,
                         label="Template",
-                    ).classes("w-80")
+                    ).classes("w-full md:w-64")
 
                     ui.button("Add enemy", on_click=lambda: ui_add_enemy(add_select.value)).props("color=primary")
                     ui.button("Quick custom enemy…", on_click=open_custom_dialog).props("outline")
@@ -1009,7 +1009,7 @@ def index(request: Request):
             enemy_grid_container = ui.column().classes("w-full")
             render_overview()
 
-        with ui.column().classes("w-[480px] shrink-0 gap-3"):
+        with ui.column().classes("w-full md:w-[480px] md:shrink-0 gap-3"):
             detail_container = ui.column().classes("w-full")
             render_detail()
 
