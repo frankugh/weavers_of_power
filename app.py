@@ -515,8 +515,11 @@ def index(request: Request):
                     img_src = image_url_for(e)
                     dead = is_down(e)
                     with ui.element("div").classes("relative"):
-                        img_classes = "w-40 h-40 object-contain bg-gray-50" + (" grayscale opacity-60" if dead else "")
-                        ui.image(img_src).classes(img_classes).on("click", lambda _=None, s=img_src, n=e.name: open_image_preview(s, n))
+                        img_classes = "w-56 h-56 object-contain bg-gray-50" + (" grayscale opacity-60" if dead else "")
+                        ui.element("img")\
+                            .props(f"src={img_src}")\
+                            .classes(img_classes)\
+                            .on("click", lambda _=None, s=img_src, n=e.name: open_image_preview(s, n))
                         if dead:
                             ui.label("☠").classes(
                                 "absolute inset-0 flex items-center justify-center text-white text-6xl bg-black/40 pointer-events-none"
@@ -760,7 +763,8 @@ def index(request: Request):
                 with ui.row().classes("items-center justify-between p-3"):
                     ui.label(title).classes("text-lg font-semibold")
                     ui.button(icon="close", on_click=image_dialog.close).props("flat dense")
-                ui.image(src).classes("w-full max-h-[85vh] object-contain bg-black")
+                with ui.element("div").classes("w-full max-h-[85vh] bg-black"):
+                    ui.element("img").props(f"src={src}").classes("w-full h-full object-contain")
         image_dialog.open()
 
     def open_attack_dialog() -> None:
@@ -986,8 +990,8 @@ def index(request: Request):
                 ui.button("Save As…", on_click=open_save_dialog).props("outline")
                 ui.button("Load…", on_click=open_load_dialog).props("outline")
 
-    with ui.row().classes("w-full gap-4"):
-        with ui.column().classes("w-2/3 gap-3"):
+    with ui.row().classes("w-full gap-4 items-start flex-nowrap"):
+        with ui.column().classes("min-w-0 flex-1 gap-3"):
             with ui.card().classes("w-full"):
                 ui.label("Round order").classes("text-lg font-semibold")
                 with ui.row().classes("items-center gap-2 flex-wrap"):
@@ -1005,7 +1009,7 @@ def index(request: Request):
             enemy_grid_container = ui.column().classes("w-full")
             render_overview()
 
-        with ui.column().classes("w-1/3 gap-3"):
+        with ui.column().classes("w-[480px] shrink-0 gap-3"):
             detail_container = ui.column().classes("w-full")
             render_detail()
 
