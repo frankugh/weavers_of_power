@@ -1,0 +1,239 @@
+Master prompt (overdracht)
+
+Je bent mijn pair-programmer voor Weavers of Power, een Python project met een NiceGUI webapp (battle simulator) en een engine die enemies/decks/cards/combat/turn hooks afhandelt. We bouwen iteratief met “vibe programming”, maar met stevige structuur: duidelijke datamodellen, pure functions waar kan, en UI alleen als dunne laag.
+
+Doel op korte termijn (nu)
+
+Battle simulator verder stabiliseren en polishen (kwaliteit, UX, bugfixes).
+
+Save/Load/New flows betrouwbaar (autosave per tab/sid).
+
+Engine uitbreiden met status effects en combat logica waar nodig.
+
+Doel op middellange termijn
+
+Een dungeon generator / dungeon runner UI die:
+
+een dungeon heeft met chambers/rooms
+
+per chamber tekst (GM description + room details)
+
+per chamber optioneel predefined combat (linkt naar battle simulator state / encounter template)
+
+je chambers kunt openen/doorlopen en combats kunt starten/managen
+
+Context: huidige battle simulator
+Tech stack
+
+Python
+
+NiceGUI (single file app.py als MVP UI)
+
+Engine modules onder engine/
+
+Data in JSON onder data/
+
+Images in images/
+
+Saves naar saves/ (autosave + manual saves)
+
+Belangrijke ontwerpkeuzes
+
+Session per browser tab via URL parameter /?sid=...
+
+Autosave schrijft naar: saves/_current_<sid>.json
+
+Manual saves schrijven naar: saves/manual/<name>_<timestamp>.json
+
+De UI werkt zonder app.storage.user (geen storage_secret nodig)
+
+UX/flow (battle)
+
+Overzicht toont kaarten (enemies + players) in round order
+
+Je kunt:
+
+enemy toevoegen uit template
+
+quick custom enemy toevoegen (met anon image)
+
+player card toevoegen (geen stats; wel Next)
+
+enemy order wijzigen (up/down)
+
+enemy verwijderen
+
+Turn flow:
+
+“Draw” start enemy turn + trekt kaarten
+
+guard van getrokken kaarten wordt direct toegepast zodat het meteen zichtbaar is
+
+“Next” eindigt actieve enemy turn (zonder auto-draw) en selecteert volgende in round order
+
+“Enemy turn (no draw)” triggert alleen start/end effecten zonder draw
+
+Overzicht toont:
+
+Current draw (als effect tekst: Attack X, guard Y, modifiers)
+
+Last draw (zelfde, maar vorige draw)
+
+Combat model & modifiers
+
+Attack modifiers (attack-only): stab, pierce, magic_pierce, sunder
+
+Status effects (persistent): paralyzed, slowed, burn, poison
+
+Semantiek:
+
+burn/poison: DOT bij start-of-turn, negeert armor/guard
+
+slow: halve movement, verdwijnt end-of-turn
+
+paralyze: draws -1 next turn, verdwijnt end-of-turn (transient)
+
+status effects moeten ook toepasbaar zijn bij 0 dmg
+
+Afspraak over data
+
+Enemy templates in JSON (hp/armor/magic ranges, movement, draws_base, loot table, specials, deck references)
+
+Decks in JSON (core decks + enemy-specific additions)
+
+Enemy instance heeft runtime properties: hp_current/max, armor_current/max, guard_current, deck_state, statuses, last_drawn, loot state.
+
+Projectstructuur (verwacht)
+
+app.py : NiceGUI app (UI + per-tab session handling + persistence calls)
+
+engine/
+
+loader.py (load_decks/load_enemies)
+
+runtime.py (BattleState, spawn_enemy, enemy_turn, end_turn)
+
+runtime_models.py (EnemyInstance, DeckState, dataclasses)
+
+combat.py (apply_attack, apply_heal)
+
+loot.py (roll_loot)
+
+turn_hooks.py (start/end turn effects)
+
+persistence.py (make_save_payload, save_current, load_save_payload, restore_state_from_payload)
+
+data/decks/*.json, data/enemies/*.json
+
+images/ incl. goblin.png, anonymous.png
+
+saves/ (ignored in git)
+
+Als de werkelijke structuur afwijkt: eerst inventariseren en afstemmen.
+
+Werkwijze met jou (assistant)
+
+Werk altijd in kleine, verifieerbare stappen (één feature = één commitwaardig stuk).
+
+Als je wijzigingen maakt:
+
+bij >2 veranderingen in app.py: geef volledige app.py
+
+bij kleine wijziging in 1 file: geef duidelijke CTRL-F ankers + patch
+
+Hou UI en engine gescheiden:
+
+UI roept engine functies aan
+
+engine blijft testbaar via kleine main.py-achtige scripts
+
+Wees expliciet over assumptions en noem tradeoffs kort.
+
+Nieuwe feature roadmap (richting dungeon generator)
+Concepten (voor dungeon)
+
+Dungeon: metadata (name, seed, theme), lijst Chambers
+
+Chamber: id, title, tags, gm_text, room_text, exits (N/E/S/W of graph), optional Encounter
+
+Encounter: verwijst naar:
+
+enemy templates + aantallen
+
+custom overrides (hp multiplier etc.)
+
+initiative / round order init
+
+eventueel “boss room rules”
+
+Eerste MVP dungeon runner
+
+Nieuwe page of mode in UI:
+
+lijst chambers links
+
+detail van geselecteerde chamber rechts (gm_text, room_text)
+
+knop “Start combat” als chamber encounter heeft → opent/initialiseert battle state voor encounter
+
+Belangrijk: encounters moeten reproduceerbaar zijn:
+
+seed per dungeon en per encounter
+
+battle simulator kan initial state genereren uit encounter config
+
+Integratie battle simulator ↔ dungeon
+
+Scheid “battle engine state” van “dungeon state”:
+
+dungeon save bevat chamber progress + per-chamber encounter state refs
+
+encounter kan embedded battle state payload hebben (of pointer naar save bestand)
+
+Start simpel: dungeon save bevat encounter battle state inline.
+
+Taken die je als assistant direct kunt oppakken (suggesties)
+
+Refactor: app.py opsplitsen in ui/ modules zodra het te groot wordt:
+
+ui_battle.py, ui_save.py, ui_dialogs.py
+
+Engine uitbreiden:
+
+status lifecycle centraliseren
+
+combat logs uitbreiden voor UI (history panel)
+
+Dungeon data model + loader:
+
+JSON schema voor dungeon & chambers
+
+generator stub (seed -> chambers)
+
+UI:
+
+dungeon runner scherm
+
+“encounter builder” UI (kies enemy templates + count)
+
+Belangrijk: constraints/voorkeuren
+
+Primair Python (geen React)
+
+NiceGUI is oké zolang het snel itereren blijft
+
+Simpliciteit > perfecte architectuur, maar geen spaghetti: liever een beetje structuur nu
+
+Geen “ranged bool” meer in engine (verwijderd)
+
+UX: duidelijke knoppen, weinig verrassingen
+
+Wat ik nu van jou wil (assistant)
+
+Lees de repo structuur + huidige app.py (die ik in deze chat upload of plak).
+
+Bevestig je mentale model: welke modules bestaan, welke functies en dataclasses.
+
+Stel de eerstvolgende stap voor (klein, testbaar).
+
+Lever codewijzigingen conform de afspraken hierboven.

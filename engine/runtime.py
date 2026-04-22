@@ -110,8 +110,8 @@ def _reshuffle_if_needed(ds: DeckState, *, rnd: random.Random) -> bool:
 
 def draw_cards(enemy: EnemyInstance, n: int, *, rnd: Optional[random.Random] = None) -> DrawResult:
     """
-    Draw up to n cards into enemy.deck_state.hand.
-    Leaves them there until end_turn() is called.
+    Replace enemy.deck_state.hand with up to n freshly drawn cards.
+    Any existing hand is moved to discard before the new draw.
     """
     if n < 0:
         raise ValueError("n must be >= 0")
@@ -120,6 +120,10 @@ def draw_cards(enemy: EnemyInstance, n: int, *, rnd: Optional[random.Random] = N
     ds = enemy.deck_state
     drawn_now: list[str] = []
     reshuffled_any = False
+
+    if ds.hand:
+        ds.discard_pile.extend(ds.hand)
+        ds.hand.clear()
 
     for _ in range(n):
         # ensure we have something to draw

@@ -45,7 +45,7 @@ def enemy_to_dict(e: EnemyInstance) -> Dict[str, Any]:
         d = dict(e.__dict__)
 
     # Make sure optional runtime extras exist in the save
-    d.setdefault("last_drawn", getattr(e, "last_drawn", []))
+    d.setdefault("visible_draw", getattr(e, "visible_draw", getattr(e, "last_drawn", [])))
     d.setdefault("loot_rolled", getattr(e, "loot_rolled", False))
     d.setdefault("rolled_loot", getattr(e, "rolled_loot", None))
 
@@ -80,7 +80,7 @@ def enemy_from_dict(d: Dict[str, Any]) -> EnemyInstance:
     )
 
     # runtime extras
-    e.last_drawn = list(d.get("last_drawn", []))
+    e.visible_draw = list(d.get("visible_draw", d.get("last_drawn", [])))
     e.loot_rolled = bool(d.get("loot_rolled", False))
     e.rolled_loot = d.get("rolled_loot", None)
 
@@ -95,6 +95,8 @@ def make_save_payload(
     selected_id: Optional[str],
     active_turn_id: Optional[str],
     turn_in_progress: bool,
+    round: int,
+    combat_log: List[str],
     enemies: List[EnemyInstance],
 ) -> Dict[str, Any]:
     return {
@@ -106,6 +108,8 @@ def make_save_payload(
             "selected_id": selected_id,
             "active_turn_id": active_turn_id,
             "turn_in_progress": turn_in_progress,
+            "round": int(round),
+            "combat_log": list(combat_log),
         },
         "order": list(order),
         "enemies": [enemy_to_dict(e) for e in enemies],
@@ -136,14 +140,16 @@ def save_current(path: Path, payload: Dict[str, Any]) -> None:
 
 def restore_state_from_payload(
     payload: Dict[str, Any],
-) -> Tuple[List[str], Optional[str], Optional[str], bool, List[EnemyInstance]]:
+) -> Tuple[List[str], Optional[str], Optional[str], bool, List[EnemyInstance], int, List[str]]:
     order = list(payload.get("order", []))
     ui = payload.get("ui", {}) or {}
     selected_id = ui.get("selected_id")
     active_turn_id = ui.get("active_turn_id")
     turn_in_progress = bool(ui.get("turn_in_progress", False))
+    round = int(ui.get("round", 1) or 1)
+    combat_log = list(ui.get("combat_log", []) or [])
 
     enemies_raw = payload.get("enemies", []) or []
     enemies = [enemy_from_dict(ed) for ed in enemies_raw]
 
-    return order, selected_id, active_turn_id, turn_in_progress, enemies
+    return order, selected_id, active_turn_id, turn_in_progress, enemies, round, combat_log
