@@ -147,11 +147,21 @@ class BattleSessionContext:
 
     def metadata(self) -> dict:
         templates = [
-            {"id": template_id, "name": template.name}
+            {"id": template_id, "name": template.name, "imageUrl": self.template_image_url(template)}
             for template_id, template in sorted(self.enemy_templates.items(), key=lambda item: item[1].name.lower())
         ]
         decks = [{"id": deck_id, "name": deck.name} for deck_id, deck in sorted(self.decks.items(), key=lambda item: item[1].name.lower())]
         return {"enemyTemplates": templates, "decks": decks}
+
+    def template_image_url(self, template: EnemyTemplate) -> str:
+        image = (getattr(template, "image", None) or "").replace("\\", "/").lstrip("/")
+        if image.startswith("images/"):
+            image = image[len("images/"):]
+        if image == "bandid.png":
+            image = "bandit.png"
+        if not image or not (self.images_dir / image).exists():
+            image = "anonymous.png"
+        return f"/images/{image}"
 
     def create_session(self, sid: Optional[str] = None) -> "BattleSession":
         session = BattleSession(context=self, sid=sid or create_sid())

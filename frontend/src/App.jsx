@@ -15,6 +15,8 @@ const ATTACK_STATUSES = [
   { key: "paralyze", label: "Paralyze" },
 ];
 
+const PREMADE_TEMPLATE_IDS = ["goblin", "bandit"];
+
 const EMPTY_ATTACK_FORM = {
   damage: 1,
   modifiers: {
@@ -112,6 +114,19 @@ function getStateClassNames(prefix, entityState) {
   return classNames.join(" ");
 }
 
+function orderEntities(orderIds, entities) {
+  const byId = new Map(entities.map((entity) => [entity.instance_id, entity]));
+  const ordered = orderIds.map((instanceId) => byId.get(instanceId)).filter(Boolean);
+  const unordered = entities.filter((entity) => !orderIds.includes(entity.instance_id));
+  return [...ordered, ...unordered];
+}
+
+function getPremadeTemplates(templates) {
+  const byId = new Map(templates.map((template) => [template.id, template]));
+  const preferred = PREMADE_TEMPLATE_IDS.map((templateId) => byId.get(templateId)).filter(Boolean);
+  return preferred.length ? preferred : templates;
+}
+
 function App() {
   const bootstrapped = useRef(false);
 
@@ -122,9 +137,9 @@ function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [modal, setModal] = useState(null);
+  const [customExpanded, setCustomExpanded] = useState(false);
   const [saveName, setSaveName] = useState("session");
   const [saves, setSaves] = useState([]);
-  const [templateId, setTemplateId] = useState("");
   const [attackForm, setAttackForm] = useState(EMPTY_ATTACK_FORM);
   const [healForm, setHealForm] = useState(EMPTY_HEAL_FORM);
   const [customForm, setCustomForm] = useState({
@@ -138,16 +153,11 @@ function App() {
   });
 
   useEffect(() => {
-    if (!meta) {
+    if (!meta || customForm.coreDeckId || meta.decks.length === 0) {
       return;
     }
-    if (!templateId && meta.enemyTemplates.length > 0) {
-      setTemplateId(meta.enemyTemplates[0].id);
-    }
-    if (!customForm.coreDeckId && meta.decks.length > 0) {
-      setCustomForm((current) => ({ ...current, coreDeckId: meta.decks[0].id }));
-    }
-  }, [customForm.coreDeckId, meta, templateId]);
+    setCustomForm((current) => ({ ...current, coreDeckId: meta.decks[0].id }));
+  }, [customForm.coreDeckId, meta]);
 
   useEffect(() => {
     if (bootstrapped.current) {
@@ -179,13 +189,19 @@ function App() {
     bootstrap();
   }, []);
 
+  const orderIds = snapshot?.order || [];
   const enemies = snapshot?.enemies || [];
-  const selectedEntity = enemies.find((entity) => entity.instance_id === snapshot?.selectedId) || enemies[0] || null;
-  const activeEntity = enemies.find((entity) => entity.instance_id === snapshot?.activeTurnId) || null;
+  const orderedEnemies = orderEntities(orderIds, enemies);
+  const selectedEntity =
+    orderedEnemies.find((entity) => entity.instance_id === snapshot?.selectedId) || orderedEnemies[0] || null;
+  const activeEntity = orderedEnemies.find((entity) => entity.instance_id === snapshot?.activeTurnId) || null;
   const selectedEntityState = selectedEntity ? getEntityState(selectedEntity, snapshot.selectedId, snapshot.activeTurnId) : null;
+  const selectedDrawIsStored = Boolean(snapshot?.activeTurnId && selectedEntity && snapshot.activeTurnId !== selectedEntity.instance_id);
   const activeDetachedEntity =
     activeEntity && activeEntity.instance_id !== selectedEntity?.instance_id ? activeEntity : null;
   const isPlayerSelected = Boolean(selectedEntity?.is_player);
+  const premadeTemplates = getPremadeTemplates(meta?.enemyTemplates || []);
+
   const canDraw = Boolean(
     selectedEntity && !isPlayerSelected && (!snapshot?.activeTurnId || snapshot.activeTurnId === selectedEntity.instance_id),
   );
@@ -203,6 +219,11 @@ function App() {
       selectedEntity.template_id !== "custom" &&
       selectedEntity.template_id !== "player",
   );
+
+  function closeModal() {
+    setModal(null);
+    setCustomExpanded(false);
+  }
 
   async function applySnapshotRequest(path, options = {}, successMessage = "") {
     setBusy(true);
@@ -228,6 +249,7 @@ function App() {
       setSnapshot(payload);
       setNotice("Started a new session");
       setSidInUrl(payload.sid);
+      closeModal();
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -256,6 +278,11 @@ function App() {
     setModal("load");
   }
 
+  function openAddUnitModal() {
+    setCustomExpanded(false);
+    setModal("add");
+  }
+
   async function handleSelect(instanceId) {
     await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/select`, {
       method: "POST",
@@ -264,73 +291,116 @@ function App() {
   }
 
   async function handleMove(instanceId, direction) {
-    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/order`, {
-      method: "POST",
-      body: JSON.stringify({ instanceId, direction }),
-    });
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/order`,
+      {
+        method: "POST",
+        body: JSON.stringify({ instanceId, direction }),
+      },
+      direction < 0 ? "Moved unit up" : "Moved unit down",
+    );
   }
 
   async function handleDeleteEntity(instanceId) {
-    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/entities/${instanceId}`, {
-      method: "DELETE",
-    }, "Entity removed");
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/entities/${instanceId}`,
+      {
+        method: "DELETE",
+      },
+      "Entity removed",
+    );
   }
 
-  async function handleAddEnemy() {
-    if (!templateId) {
-      return;
+  async function handleAddEnemyFromTemplate(templateId) {
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/enemies`,
+      {
+        method: "POST",
+        body: JSON.stringify({ templateId }),
+      },
+      "Enemy added",
+    );
+    if (payload) {
+      closeModal();
     }
-    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/enemies`, {
-      method: "POST",
-      body: JSON.stringify({ templateId }),
-    }, "Enemy added");
   }
 
   async function handleAddPlayer() {
-    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/players`, {
-      method: "POST",
-    }, "Player added");
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/players`,
+      {
+        method: "POST",
+      },
+      "Player added",
+    );
+    if (payload) {
+      closeModal();
+    }
   }
 
   async function handleAddCustomEnemy(event) {
     event.preventDefault();
-    const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/enemies`, {
-      method: "POST",
-      body: JSON.stringify({ custom: customForm }),
-    }, "Custom enemy added");
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/enemies`,
+      {
+        method: "POST",
+        body: JSON.stringify({ custom: customForm }),
+      },
+      "Custom enemy added",
+    );
     if (payload) {
-      setModal(null);
+      closeModal();
     }
   }
 
   async function handleDraw() {
-    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/turn/draw`, {
-      method: "POST",
-    }, "Cards drawn");
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/turn/draw`,
+      {
+        method: "POST",
+      },
+      "Cards drawn",
+    );
   }
 
   async function handleNoDraw() {
-    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/turn/no-draw`, {
-      method: "POST",
-    }, "Turn resolved");
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/turn/no-draw`,
+      {
+        method: "POST",
+      },
+      "Turn resolved",
+    );
   }
 
   async function handleEndTurn() {
-    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/turn/end`, {
-      method: "POST",
-    }, "Turn ended");
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/turn/end`,
+      {
+        method: "POST",
+      },
+      "Turn ended",
+    );
   }
 
   async function handleNext() {
-    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/turn/next`, {
-      method: "POST",
-    }, "Advanced round order");
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/turn/next`,
+      {
+        method: "POST",
+      },
+      "Advanced round order",
+    );
   }
 
   async function handleRollLoot() {
-    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/loot`, {
-      method: "POST",
-    }, "Loot rolled");
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/loot`,
+      {
+        method: "POST",
+      },
+      "Loot rolled",
+    );
   }
 
   async function handleAttackSubmit(event) {
@@ -338,58 +408,74 @@ function App() {
     const modifiers = Object.entries(attackForm.modifiers)
       .filter(([, enabled]) => enabled)
       .map(([key]) => key);
-    const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/attack`, {
-      method: "POST",
-      body: JSON.stringify({
-        damage: Number(attackForm.damage),
-        modifiers,
-        burn: attackForm.statuses.burn,
-        poison: attackForm.statuses.poison,
-        slow: attackForm.statuses.slow,
-        paralyze: attackForm.statuses.paralyze,
-      }),
-    }, "Attack applied");
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/attack`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          damage: Number(attackForm.damage),
+          modifiers,
+          burn: attackForm.statuses.burn,
+          poison: attackForm.statuses.poison,
+          slow: attackForm.statuses.slow,
+          paralyze: attackForm.statuses.paralyze,
+        }),
+      },
+      "Attack applied",
+    );
     if (payload) {
-      setModal(null);
+      closeModal();
       setAttackForm(EMPTY_ATTACK_FORM);
     }
   }
 
   async function handleHealSubmit(event) {
     event.preventDefault();
-    const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/heal`, {
-      method: "POST",
-      body: JSON.stringify({
-        hp: Number(healForm.hp),
-        armor: Number(healForm.armor),
-        magicArmor: Number(healForm.magicArmor),
-        guard: Number(healForm.guard),
-      }),
-    }, "Healing applied");
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/heal`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          hp: Number(healForm.hp),
+          armor: Number(healForm.armor),
+          magicArmor: Number(healForm.magicArmor),
+          guard: Number(healForm.guard),
+        }),
+      },
+      "Healing applied",
+    );
     if (payload) {
-      setModal(null);
+      closeModal();
       setHealForm(EMPTY_HEAL_FORM);
     }
   }
 
   async function handleSaveSubmit(event) {
     event.preventDefault();
-    const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/saves`, {
-      method: "POST",
-      body: JSON.stringify({ name: saveName }),
-    }, "Manual save created");
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/saves`,
+      {
+        method: "POST",
+        body: JSON.stringify({ name: saveName }),
+      },
+      "Manual save created",
+    );
     if (payload) {
-      setModal(null);
+      closeModal();
     }
   }
 
   async function handleLoadSubmit(filename) {
-    const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/load`, {
-      method: "POST",
-      body: JSON.stringify({ filename }),
-    }, "Manual save loaded");
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/load`,
+      {
+        method: "POST",
+        body: JSON.stringify({ filename }),
+      },
+      "Manual save loaded",
+    );
     if (payload) {
-      setModal(null);
+      closeModal();
     }
   }
 
@@ -409,6 +495,7 @@ function App() {
   return (
     <div className="shell">
       <div className="shell-noise" />
+
       <header className="topbar">
         <div className="brand-block">
           <div className="brand-kicker">Weavers of Power</div>
@@ -451,59 +538,13 @@ function App() {
         </div>
       </header>
 
-      {(error || notice) && (
-        <div className={`status-banner ${error ? "status-error" : "status-notice"}`}>
-          <span>{error || notice}</span>
-          <button
-            className="status-dismiss"
-            onClick={() => {
-              setError("");
-              setNotice("");
-            }}
-          >
-            Close
-          </button>
-        </div>
-      )}
-
-      <section className="command-desk">
-        <Panel title="Command Desk" detail="Session controls and encounter setup">
-          <div className="control-grid">
-            <label className="field">
-              <span>Enemy template</span>
-              <select value={templateId} onChange={(event) => setTemplateId(event.target.value)}>
-                {meta.enemyTemplates.map((template) => (
-                  <option key={template.id} value={template.id}>
-                    {template.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <button className="primary-button" onClick={handleAddEnemy} disabled={busy || !templateId}>
-              Add enemy
-            </button>
-            <button
-              className="secondary-button"
-              onClick={() => setModal("custom")}
-              disabled={busy || meta.decks.length === 0}
-            >
-              Quick custom
-            </button>
-            <button className="secondary-button" onClick={handleAddPlayer} disabled={busy}>
-              Add player
-            </button>
-          </div>
-        </Panel>
-      </section>
-
       <main className="main-grid">
         <section className="stage-column">
           <section className="battle-stage">
             {!selectedEntity ? (
               <div className="empty-stage">
                 <div className="empty-stage-title">No combatants in the chamber</div>
-                <div className="empty-stage-copy">Use the command desk to add an enemy or player card.</div>
+                <div className="empty-stage-copy">Use the initiative rail to add an enemy or player card.</div>
               </div>
             ) : (
               <div className="stage-layout">
@@ -518,7 +559,7 @@ function App() {
                   </div>
 
                   <div className="hero-copy">
-                    <div className="hero-eyebrow">{selectedEntity.template_id}</div>
+                    <div className="hero-eyebrow">{selectedEntity.is_player ? "player" : selectedEntity.template_id}</div>
                     <div className="hero-status-row">
                       <StateBadge label={selectedEntityState?.label} toneClass={selectedEntityState?.toneClass} />
                       {selectedEntity.is_player ? <span className="badge">Player</span> : <span className="badge badge-enemy">Enemy</span>}
@@ -530,15 +571,27 @@ function App() {
                     {activeDetachedEntity ? <div className="subtle-copy">{`Turn: ${activeDetachedEntity.name}`}</div> : null}
 
                     <div className="stat-grid">
-                      <MetricCard label="HP" value={selectedEntity.is_player ? "Player card" : `${selectedEntity.hp_current}/${selectedEntity.hp_max}`} />
-                      <MetricCard label="Armor" value={selectedEntity.is_player ? "-" : `${selectedEntity.armor_current}/${selectedEntity.armor_max}`} />
-                      <MetricCard label="Magic" value={selectedEntity.is_player ? "-" : `${selectedEntity.magic_armor_current}/${selectedEntity.magic_armor_max}`} />
+                      <MetricCard
+                        label="HP"
+                        value={selectedEntity.is_player ? "Player card" : `${selectedEntity.hp_current}/${selectedEntity.hp_max}`}
+                      />
+                      <MetricCard
+                        label="Armor"
+                        value={selectedEntity.is_player ? "-" : `${selectedEntity.armor_current}/${selectedEntity.armor_max}`}
+                      />
+                      <MetricCard
+                        label="Magic"
+                        value={selectedEntity.is_player ? "-" : `${selectedEntity.magic_armor_current}/${selectedEntity.magic_armor_max}`}
+                      />
                       <MetricCard label="Guard" value={selectedEntity.is_player ? "-" : `${selectedEntity.guard_current}`} />
                       <MetricCard label="Draws" value={selectedEntity.is_player ? "-" : `${selectedEntity.draws_base}`} />
-                      <MetricCard label="Move" value={selectedEntity.is_player ? "-" : `${selectedEntity.effective_movement}`} />
+                      <MetricCard
+                        label="Move"
+                        value={selectedEntity.is_player ? "-" : `${selectedEntity.effective_movement}`}
+                      />
                     </div>
 
-                    {!selectedEntity.is_player && (
+                    {!selectedEntity.is_player ? (
                       <>
                         <ProgressBar
                           label="Health"
@@ -556,7 +609,7 @@ function App() {
                           )}
                         </div>
                       </>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -611,8 +664,8 @@ function App() {
           </section>
 
           <section className="roster-strip">
-            {enemies.length ? (
-              enemies.map((entity) => {
+            {orderedEnemies.length ? (
+              orderedEnemies.map((entity) => {
                 const entityState = getEntityState(entity, snapshot.selectedId, snapshot.activeTurnId);
                 return (
                   <button
@@ -640,7 +693,9 @@ function App() {
                             }}
                           />
                         </div>
-                        <div className="roster-hp">{entity.hp_current}/{entity.hp_max}</div>
+                        <div className="roster-hp">
+                          {entity.hp_current}/{entity.hp_max}
+                        </div>
                       </>
                     ) : (
                       <div className="roster-hp">Player card</div>
@@ -655,68 +710,107 @@ function App() {
         </section>
 
         <aside className="right-rail">
-          <Panel title="Initiative" detail="Order, selection and quick movement">
-            <div className="initiative-list">
-              {enemies.map((entity) => {
+          <Panel
+            title="Initiative"
+            actions={
+              <button className="icon-button" type="button" aria-label="Add unit" onClick={openAddUnitModal} disabled={busy}>
+                <PlusIcon />
+              </button>
+            }
+          >
+            <div className="initiative-list initiative-list-compact">
+              {orderedEnemies.map((entity) => {
                 const entityState = getEntityState(entity, snapshot.selectedId, snapshot.activeTurnId);
-                const entityIndex = snapshot.order.indexOf(entity.instance_id);
+                const entityIndex = orderIds.indexOf(entity.instance_id);
                 const canMoveEntityUp = entityIndex > 0;
-                const canMoveEntityDown = entityIndex >= 0 && entityIndex < snapshot.order.length - 1;
+                const canMoveEntityDown = entityIndex >= 0 && entityIndex < orderIds.length - 1;
                 return (
                   <div className="initiative-card" key={entity.instance_id}>
-                    {entityState.isSelected ? (
-                      <div className="initiative-tools">
-                        <button
-                          type="button"
-                          className="initiative-tool"
-                          aria-label={`Move ${entity.name} up`}
-                          onClick={() => handleMove(entity.instance_id, -1)}
-                          disabled={!canMoveEntityUp || busy}
-                        >
-                          <ChevronUpIcon />
-                        </button>
-                        <button
-                          type="button"
-                          className="initiative-tool"
-                          aria-label={`Move ${entity.name} down`}
-                          onClick={() => handleMove(entity.instance_id, 1)}
-                          disabled={!canMoveEntityDown || busy}
-                        >
-                          <ChevronDownIcon />
-                        </button>
-                        <button
-                          type="button"
-                          className="initiative-tool initiative-tool-danger"
-                          aria-label={`Delete ${entity.name}`}
-                          onClick={() => handleDeleteEntity(entity.instance_id)}
-                          disabled={busy}
-                        >
-                          <TrashIcon />
-                        </button>
-                      </div>
-                    ) : null}
                     <button
                       type="button"
-                      className={`initiative-row ${getStateClassNames("initiative", entityState)} ${entityState.isSelected ? "initiative-row-with-tools" : ""}`}
+                      className={`initiative-row initiative-row-tools ${getStateClassNames("initiative", entityState)}`}
                       data-state={entityState.toneClass || "state-idle"}
                       onClick={() => handleSelect(entity.instance_id)}
                     >
-                      <div className="initiative-copy">
-                        <div className="initiative-name-row">
-                          <span className="initiative-name">{entity.name}</span>
-                          <StateBadge label={entityState.label} toneClass={entityState.toneClass} className="state-badge-compact" />
+                      <div className="initiative-left">
+                        <div className="initiative-thumb">
+                          <img src={entity.image_url} alt="" aria-hidden="true" />
                         </div>
-                        <span className="initiative-meta">{entity.is_player ? "Player" : entity.template_id}</span>
+                        <div className="initiative-copy">
+                          <div className="initiative-name-row">
+                            <span className="initiative-name">{entity.name}</span>
+                            <StateBadge
+                              label={entityState.label}
+                              toneClass={entityState.toneClass}
+                              className="state-badge-compact"
+                            />
+                          </div>
+                          <span className="initiative-meta">
+                            {entity.is_player ? "Player" : titleCaseFromSnake(entity.template_id)}
+                          </span>
+                        </div>
                       </div>
-                      {!entity.is_player ? <span className="initiative-hp">{entity.hp_current}/{entity.hp_max}</span> : <span className="initiative-hp">Player</span>}
+                      {!entity.is_player ? (
+                        <span className="initiative-hp">
+                          {entity.hp_current}/{entity.hp_max}
+                        </span>
+                      ) : (
+                        <span className="initiative-hp">Player</span>
+                      )}
                     </button>
+
+                    <div className="initiative-order-tools">
+                      <button
+                        type="button"
+                        className="initiative-tool initiative-tool-arrow"
+                        aria-label={`Move ${entity.name} up`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleMove(entity.instance_id, -1);
+                        }}
+                        disabled={!canMoveEntityUp || busy}
+                      >
+                        <span className="initiative-arrow-glyph" aria-hidden="true">
+                          ▲
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="initiative-tool initiative-tool-arrow"
+                        aria-label={`Move ${entity.name} down`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleMove(entity.instance_id, 1);
+                        }}
+                        disabled={!canMoveEntityDown || busy}
+                      >
+                        <span className="initiative-arrow-glyph" aria-hidden="true">
+                          ▼
+                        </span>
+                      </button>
+                    </div>
+
+                    <div className="initiative-tools">
+                      <button
+                        type="button"
+                        className="initiative-tool initiative-tool-danger"
+                        aria-label={`Delete ${entity.name}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleDeleteEntity(entity.instance_id);
+                        }}
+                        disabled={busy}
+                      >
+                        <TrashIcon />
+                      </button>
+                    </div>
                   </div>
                 );
               })}
             </div>
           </Panel>
 
-          <Panel title="Selected" detail="Focused controls for the chosen combatant">
+          <Panel title="Selected">
             {selectedEntity ? (
               <div className="selected-summary">
                 <div className="selected-summary-top">
@@ -726,24 +820,49 @@ function App() {
                       <div className="selected-name">{selectedEntity.name}</div>
                     </div>
                     <div className="selected-meta-row">
-                      <span className="selected-meta">{selectedEntity.is_player ? "Player card" : selectedEntity.status_text}</span>
+                      <span className="selected-meta">
+                        {selectedEntity.is_player ? "Player card" : selectedEntity.status_text}
+                      </span>
                       {activeDetachedEntity ? <span className="selected-meta">{`Turn: ${activeDetachedEntity.name}`}</span> : null}
                     </div>
                   </div>
                   <div className="selected-badge-row">
-                    <StateBadge label={selectedEntityState?.label} toneClass={selectedEntityState?.toneClass} className="state-badge-compact" />
+                    <StateBadge
+                      label={selectedEntityState?.label}
+                      toneClass={selectedEntityState?.toneClass}
+                      className="state-badge-compact"
+                    />
                     {selectedEntity.is_player ? <span className="badge">Player</span> : <span className="badge badge-enemy">Enemy</span>}
                     {selectedEntity.is_down ? <span className="badge badge-down">Down</span> : null}
                   </div>
                 </div>
 
                 <div className="selected-stat-grid">
-                  <SelectedStat label="HP" value={selectedEntity.is_player ? "Player" : `${selectedEntity.hp_current}/${selectedEntity.hp_max}`} tone="selected-stat-hp" />
-                  <SelectedStat label="Armor" value={selectedEntity.is_player ? "-" : `${selectedEntity.armor_current}/${selectedEntity.armor_max}`} />
-                  <SelectedStat label="M.Armor" value={selectedEntity.is_player ? "-" : `${selectedEntity.magic_armor_current}/${selectedEntity.magic_armor_max}`} tone="selected-stat-arcane" />
-                  <SelectedStat label="Guard" value={selectedEntity.is_player ? "-" : `${selectedEntity.guard_current}`} tone="selected-stat-guard" />
+                  <SelectedStat
+                    label="HP"
+                    value={selectedEntity.is_player ? "Player" : `${selectedEntity.hp_current}/${selectedEntity.hp_max}`}
+                    tone="selected-stat-hp"
+                  />
+                  <SelectedStat
+                    label="Armor"
+                    value={selectedEntity.is_player ? "-" : `${selectedEntity.armor_current}/${selectedEntity.armor_max}`}
+                  />
+                  <SelectedStat
+                    label="M.Armor"
+                    value={selectedEntity.is_player ? "-" : `${selectedEntity.magic_armor_current}/${selectedEntity.magic_armor_max}`}
+                    tone="selected-stat-arcane"
+                  />
+                  <SelectedStat
+                    label="Guard"
+                    value={selectedEntity.is_player ? "-" : `${selectedEntity.guard_current}`}
+                    tone="selected-stat-guard"
+                  />
                   <SelectedStat label="Draws" value={selectedEntity.is_player ? "-" : `${selectedEntity.draws_base}`} />
-                  <SelectedStat label="Move" value={selectedEntity.is_player ? "-" : `${selectedEntity.effective_movement}`} tone="selected-stat-move" />
+                  <SelectedStat
+                    label="Move"
+                    value={selectedEntity.is_player ? "-" : `${selectedEntity.effective_movement}`}
+                    tone="selected-stat-move"
+                  />
                 </div>
 
                 {!selectedEntity.is_player ? (
@@ -768,15 +887,15 @@ function App() {
             )}
           </Panel>
 
-          <Panel title="Current Draw" detail="Visible draw state for the selected combatant">
+          <Panel title="Current Draw">
             {selectedEntity ? (
               <div className="selected-draw-grid">
                 <div className="selected-draw-block">
-                  <div className="selected-draw-label">Current Draw</div>
+                  <div className="selected-draw-label">{selectedDrawIsStored ? "Previous active draw" : "Cards in hand"}</div>
                   {selectedEntity.current_draw_text?.length ? (
                     <CardList items={selectedEntity.current_draw_text} />
                   ) : (
-                    <div className="subtle-copy">No current draw.</div>
+                    <div className="subtle-copy">{selectedDrawIsStored ? "No previous draw." : "No current draw."}</div>
                   )}
                 </div>
               </div>
@@ -785,7 +904,7 @@ function App() {
             )}
           </Panel>
 
-          <Panel title="Loot" detail="Current loot snapshot for the selected entity">
+          <Panel title="Loot">
             {selectedEntity ? (
               selectedEntity.loot_rolled ? (
                 <div className="loot-grid">
@@ -803,7 +922,7 @@ function App() {
             )}
           </Panel>
 
-          <Panel title="Combat Log" detail="Persisted activity feed from the backend">
+          <Panel title="Combat Log">
             <div className="log-list">
               {snapshot.combatLog.length ? (
                 snapshot.combatLog.map((entry, index) => (
@@ -816,6 +935,21 @@ function App() {
               )}
             </div>
           </Panel>
+
+          {(error || notice) && (
+            <div className={`status-banner status-banner-rail ${error ? "status-error" : "status-notice"}`}>
+              <span>{error || notice}</span>
+              <button
+                className="status-dismiss"
+                onClick={() => {
+                  setError("");
+                  setNotice("");
+                }}
+              >
+                Close
+              </button>
+            </div>
+          )}
         </aside>
       </main>
 
@@ -823,7 +957,7 @@ function App() {
         open={modal === "attack"}
         title="Attack enemy"
         subtitle="Applies damage and optional status effects to the selected enemy card."
-        onClose={() => setModal(null)}
+        onClose={closeModal}
       >
         <form className="modal-form" onSubmit={handleAttackSubmit}>
           <label className="field">
@@ -878,7 +1012,7 @@ function App() {
             <button className="primary-button" type="submit" disabled={busy}>
               Apply attack
             </button>
-            <button className="secondary-button" type="button" onClick={() => setModal(null)}>
+            <button className="secondary-button" type="button" onClick={closeModal}>
               Cancel
             </button>
           </div>
@@ -889,7 +1023,7 @@ function App() {
         open={modal === "heal"}
         title="Heal enemy"
         subtitle="Restores the selected enemy card using the backend heal model."
-        onClose={() => setModal(null)}
+        onClose={closeModal}
       >
         <form className="modal-form" onSubmit={handleHealSubmit}>
           <div className="field-grid">
@@ -935,7 +1069,7 @@ function App() {
             <button className="primary-button" type="submit" disabled={busy}>
               Apply healing
             </button>
-            <button className="secondary-button" type="button" onClick={() => setModal(null)}>
+            <button className="secondary-button" type="button" onClick={closeModal}>
               Cancel
             </button>
           </div>
@@ -943,97 +1077,154 @@ function App() {
       </ModalShell>
 
       <ModalShell
-        open={modal === "custom"}
-        title="Quick custom enemy"
-        subtitle="Creates a custom runtime enemy while reusing an existing deck."
-        onClose={() => setModal(null)}
+        open={modal === "add"}
+        title="Add Unit"
+        subtitle="Premade enemies first, with player and custom options below."
+        onClose={closeModal}
+        size="wide"
       >
-        <form className="modal-form" onSubmit={handleAddCustomEnemy}>
-          <div className="field-grid">
-            <label className="field field-full">
-              <span>Name</span>
-              <input
-                type="text"
-                value={customForm.name}
-                onChange={(event) => setCustomForm((current) => ({ ...current, name: event.target.value }))}
-              />
-            </label>
-            <label className="field">
-              <span>HP</span>
-              <input
-                type="number"
-                min="1"
-                value={customForm.hp}
-                onChange={(event) => setCustomForm((current) => ({ ...current, hp: Number(event.target.value) }))}
-              />
-            </label>
-            <label className="field">
-              <span>Armor</span>
-              <input
-                type="number"
-                min="0"
-                value={customForm.armor}
-                onChange={(event) => setCustomForm((current) => ({ ...current, armor: Number(event.target.value) }))}
-              />
-            </label>
-            <label className="field">
-              <span>Magic armor</span>
-              <input
-                type="number"
-                min="0"
-                value={customForm.magicArmor}
-                onChange={(event) => setCustomForm((current) => ({ ...current, magicArmor: Number(event.target.value) }))}
-              />
-            </label>
-            <label className="field">
-              <span>Draws</span>
-              <input
-                type="number"
-                min="0"
-                value={customForm.draws}
-                onChange={(event) => setCustomForm((current) => ({ ...current, draws: Number(event.target.value) }))}
-              />
-            </label>
-            <label className="field">
-              <span>Movement</span>
-              <input
-                type="number"
-                min="0"
-                value={customForm.movement}
-                onChange={(event) => setCustomForm((current) => ({ ...current, movement: Number(event.target.value) }))}
-              />
-            </label>
-            <label className="field field-full">
-              <span>Core deck</span>
-              <select
-                value={customForm.coreDeckId}
-                onChange={(event) => setCustomForm((current) => ({ ...current, coreDeckId: event.target.value }))}
-              >
-                {meta.decks.map((deck) => (
-                  <option key={deck.id} value={deck.id}>
-                    {deck.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
+        <div className="panel-body add-unit-body">
+          <section className="add-unit-section">
+            <div className="form-section-title">Premade Enemies</div>
+            <div className="premade-grid">
+              {premadeTemplates.map((template) => (
+                <button
+                  key={template.id}
+                  type="button"
+                  className="premade-card"
+                  onClick={() => handleAddEnemyFromTemplate(template.id)}
+                  disabled={busy}
+                >
+                  <div className="premade-card-art">
+                    <img src={template.imageUrl} alt={template.name} />
+                  </div>
+                  <div className="premade-card-copy">
+                    <div className="premade-card-kicker">Premade enemy</div>
+                    <div className="premade-card-name">{template.name}</div>
+                    <div className="premade-card-meta">{titleCaseFromSnake(template.id)}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
 
-          <div className="modal-actions">
-            <button className="primary-button" type="submit" disabled={busy}>
-              Add custom enemy
+          <section className="add-unit-section">
+            <div className="form-section-title">Add Player</div>
+            <button type="button" className="secondary-button add-player-card" onClick={handleAddPlayer} disabled={busy}>
+              Add player card
             </button>
-            <button className="secondary-button" type="button" onClick={() => setModal(null)}>
-              Cancel
-            </button>
-          </div>
-        </form>
+          </section>
+
+          <section className="add-unit-section">
+            <div className="add-unit-custom-header">
+              <div>
+                <div className="form-section-title">Custom Enemy</div>
+                <div className="subtle-copy">Compact runtime enemy using an existing deck.</div>
+              </div>
+              <button
+                type="button"
+                className="small-button"
+                onClick={() => setCustomExpanded((current) => !current)}
+                disabled={busy || meta.decks.length === 0}
+              >
+                {customExpanded ? "Hide" : "Show"}
+              </button>
+            </div>
+
+            {customExpanded ? (
+              <form className="modal-form add-unit-custom-form" onSubmit={handleAddCustomEnemy}>
+                <div className="field-grid">
+                  <label className="field field-full">
+                    <span>Name</span>
+                    <input
+                      type="text"
+                      value={customForm.name}
+                      onChange={(event) => setCustomForm((current) => ({ ...current, name: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>HP</span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={customForm.hp}
+                      onChange={(event) => setCustomForm((current) => ({ ...current, hp: Number(event.target.value) }))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Armor</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={customForm.armor}
+                      onChange={(event) => setCustomForm((current) => ({ ...current, armor: Number(event.target.value) }))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Magic armor</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={customForm.magicArmor}
+                      onChange={(event) =>
+                        setCustomForm((current) => ({ ...current, magicArmor: Number(event.target.value) }))
+                      }
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Draws</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={customForm.draws}
+                      onChange={(event) => setCustomForm((current) => ({ ...current, draws: Number(event.target.value) }))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Movement</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={customForm.movement}
+                      onChange={(event) =>
+                        setCustomForm((current) => ({ ...current, movement: Number(event.target.value) }))
+                      }
+                    />
+                  </label>
+                  <label className="field field-full">
+                    <span>Core deck</span>
+                    <select
+                      value={customForm.coreDeckId}
+                      onChange={(event) => setCustomForm((current) => ({ ...current, coreDeckId: event.target.value }))}
+                    >
+                      {meta.decks.map((deck) => (
+                        <option key={deck.id} value={deck.id}>
+                          {deck.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                <div className="modal-actions">
+                  <button className="primary-button" type="submit" disabled={busy}>
+                    Add custom enemy
+                  </button>
+                  <button className="secondary-button" type="button" onClick={closeModal}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : null}
+          </section>
+        </div>
       </ModalShell>
 
       <ModalShell
         open={modal === "save"}
         title="Manual save"
         subtitle="Stores the current autosaved session as a named manual snapshot."
-        onClose={() => setModal(null)}
+        onClose={closeModal}
       >
         <form className="modal-form" onSubmit={handleSaveSubmit}>
           <label className="field">
@@ -1044,7 +1235,7 @@ function App() {
             <button className="primary-button" type="submit" disabled={busy}>
               Save snapshot
             </button>
-            <button className="secondary-button" type="button" onClick={() => setModal(null)}>
+            <button className="secondary-button" type="button" onClick={closeModal}>
               Cancel
             </button>
           </div>
@@ -1055,7 +1246,7 @@ function App() {
         open={modal === "load"}
         title="Load manual save"
         subtitle="Loads a saved snapshot into the current session id."
-        onClose={() => setModal(null)}
+        onClose={closeModal}
       >
         <div className="save-list">
           {saves.length ? (
@@ -1079,7 +1270,7 @@ function App() {
   );
 }
 
-function Panel({ title, detail, children }) {
+function Panel({ title, detail, actions, children }) {
   return (
     <section className="panel">
       <div className="panel-header">
@@ -1087,6 +1278,7 @@ function Panel({ title, detail, children }) {
           <div className="panel-title">{title}</div>
           {detail ? <div className="panel-detail">{detail}</div> : null}
         </div>
+        {actions ? <div className="panel-actions">{actions}</div> : null}
       </div>
       <div className="panel-body">{children}</div>
     </section>
@@ -1157,6 +1349,15 @@ function StateBadge({ label, toneClass, className = "" }) {
   return <span className={`state-badge ${toneClass} ${className}`.trim()}>{label}</span>;
 }
 
+function PlusIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M8 3.25v9.5" />
+      <path d="M3.25 8h9.5" />
+    </svg>
+  );
+}
+
 function ChevronUpIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -1199,14 +1400,17 @@ function ToggleField({ label, checked, onChange }) {
   );
 }
 
-function ModalShell({ open, title, subtitle, onClose, children }) {
+function ModalShell({ open, title, subtitle, onClose, children, size = "default" }) {
   if (!open) {
     return null;
   }
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-shell" onClick={(event) => event.stopPropagation()}>
+      <div
+        className={`modal-shell ${size === "wide" ? "modal-shell-wide" : ""}`.trim()}
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="modal-header">
           <div>
             <div className="panel-title">{title}</div>

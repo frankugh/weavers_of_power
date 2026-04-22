@@ -75,6 +75,33 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(session.visible_draw_for(enemy), [])
         self.assertEqual(session.snapshot()["enemies"][0]["current_draw_text"], [])
 
+    def test_current_draw_persists_until_that_same_unit_turn_starts_again(self) -> None:
+        session = self.context.create_session("draw-persist")
+        session.add_enemy_from_template("goblin")
+        first_id = session.selected_id
+        first_enemy = session.state.enemies[first_id]
+        session.add_enemy_from_template("bandit")
+        second_id = session.selected_id
+
+        session.select(first_id)
+        session.draw_turn()
+        first_visible_draw = session.visible_draw_for(first_enemy)
+        session.end_turn_selected()
+
+        session.next_turn()
+        self.assertEqual(session.active_turn_id, second_id)
+        self.assertEqual(session.visible_draw_for(first_enemy), first_visible_draw)
+
+        session.select(first_id)
+        persisted_enemy = next(enemy for enemy in session.snapshot()["enemies"] if enemy["instance_id"] == first_id)
+        self.assertGreaterEqual(len(persisted_enemy["current_draw_text"]), 1)
+
+        session.select(second_id)
+        session.next_turn()
+
+        self.assertEqual(session.active_turn_id, first_id)
+        self.assertEqual(session.visible_draw_for(first_enemy), [])
+
     def test_round_increments_when_next_wraps(self) -> None:
         session = self.context.create_session("round-wrap")
         session.add_enemy_from_template("goblin")

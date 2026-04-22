@@ -30,7 +30,9 @@ class BattleApiTests(unittest.TestCase):
         payload = response.json()
         self.assertIn("enemyTemplates", payload)
         self.assertIn("decks", payload)
-        self.assertTrue(any(item["id"] == "goblin" for item in payload["enemyTemplates"]))
+        goblin_template = next(item for item in payload["enemyTemplates"] if item["id"] == "goblin")
+        self.assertEqual(goblin_template["name"], "Goblin")
+        self.assertEqual(goblin_template["imageUrl"], "/images/goblin.png")
 
     def test_create_and_load_session(self) -> None:
         create_response = self.client.post("/api/battle/sessions")
@@ -99,6 +101,28 @@ class BattleApiTests(unittest.TestCase):
         self.assertFalse(next_payload["turnInProgress"])
         self.assertEqual(next_enemy["current_draw_text"], [])
 
+    def test_next_to_other_unit_keeps_previous_units_draw_visible(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        first_enemy = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        first_id = first_enemy["selectedId"]
+        second_enemy = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        second_id = second_enemy["selectedId"]
+
+        self.client.post(f"/api/battle/sessions/{sid}/select", json={"instanceId": first_id})
+        draw_response = self.client.post(f"/api/battle/sessions/{sid}/turn/draw")
+        self.assertEqual(draw_response.status_code, 200)
+        self.client.post(f"/api/battle/sessions/{sid}/turn/end")
+
+        next_response = self.client.post(f"/api/battle/sessions/{sid}/turn/next")
+        self.assertEqual(next_response.status_code, 200)
+        next_payload = next_response.json()
+        self.assertEqual(next_payload["activeTurnId"], second_id)
+
+        self.client.post(f"/api/battle/sessions/{sid}/select", json={"instanceId": first_id})
+        selected_first = self.client.get(f"/api/battle/sessions/{sid}").json()
+        first_enemy_payload = next(enemy for enemy in selected_first["enemies"] if enemy["instance_id"] == first_id)
+        self.assertGreaterEqual(len(first_enemy_payload["current_draw_text"]), 1)
+
     def test_attack_and_heal_endpoints_return_updated_snapshot(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         enemy_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
@@ -123,6 +147,30 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(heal_response.status_code, 200)
         healed = next(enemy for enemy in heal_response.json()["enemies"] if enemy["instance_id"] == enemy_snapshot["selectedId"])
         self.assertGreaterEqual(healed["hp_current"], attacked["hp_current"])
+
+    def test_player_and_custom_enemy_endpoints_remain_usable(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+
+        player_response = self.client.post(f"/api/battle/sessions/{sid}/players")
+        self.assertEqual(player_response.status_code, 200)
+        self.assertTrue(any(enemy["template_id"] == "player" for enemy in player_response.json()["enemies"]))
+
+        custom_response = self.client.post(
+            f"/api/battle/sessions/{sid}/enemies",
+            json={
+                "custom": {
+                    "name": "Shade",
+                    "hp": 7,
+                    "armor": 1,
+                    "magicArmor": 0,
+                    "draws": 2,
+                    "movement": 4,
+                    "coreDeckId": "basic",
+                }
+            },
+        )
+        self.assertEqual(custom_response.status_code, 200)
+        self.assertTrue(any(enemy["name"] == "Shade" for enemy in custom_response.json()["enemies"]))
 
 
 if __name__ == "__main__":
