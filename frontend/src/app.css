@@ -1088,6 +1088,156 @@ button:disabled,
   font-size: 1.2rem;
 }
 
+.roster-card-container {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.roster-card {
+  position: relative;
+}
+
+.roster-card-arrow {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(14, 10, 7, 0.88);
+  color: #6b5a43;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s ease, color 0.2s ease, transform 0.2s ease;
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+.roster-card-arrow-left {
+  margin-right: -12px;
+}
+
+.roster-card-arrow-right {
+  margin-left: -12px;
+}
+
+.roster-card-container:hover .roster-card-arrow {
+  opacity: 1;
+  visibility: visible;
+}
+
+.roster-card-arrow:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: transparent;
+}
+
+.roster-card-arrow svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.roster-tools {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  z-index: 2;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.roster-card-container:hover .roster-tools {
+  opacity: 1;
+  visibility: visible;
+}
+
+.roster-tool {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(14, 10, 7, 0.88);
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.roster-tool-danger {
+  border-color: rgba(209, 106, 87, 0.34);
+  color: #f0b1a6;
+}
+
+.roster-tool svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.roster-tool:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--accent-bright);
+  transform: translateY(-1px);
+}
+
+.roster-card-add {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 160px;
+  padding: 12px;
+  border-radius: 20px;
+  background: rgba(255, 244, 216, 0.04);
+  border: 2px dashed rgba(240, 207, 133, 0.34);
+  color: rgba(240, 207, 133, 0.6);
+  text-align: center;
+  transition: all 0.2s ease;
+}
+
+.roster-card-add:hover:not(:disabled) {
+  border-color: rgba(240, 207, 133, 0.6);
+  color: var(--accent-bright);
+  background: rgba(240, 207, 133, 0.08);
+}
+
+.roster-add-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+}
+
+.roster-add-icon svg {
+  width: 20px;
+  height: 20px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.roster-add-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;

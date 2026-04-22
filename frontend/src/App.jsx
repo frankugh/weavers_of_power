@@ -667,45 +667,103 @@ function App() {
             {orderedEnemies.length ? (
               orderedEnemies.map((entity) => {
                 const entityState = getEntityState(entity, snapshot.selectedId, snapshot.activeTurnId);
+                const rosterIndex = orderedEnemies.indexOf(entity);
+                const canMoveLeft = rosterIndex > 0;
+                const canMoveRight = rosterIndex < orderedEnemies.length - 1;
+
                 return (
-                  <button
-                    key={entity.instance_id}
-                    className={`roster-card ${getStateClassNames("roster", entityState)}`}
-                    data-state={entityState.toneClass || "state-idle"}
-                    onClick={() => handleSelect(entity.instance_id)}
-                  >
-                    <div className="roster-portrait">
-                      <img src={entity.image_url} alt={entity.name} />
-                    </div>
-                    <div className="roster-name">{entity.name}</div>
-                    <div className="roster-meta-row">
-                      <div className="roster-meta">{entity.is_player ? "Player" : entity.template_id}</div>
-                      <StateBadge label={entityState.label} toneClass={entityState.toneClass} className="state-badge-compact" />
-                    </div>
-                    {!entity.is_player ? (
-                      <>
-                        <div className="roster-bar">
-                          <span
-                            className="roster-bar-fill"
-                            style={{
-                              width: `${percent(entity.hp_current, entity.hp_max)}%`,
-                              background: barTone(percent(entity.hp_current, entity.hp_max)),
-                            }}
-                          />
-                        </div>
-                        <div className="roster-hp">
-                          {entity.hp_current}/{entity.hp_max}
-                        </div>
-                      </>
-                    ) : (
-                      <div className="roster-hp">Player card</div>
-                    )}
-                  </button>
+                  <div key={entity.instance_id} className="roster-card-container">
+                    <button
+                      type="button"
+                      className="roster-card-arrow roster-card-arrow-left"
+                      aria-label={`Move ${entity.name} left`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleMove(entity.instance_id, -1);
+                      }}
+                      disabled={!canMoveLeft || busy}
+                    >
+                      <ChevronLeftIcon />
+                    </button>
+
+                    <button
+                      className={`roster-card ${getStateClassNames("roster", entityState)}`}
+                      data-state={entityState.toneClass || "state-idle"}
+                      onClick={() => handleSelect(entity.instance_id)}
+                    >
+                      <div className="roster-portrait">
+                        <img src={entity.image_url} alt={entity.name} />
+                      </div>
+                      <div className="roster-name">{entity.name}</div>
+                      <div className="roster-meta-row">
+                        <div className="roster-meta">{entity.is_player ? "Player" : entity.template_id}</div>
+                        <StateBadge label={entityState.label} toneClass={entityState.toneClass} className="state-badge-compact" />
+                      </div>
+                      {!entity.is_player ? (
+                        <>
+                          <div className="roster-bar">
+                            <span
+                              className="roster-bar-fill"
+                              style={{
+                                width: `${percent(entity.hp_current, entity.hp_max)}%`,
+                                background: barTone(percent(entity.hp_current, entity.hp_max)),
+                              }}
+                            />
+                          </div>
+                          <div className="roster-hp">
+                            {entity.hp_current}/{entity.hp_max}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="roster-hp">Player card</div>
+                      )}
+
+                      <div className="roster-tools">
+                        <button
+                          type="button"
+                          className="roster-tool roster-tool-danger"
+                          aria-label={`Delete ${entity.name}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleDeleteEntity(entity.instance_id);
+                          }}
+                          disabled={busy}
+                        >
+                          <TrashIcon />
+                        </button>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="roster-card-arrow roster-card-arrow-right"
+                      aria-label={`Move ${entity.name} right`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleMove(entity.instance_id, 1);
+                      }}
+                      disabled={!canMoveRight || busy}
+                    >
+                      <ChevronRightIcon />
+                    </button>
+                  </div>
                 );
               })
             ) : (
               <div className="subtle-copy">The roster strip will populate when you add combatants.</div>
             )}
+            <button
+              className="roster-card roster-card-add"
+              type="button"
+              aria-label="Add unit"
+              onClick={openAddUnitModal}
+              disabled={busy}
+            >
+              <div className="roster-add-icon">
+                <PlusIcon />
+              </div>
+              <div className="roster-add-label">New Unit</div>
+            </button>
           </section>
         </section>
 
@@ -1370,6 +1428,22 @@ function ChevronDownIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true">
       <path d="m3.5 6.25 4.5 4.5 4.5-4.5" />
+    </svg>
+  );
+}
+
+function ChevronLeftIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M9.75 3.5 5.25 8l4.5 4.5" />
+    </svg>
+  );
+}
+
+function ChevronRightIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="m6.25 3.5 4.5 4.5-4.5 4.5" />
     </svg>
   );
 }
