@@ -586,17 +586,66 @@ button:disabled,
   color: var(--text);
 }
 
-.battle-map-scroll {
+.map-viewport-shell {
   position: relative;
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  display: flex;
+}
+
+.battle-map-scroll {
+  --map-cell-size: 44px;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
   border: 1px solid rgba(221, 185, 121, 0.16);
   border-radius: 12px;
   background:
     radial-gradient(circle at 50% 35%, rgba(216, 182, 106, 0.1), transparent 42%),
     linear-gradient(180deg, rgba(9, 7, 5, 0.72), rgba(5, 4, 3, 0.88));
   padding: 10px;
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+}
+
+.battle-map-scroll-panning {
+  cursor: grabbing;
+}
+
+.map-viewport-controls {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  z-index: 8;
+  display: flex;
+  gap: 4px;
+  pointer-events: auto;
+}
+
+.map-control-button {
+  min-width: 30px;
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(240, 207, 133, 0.26);
+  background: rgba(14, 10, 7, 0.92);
+  color: var(--accent-bright);
+  font-size: 0.76rem;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+}
+
+.map-control-button:hover {
+  border-color: rgba(240, 207, 133, 0.52);
+}
+
+.map-control-reset {
+  min-width: 52px;
+}
+
+.map-control-center {
+  min-width: 58px;
 }
 
 .map-settings {
@@ -679,10 +728,9 @@ button:disabled,
 .map-cell {
   position: relative;
   aspect-ratio: 1;
-  min-width: 38px;
-  width: 100%;
-  max-width: 50px;
-  min-height: 38px;
+  width: var(--map-cell-size);
+  min-width: var(--map-cell-size);
+  min-height: var(--map-cell-size);
   border: 1px solid rgba(81, 58, 35, 0.72);
   border-radius: 6px;
   background: rgba(22, 15, 9, 0.78);
@@ -709,15 +757,16 @@ button:disabled,
   cursor: default;
 }
 
-.map-cell-move-target {
+.battle-map-grid-move .map-cell:not(.map-cell-occupied) {
   border-color: rgba(125, 185, 127, 0.42);
   background:
     linear-gradient(135deg, rgba(125, 185, 127, 0.12), rgba(216, 182, 106, 0.04)),
     rgba(20, 17, 10, 0.86);
   box-shadow: inset 0 0 0 1px rgba(125, 185, 127, 0.08);
+  cursor: pointer;
 }
 
-.map-cell-move-target:hover {
+.battle-map-grid-move .map-cell:not(.map-cell-occupied):hover {
   border-color: rgba(125, 185, 127, 0.72);
   box-shadow:
     inset 0 0 0 1px rgba(125, 185, 127, 0.18),
@@ -731,7 +780,7 @@ button:disabled,
 
 .map-token {
   position: relative;
-  width: min(40px, 100%);
+  width: clamp(16px, calc(var(--map-cell-size) - 8px), 52px);
   aspect-ratio: 1;
   border-radius: 999px;
   border: 2px solid rgba(221, 185, 121, 0.28);

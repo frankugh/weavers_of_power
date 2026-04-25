@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App.jsx";
@@ -94,6 +94,10 @@ function renderWithSnapshot(snapshot, options = {}) {
 
 function findMapToken(name) {
   return screen.findByRole("button", { name: new RegExp(`Cell .*: ${name}`) });
+}
+
+function getMapViewport() {
+  return screen.getByRole("region", { name: "Battle map viewport" });
 }
 
 async function openAddUnitModal(user) {
@@ -624,6 +628,71 @@ describe("App", () => {
     expect(await screen.findByRole("button", { name: "Cell 1, 1: Goblin 1" })).toBeInTheDocument();
   });
 
+  it("does not capture click-only move targets before a drag starts", async () => {
+    const user = userEvent.setup();
+    const originalSetPointerCapture = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "setPointerCapture");
+    const originalReleasePointerCapture = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "releasePointerCapture");
+    const setPointerCapture = vi.fn();
+    const releasePointerCapture = vi.fn();
+    const movedSnapshot = buildSnapshot({
+      enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
+      combatLog: ["Moved Goblin 1 to (1, 1)"],
+    });
+
+    Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+      configurable: true,
+      value: setPointerCapture,
+    });
+    Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+      configurable: true,
+      value: releasePointerCapture,
+    });
+
+    try {
+      renderWithSnapshot(buildSnapshot(), {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/entities/enemy-1/position" && requestOptions?.method === "POST") {
+            return jsonResponse(movedSnapshot);
+          }
+          return undefined;
+        },
+      });
+
+      await findMapToken("Goblin 1");
+      await user.click(screen.getByRole("button", { name: "Move" }));
+      const targetCell = screen.getByRole("button", { name: "Cell 1, 1" });
+      const viewport = getMapViewport();
+
+      fireEvent.pointerDown(targetCell, { pointerId: 1, pointerType: "mouse", button: 0, buttons: 1, clientX: 120, clientY: 120 });
+      fireEvent.pointerUp(viewport, { pointerId: 1, pointerType: "mouse" });
+
+      expect(setPointerCapture).not.toHaveBeenCalled();
+
+      await user.click(targetCell);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          "/api/battle/sessions/sid-123/entities/enemy-1/position",
+          expect.objectContaining({
+            method: "POST",
+            body: JSON.stringify({ x: 0, y: 0 }),
+          }),
+        );
+      });
+    } finally {
+      if (originalSetPointerCapture) {
+        Object.defineProperty(HTMLElement.prototype, "setPointerCapture", originalSetPointerCapture);
+      } else {
+        delete HTMLElement.prototype.setPointerCapture;
+      }
+      if (originalReleasePointerCapture) {
+        Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", originalReleasePointerCapture);
+      } else {
+        delete HTMLElement.prototype.releasePointerCapture;
+      }
+    }
+  });
+
   it("toggles move mode when clicking the already selected unit", async () => {
     const user = userEvent.setup();
     const movedSnapshot = buildSnapshot({
@@ -659,6 +728,179 @@ describe("App", () => {
         }),
       );
     });
+  });
+
+  it("pans with left drag on an empty cell without moving the selected unit", async () => {
+    const user = userEvent.setup();
+    renderWithSnapshot(buildSnapshot({ room: { columns: 24, rows: 18 } }), {
+      extraFetch: (url) => {
+        if (url.includes("/position")) {
+          throw new Error("Panning should not move a unit");
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Move" }));
+    const viewport = getMapViewport();
+    const emptyCell = screen.getByRole("button", { name: "Cell 1, 1" });
+    viewport.scrollLeft = 100;
+    viewport.scrollTop = 80;
+
+    fireEvent.pointerDown(emptyCell, { pointerId: 1, pointerType: "mouse", button: 0, buttons: 1, clientX: 120, clientY: 120 });
+    fireEvent.pointerMove(viewport, { pointerId: 1, pointerType: "mouse", buttons: 1, clientX: 80, clientY: 70 });
+    fireEvent.pointerUp(viewport, { pointerId: 1, pointerType: "mouse" });
+    fireEvent.click(emptyCell);
+
+    expect(viewport.scrollLeft).toBe(140);
+    expect(viewport.scrollTop).toBe(130);
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      "/api/battle/sessions/sid-123/entities/enemy-1/position",
+      expect.anything(),
+    );
+  });
+
+  it("keeps normal move clicks working after a completed pan", async () => {
+    const user = userEvent.setup();
+    const movedSnapshot = buildSnapshot({
+      room: { columns: 24, rows: 18 },
+      enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
+      combatLog: ["Moved Goblin 1 to (1, 1)"],
+    });
+
+    renderWithSnapshot(buildSnapshot({ room: { columns: 24, rows: 18 } }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/position" && requestOptions?.method === "POST") {
+          return jsonResponse(movedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Move" }));
+    const viewport = getMapViewport();
+    const panCell = screen.getByRole("button", { name: "Cell 2, 1" });
+    viewport.scrollLeft = 100;
+    viewport.scrollTop = 80;
+
+    fireEvent.pointerDown(panCell, { pointerId: 1, pointerType: "mouse", button: 0, buttons: 1, clientX: 120, clientY: 120 });
+    fireEvent.pointerMove(viewport, { pointerId: 1, pointerType: "mouse", buttons: 1, clientX: 80, clientY: 70 });
+    fireEvent.pointerUp(viewport, { pointerId: 1, pointerType: "mouse" });
+    await new Promise((resolve) => window.setTimeout(resolve, 140));
+
+    await user.click(screen.getByRole("button", { name: "Cell 1, 1" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/enemy-1/position",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ x: 0, y: 0 }),
+        }),
+      );
+    });
+  });
+
+  it("pans with middle drag on a token without selecting it", async () => {
+    const bandit = buildEnemy({
+      instance_id: "enemy-2",
+      template_id: "bandit",
+      name: "Bandit 1",
+      image_url: "/images/bandit.png",
+      hp_current: 14,
+      hp_max: 16,
+      grid_x: 6,
+      grid_y: 4,
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        room: { columns: 24, rows: 18 },
+        order: ["enemy-1", "enemy-2"],
+        enemies: [buildEnemy(), bandit],
+      }),
+      {
+        extraFetch: (url) => {
+          if (url === "/api/battle/sessions/sid-123/select") {
+            throw new Error("Middle-drag panning should not select a token");
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Goblin 1");
+    const viewport = getMapViewport();
+    const banditToken = await findMapToken("Bandit 1");
+    viewport.scrollLeft = 90;
+    viewport.scrollTop = 70;
+
+    fireEvent.pointerDown(banditToken, { pointerId: 2, pointerType: "mouse", button: 1, buttons: 4, clientX: 150, clientY: 150 });
+    fireEvent.pointerMove(viewport, { pointerId: 2, pointerType: "mouse", buttons: 4, clientX: 120, clientY: 130 });
+    fireEvent.pointerUp(viewport, { pointerId: 2, pointerType: "mouse" });
+    fireEvent.click(banditToken);
+
+    expect(viewport.scrollLeft).toBe(120);
+    expect(viewport.scrollTop).toBe(90);
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      "/api/battle/sessions/sid-123/select",
+      expect.anything(),
+    );
+  });
+
+  it("zooms with wheel and compact viewport controls", async () => {
+    const user = userEvent.setup();
+    renderWithSnapshot(buildSnapshot({ room: { columns: 24, rows: 18 } }));
+
+    await findMapToken("Goblin 1");
+    const viewport = getMapViewport();
+    expect(viewport.style.getPropertyValue("--map-cell-size")).toBe("44px");
+
+    fireEvent.wheel(viewport, { deltaY: -120, clientX: 60, clientY: 60 });
+    await waitFor(() => {
+      expect(viewport.style.getPropertyValue("--map-cell-size")).toBe("48px");
+    });
+
+    await user.click(screen.getByRole("button", { name: "Zoom in battle map" }));
+    expect(viewport.style.getPropertyValue("--map-cell-size")).toBe("52px");
+
+    await user.click(screen.getByRole("button", { name: "Zoom out battle map" }));
+    expect(viewport.style.getPropertyValue("--map-cell-size")).toBe("48px");
+
+    await user.click(screen.getByRole("button", { name: "Reset battle map zoom" }));
+    expect(viewport.style.getPropertyValue("--map-cell-size")).toBe("44px");
+  });
+
+  it("centers the selected unit from the viewport controls", async () => {
+    const user = userEvent.setup();
+    renderWithSnapshot(buildSnapshot({ room: { columns: 24, rows: 18 } }));
+
+    await findMapToken("Goblin 1");
+    const viewport = getMapViewport();
+    viewport.scrollLeft = 0;
+    viewport.scrollTop = 0;
+
+    await user.click(screen.getByRole("button", { name: "Center selected unit" }));
+
+    expect(viewport.scrollLeft).toBeGreaterThan(0);
+    expect(viewport.scrollTop).toBeGreaterThan(0);
+  });
+
+  it("pinch zooms the map with two touch pointers", async () => {
+    renderWithSnapshot(buildSnapshot({ room: { columns: 24, rows: 18 } }));
+
+    await findMapToken("Goblin 1");
+    const viewport = getMapViewport();
+
+    fireEvent.pointerDown(viewport, { pointerId: 11, pointerType: "touch", clientX: 100, clientY: 100 });
+    fireEvent.pointerDown(viewport, { pointerId: 12, pointerType: "touch", clientX: 140, clientY: 100 });
+    fireEvent.pointerMove(viewport, { pointerId: 12, pointerType: "touch", clientX: 164, clientY: 100 });
+    fireEvent.pointerUp(viewport, { pointerId: 11, pointerType: "touch" });
+    fireEvent.pointerUp(viewport, { pointerId: 12, pointerType: "touch" });
+
+    expect(Number.parseInt(viewport.style.getPropertyValue("--map-cell-size"), 10)).toBeGreaterThan(44);
   });
 
   it("shows a resize warning and can confirm auto-placement", async () => {
