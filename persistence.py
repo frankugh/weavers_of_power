@@ -48,6 +48,8 @@ def enemy_to_dict(e: EnemyInstance) -> Dict[str, Any]:
     d.setdefault("visible_draw", getattr(e, "visible_draw", getattr(e, "last_drawn", [])))
     d.setdefault("loot_rolled", getattr(e, "loot_rolled", False))
     d.setdefault("rolled_loot", getattr(e, "rolled_loot", None))
+    d.setdefault("grid_x", getattr(e, "grid_x", None))
+    d.setdefault("grid_y", getattr(e, "grid_y", None))
 
     return d
 
@@ -83,6 +85,8 @@ def enemy_from_dict(d: Dict[str, Any]) -> EnemyInstance:
     e.visible_draw = list(d.get("visible_draw", d.get("last_drawn", [])))
     e.loot_rolled = bool(d.get("loot_rolled", False))
     e.rolled_loot = d.get("rolled_loot", None)
+    e.grid_x = int(d["grid_x"]) if d.get("grid_x") is not None else None
+    e.grid_y = int(d["grid_y"]) if d.get("grid_y") is not None else None
 
     return e
 
@@ -95,6 +99,7 @@ def make_save_payload(
     selected_id: Optional[str],
     active_turn_id: Optional[str],
     turn_in_progress: bool,
+    room: Dict[str, int],
     round: int,
     combat_log: List[str],
     enemies: List[EnemyInstance],
@@ -108,6 +113,7 @@ def make_save_payload(
             "selected_id": selected_id,
             "active_turn_id": active_turn_id,
             "turn_in_progress": turn_in_progress,
+            "room": dict(room),
             "round": int(round),
             "combat_log": list(combat_log),
         },
@@ -140,16 +146,21 @@ def save_current(path: Path, payload: Dict[str, Any]) -> None:
 
 def restore_state_from_payload(
     payload: Dict[str, Any],
-) -> Tuple[List[str], Optional[str], Optional[str], bool, List[EnemyInstance], int, List[str]]:
+) -> Tuple[List[str], Optional[str], Optional[str], bool, Dict[str, int], List[EnemyInstance], int, List[str]]:
     order = list(payload.get("order", []))
     ui = payload.get("ui", {}) or {}
     selected_id = ui.get("selected_id")
     active_turn_id = ui.get("active_turn_id")
     turn_in_progress = bool(ui.get("turn_in_progress", False))
+    room_raw = ui.get("room", {}) or {}
+    room = {
+        "columns": int(room_raw.get("columns", 10) or 10),
+        "rows": int(room_raw.get("rows", 7) or 7),
+    }
     round = int(ui.get("round", 1) or 1)
     combat_log = list(ui.get("combat_log", []) or [])
 
     enemies_raw = payload.get("enemies", []) or []
     enemies = [enemy_from_dict(ed) for ed in enemies_raw]
 
-    return order, selected_id, active_turn_id, turn_in_progress, enemies, round, combat_log
+    return order, selected_id, active_turn_id, turn_in_progress, room, enemies, round, combat_log

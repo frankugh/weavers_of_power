@@ -16,6 +16,13 @@ const ATTACK_STATUSES = [
 ];
 
 const PREMADE_TEMPLATE_IDS = ["goblin", "bandit"];
+const DEFAULT_ROOM = { columns: 10, rows: 7 };
+const ROOM_LIMITS = {
+  minColumns: 3,
+  maxColumns: 99,
+  minRows: 3,
+  maxRows: 99,
+};
 
 const EMPTY_ATTACK_FORM = {
   damage: 1,
@@ -127,6 +134,25 @@ function getPremadeTemplates(templates) {
   return preferred.length ? preferred : templates;
 }
 
+function getEntityInitial(entity) {
+  return (entity?.name || "?").trim().charAt(0).toUpperCase() || "?";
+}
+
+function hasGridPosition(entity, room) {
+  return (
+    Number.isInteger(entity?.grid_x) &&
+    Number.isInteger(entity?.grid_y) &&
+    entity.grid_x >= 0 &&
+    entity.grid_y >= 0 &&
+    entity.grid_x < room.columns &&
+    entity.grid_y < room.rows
+  );
+}
+
+function positionKey(x, y) {
+  return `${x}:${y}`;
+}
+
 function App() {
   const bootstrapped = useRef(false);
 
@@ -138,6 +164,9 @@ function App() {
   const [notice, setNotice] = useState("");
   const [modal, setModal] = useState(null);
   const [customExpanded, setCustomExpanded] = useState(false);
+  const [moveMode, setMoveMode] = useState(false);
+  const [roomForm, setRoomForm] = useState(DEFAULT_ROOM);
+  const [pendingRoomResize, setPendingRoomResize] = useState(null);
   const [saveName, setSaveName] = useState("session");
   const [saves, setSaves] = useState([]);
   const [attackForm, setAttackForm] = useState(EMPTY_ATTACK_FORM);
@@ -158,6 +187,20 @@ function App() {
     }
     setCustomForm((current) => ({ ...current, coreDeckId: meta.decks[0].id }));
   }, [customForm.coreDeckId, meta]);
+
+  useEffect(() => {
+    if (!snapshot?.room) {
+      return;
+    }
+    setRoomForm({
+      columns: snapshot.room.columns || DEFAULT_ROOM.columns,
+      rows: snapshot.room.rows || DEFAULT_ROOM.rows,
+    });
+  }, [snapshot?.room?.columns, snapshot?.room?.rows]);
+
+  useEffect(() => {
+    setMoveMode(false);
+  }, [snapshot?.selectedId, snapshot?.sid]);
 
   useEffect(() => {
     if (bootstrapped.current) {
@@ -191,6 +234,7 @@ function App() {
 
   const orderIds = snapshot?.order || [];
   const enemies = snapshot?.enemies || [];
+  const room = snapshot?.room || DEFAULT_ROOM;
   const orderedEnemies = orderEntities(orderIds, enemies);
   const selectedEntity =
     orderedEnemies.find((entity) => entity.instance_id === snapshot?.selectedId) || orderedEnemies[0] || null;
@@ -223,6 +267,7 @@ function App() {
   function closeModal() {
     setModal(null);
     setCustomExpanded(false);
+    setPendingRoomResize(null);
   }
 
   async function applySnapshotRequest(path, options = {}, successMessage = "") {
@@ -284,10 +329,13 @@ function App() {
   }
 
   async function handleSelect(instanceId) {
-    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/select`, {
+    const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/select`, {
       method: "POST",
       body: JSON.stringify({ instanceId }),
     });
+    if (payload) {
+      setMoveMode(false);
+    }
   }
 
   async function handleMove(instanceId, direction) {
@@ -299,6 +347,64 @@ function App() {
       },
       direction < 0 ? "Moved unit up" : "Moved unit down",
     );
+  }
+
+  async function handleMoveSelectedToCell(x, y) {
+    if (!selectedEntity) {
+      return;
+    }
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/entities/${selectedEntity.instance_id}/position`,
+      {
+        method: "POST",
+        body: JSON.stringify({ x, y }),
+      },
+      `Moved ${selectedEntity.name}`,
+    );
+    if (payload) {
+      setMoveMode(false);
+    }
+  }
+
+  function normalizeRoomFormValue(value, fallback) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  async function submitRoomResize(columns, rows, autoPlaceOutOfBounds = false) {
+    setBusy(true);
+    setError("");
+    try {
+      const payload = await requestJson(`/api/battle/sessions/${snapshot.sid}/room`, {
+        method: "POST",
+        body: JSON.stringify({ columns, rows, autoPlaceOutOfBounds }),
+      });
+      setSnapshot(payload);
+      setNotice(`Battle map set to ${payload.room.columns}x${payload.room.rows}`);
+      setPendingRoomResize(null);
+      setModal(null);
+      setMoveMode(false);
+      return payload;
+    } catch (requestError) {
+      if (!autoPlaceOutOfBounds && requestError.message.includes("Resize would move")) {
+        setPendingRoomResize({ columns, rows, message: requestError.message });
+        setModal("room-warning");
+        setNotice("");
+        setError("");
+      } else {
+        setError(requestError.message);
+      }
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRoomSubmit(event) {
+    event.preventDefault();
+    const columns = normalizeRoomFormValue(roomForm.columns, room.columns);
+    const rows = normalizeRoomFormValue(roomForm.rows, room.rows);
+    await submitRoomResize(columns, rows, false);
   }
 
   async function handleDeleteEntity(instanceId) {
@@ -541,79 +647,20 @@ function App() {
       <main className="main-grid">
         <section className="stage-column">
           <section className="battle-stage">
-            {!selectedEntity ? (
-              <div className="empty-stage">
-                <div className="empty-stage-title">No combatants in the chamber</div>
-                <div className="empty-stage-copy">Use the initiative rail to add an enemy or player card.</div>
-              </div>
-            ) : (
-              <div className="stage-layout">
-                <div
-                  className={`hero-card ${getStateClassNames("hero-card", selectedEntityState)}`}
-                  data-state={selectedEntityState?.toneClass || "state-idle"}
-                >
-                  <div className="hero-art-shell">
-                    <div className="hero-aura" />
-                    <img className="hero-art" src={selectedEntity.image_url} alt={selectedEntity.name} />
-                    {selectedEntity.is_down ? <div className="hero-overlay">Down</div> : null}
-                  </div>
-
-                  <div className="hero-copy">
-                    <div className="hero-eyebrow">{selectedEntity.is_player ? "player" : selectedEntity.template_id}</div>
-                    <div className="hero-status-row">
-                      <StateBadge label={selectedEntityState?.label} toneClass={selectedEntityState?.toneClass} />
-                      {selectedEntity.is_player ? <span className="badge">Player</span> : <span className="badge badge-enemy">Enemy</span>}
-                      {selectedEntity.is_down ? <span className="badge badge-down">Down</span> : null}
-                    </div>
-                    <div className="hero-name-row">
-                      <h1>{selectedEntity.name}</h1>
-                    </div>
-                    {activeDetachedEntity ? <div className="subtle-copy">{`Turn: ${activeDetachedEntity.name}`}</div> : null}
-
-                    <div className="stat-grid">
-                      <MetricCard
-                        label="HP"
-                        value={selectedEntity.is_player ? "Player card" : `${selectedEntity.hp_current}/${selectedEntity.hp_max}`}
-                      />
-                      <MetricCard
-                        label="Armor"
-                        value={selectedEntity.is_player ? "-" : `${selectedEntity.armor_current}/${selectedEntity.armor_max}`}
-                      />
-                      <MetricCard
-                        label="Magic"
-                        value={selectedEntity.is_player ? "-" : `${selectedEntity.magic_armor_current}/${selectedEntity.magic_armor_max}`}
-                      />
-                      <MetricCard label="Guard" value={selectedEntity.is_player ? "-" : `${selectedEntity.guard_current}`} />
-                      <MetricCard label="Draws" value={selectedEntity.is_player ? "-" : `${selectedEntity.draws_base}`} />
-                      <MetricCard
-                        label="Move"
-                        value={selectedEntity.is_player ? "-" : `${selectedEntity.effective_movement}`}
-                      />
-                    </div>
-
-                    {!selectedEntity.is_player ? (
-                      <>
-                        <ProgressBar
-                          label="Health"
-                          value={percent(selectedEntity.hp_current, selectedEntity.hp_max)}
-                        />
-                        <div className="status-row">
-                          {Object.keys(selectedEntity.statuses || {}).length > 0 ? (
-                            Object.keys(selectedEntity.statuses).map((statusKey) => (
-                              <span className="status-pill" key={statusKey}>
-                                {titleCaseFromSnake(statusKey)}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="subtle-copy">No active statuses</span>
-                          )}
-                        </div>
-                      </>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            )}
+            <BattleRoom
+              room={room}
+              roomForm={roomForm}
+              setRoomForm={setRoomForm}
+              entities={orderedEnemies}
+              selectedEntity={selectedEntity}
+              selectedId={snapshot.selectedId}
+              activeTurnId={snapshot.activeTurnId}
+              moveMode={moveMode}
+              busy={busy}
+              onRoomSubmit={handleRoomSubmit}
+              onSelect={handleSelect}
+              onMoveToCell={handleMoveSelectedToCell}
+            />
           </section>
 
           <section className="action-bar">
@@ -625,6 +672,13 @@ function App() {
             </div>
 
             <div className="action-buttons">
+              <button
+                className={`secondary-button ${moveMode ? "move-button-active" : ""}`.trim()}
+                onClick={() => setMoveMode((current) => !current)}
+                disabled={!selectedEntity || busy}
+              >
+                {moveMode ? "Cancel Move" : "Move"}
+              </button>
               <button className="primary-button" onClick={handleDraw} disabled={!canDraw || busy}>
                 Draw
               </button>
@@ -686,10 +740,24 @@ function App() {
                       <ChevronLeftIcon />
                     </button>
 
-                    <button
+                    <div
                       className={`roster-card ${getStateClassNames("roster", entityState)}`}
                       data-state={entityState.toneClass || "state-idle"}
-                      onClick={() => handleSelect(entity.instance_id)}
+                      role="button"
+                      tabIndex={busy ? -1 : 0}
+                      aria-disabled={busy}
+                      onClick={() => {
+                        if (!busy) {
+                          handleSelect(entity.instance_id);
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (busy || (event.key !== "Enter" && event.key !== " ")) {
+                          return;
+                        }
+                        event.preventDefault();
+                        handleSelect(entity.instance_id);
+                      }}
                     >
                       <div className="roster-portrait">
                         <img src={entity.image_url} alt={entity.name} />
@@ -732,7 +800,7 @@ function App() {
                           <TrashIcon />
                         </button>
                       </div>
-                    </button>
+                    </div>
 
                     <button
                       type="button"
@@ -1324,6 +1392,216 @@ function App() {
           )}
         </div>
       </ModalShell>
+
+      <ModalShell
+        open={modal === "room-warning" && Boolean(pendingRoomResize)}
+        title="Resize battle map"
+        subtitle="Some units are outside the new dimensions."
+        onClose={closeModal}
+      >
+        <div className="panel-body modal-form">
+          <div className="subtle-copy">{pendingRoomResize?.message}</div>
+          <div className="modal-actions">
+            <button
+              className="primary-button"
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                pendingRoomResize
+                  ? submitRoomResize(pendingRoomResize.columns, pendingRoomResize.rows, true)
+                  : null
+              }
+            >
+              Auto-place and resize
+            </button>
+            <button className="secondary-button" type="button" onClick={closeModal}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+    </div>
+  );
+}
+
+function BattleRoom({
+  room,
+  roomForm,
+  setRoomForm,
+  entities,
+  selectedEntity,
+  selectedId,
+  activeTurnId,
+  moveMode,
+  busy,
+  onRoomSubmit,
+  onSelect,
+  onMoveToCell,
+}) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const placedEntities = entities.filter((entity) => hasGridPosition(entity, room));
+  const unplacedEntities = entities.filter((entity) => !hasGridPosition(entity, room));
+  const occupantByPosition = new Map(
+    placedEntities.map((entity) => [positionKey(entity.grid_x, entity.grid_y), entity]),
+  );
+  const cells = Array.from({ length: room.rows }, (_, y) =>
+    Array.from({ length: room.columns }, (_, x) => ({ x, y, entity: occupantByPosition.get(positionKey(x, y)) })),
+  ).flat();
+
+  function handleCellClick(x, y, entity) {
+    if (entity) {
+      onSelect(entity.instance_id);
+      return;
+    }
+    if (moveMode && selectedEntity && !busy) {
+      onMoveToCell(x, y);
+    }
+  }
+
+  async function handleSettingsSubmit(event) {
+    await onRoomSubmit(event);
+    setSettingsOpen(false);
+  }
+
+  return (
+    <div className="battle-map">
+      <div className="map-settings">
+        <button
+          className="map-settings-trigger"
+          type="button"
+          aria-expanded={settingsOpen}
+          aria-label="Map size settings"
+          onClick={() => setSettingsOpen((current) => !current)}
+        >
+          {room.columns} x {room.rows}
+        </button>
+
+        {settingsOpen ? (
+          <form className="map-settings-panel" onSubmit={handleSettingsSubmit}>
+            <label className="map-size-field">
+              <span>Rows</span>
+              <input
+                aria-label="Map rows"
+                type="number"
+                min={ROOM_LIMITS.minRows}
+                max={ROOM_LIMITS.maxRows}
+                value={roomForm.rows}
+                onChange={(event) => setRoomForm((current) => ({ ...current, rows: Number(event.target.value) }))}
+              />
+            </label>
+            <label className="map-size-field">
+              <span>Cols</span>
+              <input
+                aria-label="Map columns"
+                type="number"
+                min={ROOM_LIMITS.minColumns}
+                max={ROOM_LIMITS.maxColumns}
+                value={roomForm.columns}
+                onChange={(event) =>
+                  setRoomForm((current) => ({ ...current, columns: Number(event.target.value) }))
+                }
+              />
+            </label>
+            <button className="small-button map-settings-apply" type="submit" disabled={busy}>
+              Apply
+            </button>
+          </form>
+        ) : null}
+      </div>
+
+      <div className="battle-map-scroll">
+        <div
+          className="battle-map-grid"
+          role="grid"
+          aria-label="Battle room grid"
+          style={{ gridTemplateColumns: `repeat(${room.columns}, minmax(38px, 50px))` }}
+        >
+          {cells.map(({ x, y, entity }) => {
+            const entityState = entity ? getEntityState(entity, selectedId, activeTurnId) : null;
+            const canMoveTarget = moveMode && selectedEntity && !entity && !busy;
+            const isEven = (x + y) % 2 === 0;
+            return (
+              <button
+                key={positionKey(x, y)}
+                type="button"
+                className={[
+                  "map-cell",
+                  isEven ? "map-cell-even" : "map-cell-odd",
+                  entity ? "map-cell-occupied" : "",
+                  canMoveTarget ? "map-cell-move-target" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                aria-label={entity ? `Cell ${x + 1}, ${y + 1}: ${entity.name}` : `Cell ${x + 1}, ${y + 1}`}
+                aria-disabled={!entity && !canMoveTarget}
+                onClick={() => handleCellClick(x, y, entity)}
+              >
+                {entity ? (
+                  <MapToken entity={entity} entityState={entityState} />
+                ) : (
+                  <span className="map-cell-coordinates" aria-hidden="true">
+                    {x + 1},{y + 1}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {unplacedEntities.length ? (
+        <div className="unplaced-strip">
+          <span className="unplaced-label">Unplaced</span>
+          <div className="unplaced-list">
+            {unplacedEntities.map((entity) => {
+              const entityState = getEntityState(entity, selectedId, activeTurnId);
+              return (
+                <button
+                  key={entity.instance_id}
+                  type="button"
+                  className={`unplaced-unit ${getStateClassNames("unplaced", entityState)}`}
+                  data-state={entityState.toneClass || "state-idle"}
+                  onClick={() => onSelect(entity.instance_id)}
+                >
+                  <span className="unplaced-initial">{getEntityInitial(entity)}</span>
+                  <span>{entity.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MapToken({ entity, entityState }) {
+  const hpValue = entity.is_player ? 100 : percent(entity.hp_current, entity.hp_max);
+  const statusKeys = Object.keys(entity.statuses || {});
+
+  return (
+    <div
+      className={`map-token ${getStateClassNames("map-token", entityState)} ${entity.is_down ? "map-token-down" : ""}`.trim()}
+      data-state={entityState?.toneClass || "state-idle"}
+    >
+      <span className="map-token-initial" aria-hidden="true">
+        {getEntityInitial(entity)}
+      </span>
+      {entity.image_url ? <img className="map-token-image" src={entity.image_url} alt="" aria-hidden="true" /> : null}
+      <span className={`map-token-type ${entity.is_player ? "map-token-player" : "map-token-enemy"}`} aria-hidden="true" />
+      {entity.is_down ? <span className="map-token-down-label">Down</span> : null}
+      {!entity.is_player ? (
+        <span className="map-token-health" aria-hidden="true">
+          <span style={{ width: `${hpValue}%`, background: barTone(hpValue) }} />
+        </span>
+      ) : null}
+      {statusKeys.length ? (
+        <span className="map-token-statuses" aria-hidden="true">
+          {statusKeys.slice(0, 3).map((statusKey) => (
+            <span key={statusKey}>{statusKey.charAt(0).toUpperCase()}</span>
+          ))}
+        </span>
+      ) : null}
     </div>
   );
 }

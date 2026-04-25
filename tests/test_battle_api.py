@@ -44,6 +44,24 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(get_response.status_code, 200)
         self.assertEqual(get_response.json()["sid"], sid)
         self.assertEqual(get_response.json()["round"], 1)
+        self.assertEqual(get_response.json()["room"], {"columns": 10, "rows": 7})
+
+    def test_room_endpoint_accepts_large_maps_with_guardrail(self) -> None:
+        snapshot = self.client.post("/api/battle/sessions").json()
+        sid = snapshot["sid"]
+
+        large_response = self.client.post(
+            f"/api/battle/sessions/{sid}/room",
+            json={"columns": 99, "rows": 99},
+        )
+        self.assertEqual(large_response.status_code, 200)
+        self.assertEqual(large_response.json()["room"], {"columns": 99, "rows": 99})
+
+        too_large_response = self.client.post(
+            f"/api/battle/sessions/{sid}/room",
+            json={"columns": 100, "rows": 99},
+        )
+        self.assertEqual(too_large_response.status_code, 422)
 
     def test_enemy_flow_and_manual_save_endpoints(self) -> None:
         snapshot = self.client.post("/api/battle/sessions").json()
@@ -171,6 +189,43 @@ class BattleApiTests(unittest.TestCase):
         )
         self.assertEqual(custom_response.status_code, 200)
         self.assertTrue(any(enemy["name"] == "Shade" for enemy in custom_response.json()["enemies"]))
+
+    def test_room_and_position_endpoints_validate_map_state(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        first = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        first_id = first["selectedId"]
+        second = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        second_id = second["selectedId"]
+
+        move_response = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{first_id}/position",
+            json={"x": 0, "y": 0},
+        )
+        self.assertEqual(move_response.status_code, 200)
+        moved = next(enemy for enemy in move_response.json()["enemies"] if enemy["instance_id"] == first_id)
+        self.assertEqual((moved["grid_x"], moved["grid_y"]), (0, 0))
+        self.assertEqual(move_response.json()["selectedId"], first_id)
+
+        occupied_response = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{second_id}/position",
+            json={"x": 0, "y": 0},
+        )
+        self.assertEqual(occupied_response.status_code, 400)
+        self.assertIn("occupied", occupied_response.json()["detail"])
+
+        resize_warning = self.client.post(
+            f"/api/battle/sessions/{sid}/room",
+            json={"columns": 3, "rows": 3},
+        )
+        self.assertEqual(resize_warning.status_code, 400)
+        self.assertIn("Resize would move", resize_warning.json()["detail"])
+
+        resize_confirm = self.client.post(
+            f"/api/battle/sessions/{sid}/room",
+            json={"columns": 3, "rows": 3, "autoPlaceOutOfBounds": True},
+        )
+        self.assertEqual(resize_confirm.status_code, 200)
+        self.assertEqual(resize_confirm.json()["room"], {"columns": 3, "rows": 3})
 
 
 if __name__ == "__main__":

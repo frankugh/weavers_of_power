@@ -23,6 +23,12 @@ from persistence import (
 )
 
 LOG_LIMIT = 30
+ROOM_DEFAULT_COLUMNS = 10
+ROOM_DEFAULT_ROWS = 7
+ROOM_MIN_COLUMNS = 3
+ROOM_MIN_ROWS = 3
+ROOM_MAX_COLUMNS = 99
+ROOM_MAX_ROWS = 99
 
 
 class BattleSessionError(ValueError):
@@ -189,6 +195,8 @@ class BattleSession:
     selected_id: Optional[str] = None
     active_turn_id: Optional[str] = None
     turn_in_progress: bool = False
+    room_columns: int = ROOM_DEFAULT_COLUMNS
+    room_rows: int = ROOM_DEFAULT_ROWS
     round: int = 1
     combat_log: list[str] = field(default_factory=list)
     _rng: random.Random = field(default_factory=random.Random, repr=False)
@@ -199,18 +207,28 @@ class BattleSession:
         self.selected_id = None
         self.active_turn_id = None
         self.turn_in_progress = False
+        self.room_columns = ROOM_DEFAULT_COLUMNS
+        self.room_rows = ROOM_DEFAULT_ROWS
         self.round = 1
         self.combat_log = []
+        position_payload_present = any(
+            "grid_x" in enemy_raw or "grid_y" in enemy_raw for enemy_raw in payload.get("enemies", []) or []
+        )
 
         (
             loaded_order,
             loaded_selected,
             loaded_active,
             loaded_tip,
+            loaded_room,
             enemies,
             loaded_round,
             loaded_log,
         ) = restore_state_from_payload(payload)
+        self.room_columns, self.room_rows = self._normalized_room_size(
+            loaded_room.get("columns", ROOM_DEFAULT_COLUMNS),
+            loaded_room.get("rows", ROOM_DEFAULT_ROWS),
+        )
 
         for enemy in enemies:
             self.state.add_enemy(enemy)
@@ -229,6 +247,10 @@ class BattleSession:
 
         self.round = max(1, int(loaded_round or 1))
         self.combat_log = list(loaded_log or [])[:LOG_LIMIT]
+        if position_payload_present:
+            self._clear_out_of_bounds_positions()
+        else:
+            self._auto_place_unplaced_entities()
         self._ensure_selected()
 
     def _build_payload(self) -> dict:
@@ -239,6 +261,7 @@ class BattleSession:
             selected_id=self.selected_id,
             active_turn_id=self.active_turn_id,
             turn_in_progress=self.turn_in_progress,
+            room={"columns": self.room_columns, "rows": self.room_rows},
             round=self.round,
             combat_log=self.combat_log,
             enemies=list(self.state.enemies.values()),
@@ -255,6 +278,7 @@ class BattleSession:
             "selectedId": self.selected_id,
             "activeTurnId": self.active_turn_id,
             "turnInProgress": self.turn_in_progress,
+            "room": {"columns": self.room_columns, "rows": self.room_rows},
             "order": list(self.order),
             "enemies": [self._serialize_enemy(instance_id) for instance_id in self._ordered_enemy_ids()],
             "combatLog": list(self.combat_log),
@@ -287,6 +311,7 @@ class BattleSession:
         instance = spawn_enemy(template, self.context.decks, rnd=self._rng)
         instance.name = f"{template.name} {self._next_suffix(template.name)}"
         self.state.add_enemy(instance)
+        self._auto_place_entity(instance)
         self.order.append(instance.instance_id)
         self.selected_id = instance.instance_id
         self._add_log(f"Added enemy: {instance.name}")
@@ -316,6 +341,7 @@ class BattleSession:
             rnd=self._rng,
         )
         self.state.add_enemy(instance)
+        self._auto_place_entity(instance)
         self.order.append(instance.instance_id)
         self.selected_id = instance.instance_id
         self._add_log(f"Added custom enemy: {instance.name}")
@@ -324,6 +350,7 @@ class BattleSession:
     def add_player(self) -> None:
         instance = spawn_player(f"Player {self._next_suffix('Player')}")
         self.state.add_enemy(instance)
+        self._auto_place_entity(instance)
         self.order.append(instance.instance_id)
         self.selected_id = instance.instance_id
         self._add_log(f"Added player: {instance.name}")
@@ -357,6 +384,46 @@ class BattleSession:
         self.order[index], self.order[new_index] = self.order[new_index], self.order[index]
         entity = self.state.enemies[instance_id]
         self._add_log(f"Moved {entity.name} {'up' if direction < 0 else 'down'} in round order")
+        self.autosave()
+
+    def set_room_size(self, columns: int, rows: int, *, auto_place_out_of_bounds: bool = False) -> None:
+        next_columns, next_rows = self._normalized_room_size(columns, rows)
+        out_of_bounds = [
+            entity
+            for entity in self.state.enemies.values()
+            if self._has_position(entity)
+            and not self._position_in_bounds_for_room(entity.grid_x, entity.grid_y, next_columns, next_rows)
+        ]
+        if out_of_bounds and not auto_place_out_of_bounds:
+            names = ", ".join(entity.name for entity in out_of_bounds[:4])
+            suffix = f" and {len(out_of_bounds) - 4} more" if len(out_of_bounds) > 4 else ""
+            raise BattleSessionError(f"Resize would move {len(out_of_bounds)} unit(s): {names}{suffix}")
+
+        self.room_columns = next_columns
+        self.room_rows = next_rows
+        if out_of_bounds:
+            for entity in out_of_bounds:
+                self._set_position(entity, None, None)
+            self._auto_place_unplaced_entities([entity.instance_id for entity in out_of_bounds])
+
+        self._add_log(f"Battle map resized to {self.room_columns}x{self.room_rows}")
+        self.autosave()
+
+    def set_entity_position(self, instance_id: str, x: int, y: int) -> None:
+        entity = self.state.enemies.get(instance_id)
+        if not entity:
+            raise BattleSessionError(f"Entity '{instance_id}' does not exist")
+        x = int(x)
+        y = int(y)
+        if not self._position_in_bounds(x, y):
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is outside the battle map")
+        occupying = self._entity_at_position(x, y, exclude_id=instance_id)
+        if occupying:
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is occupied by {occupying.name}")
+
+        self._set_position(entity, x, y)
+        self.selected_id = instance_id
+        self._add_log(f"Moved {entity.name} to ({x + 1}, {y + 1})")
         self.autosave()
 
     def draw_turn(self) -> None:
@@ -610,6 +677,106 @@ class BattleSession:
 
     def visible_draw_for(self, entity: EnemyInstance) -> list[str]:
         return list(getattr(entity, "visible_draw", []))
+
+    @staticmethod
+    def _normalized_room_size(columns: int, rows: int) -> tuple[int, int]:
+        columns = int(columns)
+        rows = int(rows)
+        if columns < ROOM_MIN_COLUMNS or columns > ROOM_MAX_COLUMNS:
+            raise BattleSessionError(
+                f"columns must be between {ROOM_MIN_COLUMNS} and {ROOM_MAX_COLUMNS}"
+            )
+        if rows < ROOM_MIN_ROWS or rows > ROOM_MAX_ROWS:
+            raise BattleSessionError(f"rows must be between {ROOM_MIN_ROWS} and {ROOM_MAX_ROWS}")
+        return columns, rows
+
+    @staticmethod
+    def _has_position(entity: EnemyInstance) -> bool:
+        return getattr(entity, "grid_x", None) is not None and getattr(entity, "grid_y", None) is not None
+
+    @staticmethod
+    def _set_position(entity: EnemyInstance, x: Optional[int], y: Optional[int]) -> None:
+        entity.grid_x = int(x) if x is not None else None
+        entity.grid_y = int(y) if y is not None else None
+
+    def _position_in_bounds(self, x: Optional[int], y: Optional[int]) -> bool:
+        return self._position_in_bounds_for_room(x, y, self.room_columns, self.room_rows)
+
+    @staticmethod
+    def _position_in_bounds_for_room(
+        x: Optional[int],
+        y: Optional[int],
+        columns: int,
+        rows: int,
+    ) -> bool:
+        if x is None or y is None:
+            return False
+        return 0 <= int(x) < columns and 0 <= int(y) < rows
+
+    def _clear_out_of_bounds_positions(self) -> None:
+        for entity in self.state.enemies.values():
+            if self._has_position(entity) and not self._position_in_bounds(entity.grid_x, entity.grid_y):
+                self._set_position(entity, None, None)
+
+    def _entity_at_position(
+        self,
+        x: int,
+        y: int,
+        *,
+        exclude_id: Optional[str] = None,
+    ) -> Optional[EnemyInstance]:
+        for entity in self.state.enemies.values():
+            if entity.instance_id == exclude_id:
+                continue
+            if self._has_position(entity) and int(entity.grid_x) == x and int(entity.grid_y) == y:
+                return entity
+        return None
+
+    def _occupied_positions(self, *, exclude_id: Optional[str] = None) -> set[tuple[int, int]]:
+        positions: set[tuple[int, int]] = set()
+        for entity in self.state.enemies.values():
+            if entity.instance_id == exclude_id:
+                continue
+            if self._has_position(entity) and self._position_in_bounds(entity.grid_x, entity.grid_y):
+                positions.add((int(entity.grid_x), int(entity.grid_y)))
+        return positions
+
+    def _candidate_positions(self) -> list[tuple[int, int]]:
+        center_x = (self.room_columns - 1) / 2
+        center_y = (self.room_rows - 1) / 2
+        positions = [
+            (x, y)
+            for y in range(self.room_rows)
+            for x in range(self.room_columns)
+        ]
+        return sorted(
+            positions,
+            key=lambda pos: (abs(pos[0] - center_x) + abs(pos[1] - center_y), pos[1], pos[0]),
+        )
+
+    def _first_free_position(self, *, exclude_id: Optional[str] = None) -> Optional[tuple[int, int]]:
+        occupied = self._occupied_positions(exclude_id=exclude_id)
+        for position in self._candidate_positions():
+            if position not in occupied:
+                return position
+        return None
+
+    def _auto_place_entity(self, entity: EnemyInstance) -> bool:
+        if self._has_position(entity) and self._position_in_bounds(entity.grid_x, entity.grid_y):
+            return True
+        position = self._first_free_position(exclude_id=entity.instance_id)
+        if position is None:
+            self._set_position(entity, None, None)
+            return False
+        self._set_position(entity, position[0], position[1])
+        return True
+
+    def _auto_place_unplaced_entities(self, instance_ids: Optional[list[str]] = None) -> None:
+        ids = instance_ids if instance_ids is not None else self._ordered_enemy_ids()
+        for instance_id in ids:
+            entity = self.state.enemies.get(instance_id)
+            if entity and not (self._has_position(entity) and self._position_in_bounds(entity.grid_x, entity.grid_y)):
+                self._auto_place_entity(entity)
 
     def _ordered_enemy_ids(self) -> list[str]:
         ordered = [instance_id for instance_id in self.order if instance_id in self.state.enemies]

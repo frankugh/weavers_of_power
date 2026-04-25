@@ -26,6 +26,76 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(snapshot["round"], 1)
         self.assertEqual(snapshot["combatLog"], [])
         self.assertEqual(snapshot["order"], [])
+        self.assertEqual(snapshot["room"], {"columns": 10, "rows": 7})
+
+    def test_room_size_allows_large_maps_with_guardrail(self) -> None:
+        session = self.context.create_session("large-map")
+
+        session.set_room_size(99, 99)
+
+        self.assertEqual(session.snapshot()["room"], {"columns": 99, "rows": 99})
+        with self.assertRaisesRegex(ValueError, "between 3 and 99"):
+            session.set_room_size(100, 99)
+
+    def test_added_units_are_auto_placed_on_the_battle_map(self) -> None:
+        session = self.context.create_session("map-placement")
+
+        session.add_enemy_from_template("goblin")
+        session.add_player()
+        snapshot = session.snapshot()
+
+        first, second = snapshot["enemies"]
+        self.assertEqual((first["grid_x"], first["grid_y"]), (4, 3))
+        self.assertEqual((second["grid_x"], second["grid_y"]), (5, 3))
+
+    def test_set_entity_position_requires_free_in_bounds_cell(self) -> None:
+        session = self.context.create_session("map-position")
+        session.add_enemy_from_template("goblin")
+        first_id = session.selected_id
+        session.add_enemy_from_template("bandit")
+        second_id = session.selected_id
+
+        session.set_entity_position(first_id, 0, 0)
+        moved = session.state.enemies[first_id]
+        self.assertEqual((moved.grid_x, moved.grid_y), (0, 0))
+        self.assertEqual(session.selected_id, first_id)
+
+        with self.assertRaisesRegex(ValueError, "occupied"):
+            session.set_entity_position(second_id, 0, 0)
+        with self.assertRaisesRegex(ValueError, "outside"):
+            session.set_entity_position(second_id, 99, 0)
+
+    def test_resize_warns_then_auto_places_out_of_bounds_units(self) -> None:
+        session = self.context.create_session("map-resize")
+        session.add_enemy_from_template("goblin")
+        first_id = session.selected_id
+        session.set_entity_position(first_id, 9, 6)
+
+        with self.assertRaisesRegex(ValueError, "Resize would move"):
+            session.set_room_size(3, 3)
+
+        session.set_room_size(3, 3, auto_place_out_of_bounds=True)
+        moved = session.state.enemies[first_id]
+
+        self.assertEqual(session.snapshot()["room"], {"columns": 3, "rows": 3})
+        self.assertIsNotNone(moved.grid_x)
+        self.assertIsNotNone(moved.grid_y)
+        self.assertLess(moved.grid_x, 3)
+        self.assertLess(moved.grid_y, 3)
+
+    def test_auto_place_leaves_units_unplaced_when_room_is_full(self) -> None:
+        session = self.context.create_session("map-full")
+        session.set_room_size(3, 3)
+
+        for _ in range(10):
+            session.add_player()
+
+        snapshot = session.snapshot()
+        placed = [entity for entity in snapshot["enemies"] if entity["grid_x"] is not None]
+        unplaced = [entity for entity in snapshot["enemies"] if entity["grid_x"] is None]
+
+        self.assertEqual(len(placed), 9)
+        self.assertEqual(len(unplaced), 1)
 
     def test_draw_and_end_turn_persist_state(self) -> None:
         session = self.context.create_session("draw-turn")
@@ -167,6 +237,7 @@ class BattleSessionTests(unittest.TestCase):
 
         self.assertEqual(session.round, 1)
         self.assertEqual(session.combat_log, [])
+        self.assertEqual(session.snapshot()["room"], {"columns": 10, "rows": 7})
 
 
 if __name__ == "__main__":

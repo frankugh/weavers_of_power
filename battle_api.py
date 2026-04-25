@@ -5,7 +5,14 @@ from typing import Literal, Optional
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from battle_session import BattleSessionContext, BattleSessionError
+from battle_session import (
+    ROOM_MAX_COLUMNS,
+    ROOM_MAX_ROWS,
+    ROOM_MIN_COLUMNS,
+    ROOM_MIN_ROWS,
+    BattleSessionContext,
+    BattleSessionError,
+)
 from engine.combat import AttackMod
 
 
@@ -16,6 +23,17 @@ class SelectRequest(BaseModel):
 class OrderRequest(BaseModel):
     instanceId: str
     direction: Literal[-1, 1]
+
+
+class RoomRequest(BaseModel):
+    columns: int = Field(ge=ROOM_MIN_COLUMNS, le=ROOM_MAX_COLUMNS)
+    rows: int = Field(ge=ROOM_MIN_ROWS, le=ROOM_MAX_ROWS)
+    autoPlaceOutOfBounds: bool = False
+
+
+class PositionRequest(BaseModel):
+    x: int = Field(ge=0)
+    y: int = Field(ge=0)
 
 
 class CustomEnemyRequest(BaseModel):
@@ -94,6 +112,17 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def move_entity(sid: str, request: OrderRequest):
         return run_mutation(sid, lambda session: session.move_in_order(request.instanceId, request.direction))
 
+    @api_app.post("/api/battle/sessions/{sid}/room")
+    def resize_room(sid: str, request: RoomRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.set_room_size(
+                request.columns,
+                request.rows,
+                auto_place_out_of_bounds=request.autoPlaceOutOfBounds,
+            ),
+        )
+
     @api_app.post("/api/battle/sessions/{sid}/enemies")
     def add_enemy(sid: str, request: AddEnemyRequest):
         def mutate(session):
@@ -122,6 +151,10 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.delete("/api/battle/sessions/{sid}/entities/{instance_id}")
     def delete_entity(sid: str, instance_id: str):
         return run_mutation(sid, lambda session: session.delete_entity(instance_id))
+
+    @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/position")
+    def move_entity_position(sid: str, instance_id: str, request: PositionRequest):
+        return run_mutation(sid, lambda session: session.set_entity_position(instance_id, request.x, request.y))
 
     @api_app.post("/api/battle/sessions/{sid}/turn/draw")
     def draw_turn(sid: str):

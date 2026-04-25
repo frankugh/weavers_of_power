@@ -35,6 +35,8 @@ function buildEnemy(overrides = {}) {
     last_draw_text: [],
     loot_rolled: false,
     rolled_loot: {},
+    grid_x: 4,
+    grid_y: 3,
     ...overrides,
   };
 }
@@ -50,6 +52,7 @@ function buildSnapshot(overrides = {}) {
     turnInProgress: false,
     order: ["enemy-1"],
     enemies: [baseEnemy],
+    room: { columns: 10, rows: 7 },
     combatLog: ["Goblin 1 is up next"],
     ...overrides,
   };
@@ -83,6 +86,14 @@ function renderWithSnapshot(snapshot, options = {}) {
   });
 
   return render(<App />);
+}
+
+function findMapToken(name) {
+  return screen.findByRole("button", { name: new RegExp(`Cell .*: ${name}`) });
+}
+
+async function openAddUnitModal(user) {
+  await user.click(screen.getAllByRole("button", { name: "Add unit" })[0]);
 }
 
 describe("App", () => {
@@ -126,6 +137,8 @@ describe("App", () => {
       armor_current: 2,
       armor_max: 2,
       effective_movement: 5,
+      grid_x: 5,
+      grid_y: 3,
     });
 
     renderWithSnapshot(
@@ -135,17 +148,17 @@ describe("App", () => {
       }),
     );
 
-    await screen.findByRole("heading", { name: "Goblin 1" });
+    await findMapToken("Goblin 1");
 
-    expect(screen.getByRole("button", { name: "Add unit" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Add unit" }).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: /sort/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Move Goblin 1 up" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Move Goblin 1 down" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Delete Goblin 1" })).toBeEnabled();
+    expect(screen.getAllByRole("button", { name: "Delete Goblin 1" }).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Move Bandit 1 up" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Move Bandit 1 down" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Delete Bandit 1" })).toBeEnabled();
-    expect(screen.getAllByAltText("Goblin 1")).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Delete Bandit 1" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByAltText("Goblin 1")).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: /Goblin 1/i }).length).toBeGreaterThan(0);
   });
 
@@ -161,6 +174,8 @@ describe("App", () => {
       armor_current: 2,
       armor_max: 2,
       effective_movement: 5,
+      grid_x: 5,
+      grid_y: 3,
     });
     const { container } = renderWithSnapshot(
       buildSnapshot({
@@ -172,7 +187,7 @@ describe("App", () => {
       }),
     );
 
-    await screen.findByRole("heading", { name: "Goblin 1" });
+    await findMapToken("Goblin 1");
 
     expect(screen.getByText("Selected: Goblin 1")).toBeInTheDocument();
     expect(screen.getByText("Active Turn: Bandit 1")).toBeInTheDocument();
@@ -186,8 +201,8 @@ describe("App", () => {
     const user = userEvent.setup();
     renderWithSnapshot(buildSnapshot());
 
-    await screen.findByRole("heading", { name: "Goblin 1" });
-    await user.click(screen.getByRole("button", { name: "Add unit" }));
+    await findMapToken("Goblin 1");
+    await openAddUnitModal(user);
 
     expect(screen.getByText("Add Unit")).toBeInTheDocument();
     expect(screen.getByAltText("Goblin")).toBeInTheDocument();
@@ -210,6 +225,8 @@ describe("App", () => {
           name: "Goblin 2",
           hp_current: 9,
           hp_max: 9,
+          grid_x: 5,
+          grid_y: 3,
         }),
       ],
       combatLog: ["Added enemy: Goblin 2"],
@@ -224,8 +241,8 @@ describe("App", () => {
       },
     });
 
-    await screen.findByRole("heading", { name: "Goblin 1" });
-    await user.click(screen.getByRole("button", { name: "Add unit" }));
+    await findMapToken("Goblin 1");
+    await openAddUnitModal(user);
     const goblinCard = screen.getByAltText("Goblin").closest("button");
     if (!goblinCard) {
       throw new Error("Missing premade goblin card");
@@ -241,7 +258,7 @@ describe("App", () => {
         }),
       );
     });
-    expect(await screen.findByRole("heading", { name: "Goblin 2" })).toBeInTheDocument();
+    expect(await findMapToken("Goblin 2")).toBeInTheDocument();
   });
 
   it("uses the player endpoint from the same add-unit modal", async () => {
@@ -266,6 +283,8 @@ describe("App", () => {
           guard_current: 0,
           draws_base: 0,
           effective_movement: 0,
+          grid_x: 5,
+          grid_y: 3,
         }),
       ],
       combatLog: ["Added player: Player 1"],
@@ -280,8 +299,8 @@ describe("App", () => {
       },
     });
 
-    await screen.findByRole("heading", { name: "Goblin 1" });
-    await user.click(screen.getByRole("button", { name: "Add unit" }));
+    await findMapToken("Goblin 1");
+    await openAddUnitModal(user);
     await user.click(screen.getByRole("button", { name: "Add player card" }));
 
     await waitFor(() => {
@@ -290,7 +309,7 @@ describe("App", () => {
         expect.objectContaining({ method: "POST" }),
       );
     });
-    expect(await screen.findByRole("heading", { name: "Player 1" })).toBeInTheDocument();
+    expect(await findMapToken("Player 1")).toBeInTheDocument();
   });
 
   it("submits a custom enemy through the existing custom request shape", async () => {
@@ -311,6 +330,8 @@ describe("App", () => {
           armor_max: 1,
           draws_base: 2,
           effective_movement: 4,
+          grid_x: 5,
+          grid_y: 3,
         }),
       ],
       combatLog: ["Added custom enemy: Shade"],
@@ -328,8 +349,8 @@ describe("App", () => {
       },
     });
 
-    await screen.findByRole("heading", { name: "Goblin 1" });
-    await user.click(screen.getByRole("button", { name: "Add unit" }));
+    await findMapToken("Goblin 1");
+    await openAddUnitModal(user);
     await user.click(screen.getByRole("button", { name: "Show" }));
     await user.clear(screen.getByLabelText("Name"));
     await user.type(screen.getByLabelText("Name"), "Shade");
@@ -356,7 +377,7 @@ describe("App", () => {
         }),
       );
     });
-    expect(await screen.findByRole("heading", { name: "Shade" })).toBeInTheDocument();
+    expect(await findMapToken("Shade")).toBeInTheDocument();
   });
 
   it("keeps initiative tool clicks from triggering unit selection", async () => {
@@ -372,6 +393,8 @@ describe("App", () => {
       armor_current: 2,
       armor_max: 2,
       effective_movement: 5,
+      grid_x: 5,
+      grid_y: 3,
     });
     const movedSnapshot = buildSnapshot({
       order: ["enemy-2", "enemy-1"],
@@ -397,7 +420,7 @@ describe("App", () => {
       },
     );
 
-    await screen.findByRole("heading", { name: "Goblin 1" });
+    await findMapToken("Goblin 1");
     await user.click(screen.getByRole("button", { name: "Move Bandit 1 up" }));
 
     await waitFor(() => {
@@ -413,7 +436,86 @@ describe("App", () => {
       "/api/battle/sessions/sid-123/select",
       expect.anything(),
     );
-    expect(screen.getByRole("heading", { name: "Goblin 1" })).toBeInTheDocument();
+    expect(await findMapToken("Goblin 1")).toBeInTheDocument();
+  });
+
+  it("moves the selected unit to a free battle map cell", async () => {
+    const user = userEvent.setup();
+    const movedSnapshot = buildSnapshot({
+      enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
+      combatLog: ["Moved Goblin 1 to (1, 1)"],
+    });
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/position" && requestOptions?.method === "POST") {
+          return jsonResponse(movedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Move" }));
+    await user.click(screen.getByRole("button", { name: "Cell 1, 1" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/enemy-1/position",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ x: 0, y: 0 }),
+        }),
+      );
+    });
+    expect(await screen.findByRole("button", { name: "Cell 1, 1: Goblin 1" })).toBeInTheDocument();
+  });
+
+  it("shows a resize warning and can confirm auto-placement", async () => {
+    const user = userEvent.setup();
+    const resizedSnapshot = buildSnapshot({
+      room: { columns: 3, rows: 3 },
+      enemies: [buildEnemy({ grid_x: 1, grid_y: 1 })],
+      combatLog: ["Battle map resized to 3x3"],
+    });
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/room" && requestOptions?.method === "POST") {
+          const payload = JSON.parse(requestOptions.body);
+          if (!payload.autoPlaceOutOfBounds) {
+            return jsonResponse(
+              { detail: "Resize would move 1 unit(s): Goblin 1" },
+              { ok: false, status: 400, statusText: "Bad Request" },
+            );
+          }
+          return jsonResponse(resizedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Map size settings" }));
+    await user.clear(screen.getByLabelText("Map columns"));
+    await user.type(screen.getByLabelText("Map columns"), "3");
+    await user.clear(screen.getByLabelText("Map rows"));
+    await user.type(screen.getByLabelText("Map rows"), "3");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(await screen.findByText("Resize would move 1 unit(s): Goblin 1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Auto-place and resize" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/room",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ columns: 3, rows: 3, autoPlaceOutOfBounds: true }),
+        }),
+      );
+    });
+    expect(await screen.findByText("3 x 3")).toBeInTheDocument();
   });
 
   it("shows API errors from failed actions", async () => {
@@ -434,7 +536,7 @@ describe("App", () => {
     window.history.pushState({}, "", "/?sid=sid-123");
     render(<App />);
 
-    await screen.findByRole("heading", { name: "Goblin 1" });
+    await findMapToken("Goblin 1");
     await user.click(screen.getByRole("button", { name: "Draw" }));
 
     expect(await screen.findByText("Another enemy has the active turn.")).toBeInTheDocument();

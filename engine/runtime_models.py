@@ -37,3 +37,6 @@ class EnemyInstance:
     deck_state: DeckState = field(default_factory=DeckState)
 
     statuses: dict[str, dict] = field(default_factory=dict)
+
+    grid_x: Optional[int] = None
+    grid_y: Optional[int] = None
