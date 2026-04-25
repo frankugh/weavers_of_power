@@ -263,6 +263,9 @@ function App() {
       selectedEntity.template_id !== "custom" &&
       selectedEntity.template_id !== "player",
   );
+  const selectedStatuses = Object.entries(selectedEntity?.statuses || {});
+  const selectedHasDraw = Boolean(selectedEntity?.current_draw_text?.length);
+  const selectedHasLoot = Boolean(selectedEntity?.loot_rolled);
 
   function closeModal() {
     setModal(null);
@@ -329,6 +332,13 @@ function App() {
   }
 
   async function handleSelect(instanceId) {
+    if (busy) {
+      return;
+    }
+    if (snapshot?.selectedId === instanceId) {
+      setMoveMode((current) => !current);
+      return;
+    }
     const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/select`, {
       method: "POST",
       body: JSON.stringify({ instanceId }),
@@ -763,28 +773,18 @@ function App() {
                         <img src={entity.image_url} alt={entity.name} />
                       </div>
                       <div className="roster-name">{entity.name}</div>
-                      <div className="roster-meta-row">
-                        <div className="roster-meta">{entity.is_player ? "Player" : entity.template_id}</div>
-                        <StateBadge label={entityState.label} toneClass={entityState.toneClass} className="state-badge-compact" />
-                      </div>
+                      <StateBadge label={entityState.label} toneClass={entityState.toneClass} className="state-badge-compact" />
                       {!entity.is_player ? (
-                        <>
-                          <div className="roster-bar">
-                            <span
-                              className="roster-bar-fill"
-                              style={{
-                                width: `${percent(entity.hp_current, entity.hp_max)}%`,
-                                background: barTone(percent(entity.hp_current, entity.hp_max)),
-                              }}
-                            />
-                          </div>
-                          <div className="roster-hp">
-                            {entity.hp_current}/{entity.hp_max}
-                          </div>
-                        </>
-                      ) : (
-                        <div className="roster-hp">Player card</div>
-                      )}
+                        <div className="roster-bar">
+                          <span
+                            className="roster-bar-fill"
+                            style={{
+                              width: `${percent(entity.hp_current, entity.hp_max)}%`,
+                              background: barTone(percent(entity.hp_current, entity.hp_max)),
+                            }}
+                          />
+                        </div>
+                      ) : null}
 
                       <div className="roster-tools">
                         <button
@@ -841,19 +841,11 @@ function App() {
               {selectedEntity ? (
                 <div className="selected-summary">
                   <div className="selected-summary-top">
-                    <div className="selected-summary-copy">
-                      <div className="selected-kicker">{selectedEntity.is_player ? "player card" : selectedEntity.template_id}</div>
-                      <div className="selected-name-row">
-                        <div className="selected-name">{selectedEntity.name}</div>
-                      </div>
-                      <div className="selected-meta-row">
-                        <span className="selected-meta">
-                          {selectedEntity.is_player ? "Player card" : selectedEntity.status_text}
-                        </span>
-                        {activeDetachedEntity ? <span className="selected-meta">{`Turn: ${activeDetachedEntity.name}`}</span> : null}
-                      </div>
+                    <div className="selected-kicker">
+                      {selectedEntity.is_player ? "Player" : titleCaseFromSnake(selectedEntity.template_id)}
                     </div>
-                    <div className="selected-badge-row">
+                    <div className="selected-name-row">
+                      <div className="selected-name">{selectedEntity.name}</div>
                       <StateBadge
                         label={selectedEntityState?.label}
                         toneClass={selectedEntityState?.toneClass}
@@ -862,76 +854,77 @@ function App() {
                       {selectedEntity.is_player ? <span className="badge">Player</span> : <span className="badge badge-enemy">Enemy</span>}
                       {selectedEntity.is_down ? <span className="badge badge-down">Down</span> : null}
                     </div>
+                    <div className="selected-meta-row">
+                      {!selectedEntity.is_player && selectedEntity.status_text && selectedEntity.status_text !== "-" ? (
+                        <span className="selected-meta">{selectedEntity.status_text}</span>
+                      ) : null}
+                      {activeDetachedEntity ? <span className="selected-meta">{`Turn: ${activeDetachedEntity.name}`}</span> : null}
+                    </div>
                   </div>
 
-                  <div className="selected-stat-grid">
-                    <SelectedStat
-                      label="HP"
-                      value={selectedEntity.is_player ? "Player" : `${selectedEntity.hp_current}/${selectedEntity.hp_max}`}
-                      tone="selected-stat-hp"
-                    />
-                    <SelectedStat
-                      label="Armor"
-                      value={selectedEntity.is_player ? "-" : `${selectedEntity.armor_current}/${selectedEntity.armor_max}`}
-                    />
-                    <SelectedStat
-                      label="M.Armor"
-                      value={selectedEntity.is_player ? "-" : `${selectedEntity.magic_armor_current}/${selectedEntity.magic_armor_max}`}
-                      tone="selected-stat-arcane"
-                    />
-                    <SelectedStat
-                      label="Guard"
-                      value={selectedEntity.is_player ? "-" : `${selectedEntity.guard_current}`}
-                      tone="selected-stat-guard"
-                    />
-                    <SelectedStat label="Draws" value={selectedEntity.is_player ? "-" : `${selectedEntity.draws_base}`} />
-                    <SelectedStat
-                      label="Move"
-                      value={selectedEntity.is_player ? "-" : `${selectedEntity.effective_movement}`}
-                      tone="selected-stat-move"
-                    />
+                  {selectedHasDraw ? (
+                    <div className="unit-inspector-section unit-inspector-draw-preview">
+                      <div className="selected-draw-label">{selectedDrawIsStored ? "Previous draw" : "Current draw"}</div>
+                      <CardList items={selectedEntity.current_draw_text} compact />
+                    </div>
+                  ) : null}
+
+                  <div className="unit-stat-strip">
+                    <span className="unit-stat-chip unit-stat-hp">
+                      <span>HP</span>
+                      <strong>{selectedEntity.is_player ? "Player" : `${selectedEntity.hp_current}/${selectedEntity.hp_max}`}</strong>
+                    </span>
+                    <span className="unit-stat-chip">
+                      <span>Armor</span>
+                      <strong>{selectedEntity.is_player ? "-" : `${selectedEntity.armor_current}/${selectedEntity.armor_max}`}</strong>
+                    </span>
+                    <span className="unit-stat-chip unit-stat-arcane">
+                      <span>M Armor</span>
+                      <strong>
+                        {selectedEntity.is_player
+                          ? "-"
+                          : `${selectedEntity.magic_armor_current}/${selectedEntity.magic_armor_max}`}
+                      </strong>
+                    </span>
+                    <span className="unit-stat-chip unit-stat-guard">
+                      <span>Guard</span>
+                      <strong>{selectedEntity.is_player ? "-" : `${selectedEntity.guard_current}`}</strong>
+                    </span>
+                    <span className="unit-stat-chip">
+                      <span>Draw</span>
+                      <strong>{selectedEntity.is_player ? "-" : `${selectedEntity.draws_base}`}</strong>
+                    </span>
+                    <span className="unit-stat-chip unit-stat-move">
+                      <span>Move</span>
+                      <strong>{selectedEntity.is_player ? "-" : `${selectedEntity.effective_movement}`}</strong>
+                    </span>
                   </div>
 
                   {!selectedEntity.is_player ? (
                     <>
                       <ProgressBar label="Vitality" value={percent(selectedEntity.hp_current, selectedEntity.hp_max)} compact />
-                      <div className="selected-statuses">
-                        {Object.entries(selectedEntity.statuses || {}).length ? (
-                          Object.entries(selectedEntity.statuses).map(([statusKey, statusValue]) => (
+                      {selectedStatuses.length ? (
+                        <div className="selected-statuses">
+                          {selectedStatuses.map(([statusKey, statusValue]) => (
                             <span className="status-pill" key={statusKey}>
                               {formatStatusLabel(statusKey, statusValue)}
                             </span>
-                          ))
-                        ) : (
-                          <span className="subtle-copy">No active statuses</span>
-                        )}
-                      </div>
+                          ))}
+                        </div>
+                      ) : null}
                     </>
                   ) : null}
 
-                  <div className="unit-inspector-section">
-                    <div className="selected-draw-label">{selectedDrawIsStored ? "Previous active draw" : "Current draw"}</div>
-                    {selectedEntity.current_draw_text?.length ? (
-                      <CardList items={selectedEntity.current_draw_text} />
-                    ) : (
-                      <div className="subtle-copy">{selectedDrawIsStored ? "No previous draw." : "No current draw."}</div>
-                    )}
-                  </div>
-
-                  <div className="unit-inspector-section">
-                    <div className="selected-draw-label">Loot</div>
-                    {selectedEntity.loot_rolled ? (
+                  {selectedHasLoot ? (
+                    <div className="unit-inspector-section">
+                      <div className="selected-draw-label">Loot</div>
                       <div className="loot-grid">
                         <LootBlock label="Currency" value={JSON.stringify(selectedEntity.rolled_loot?.currency || {})} />
                         <LootBlock label="Resources" value={JSON.stringify(selectedEntity.rolled_loot?.resources || {})} />
                         <LootBlock label="Other" value={(selectedEntity.rolled_loot?.other || []).join(", ") || "-"} />
                       </div>
-                    ) : (
-                      <div className="subtle-copy">
-                        {canRollLoot ? "Loot has not been rolled yet." : "This card has no template loot."}
-                      </div>
-                    )}
-                  </div>
+                    </div>
+                  ) : null}
                 </div>
               ) : (
                 <div className="subtle-copy">Select a combatant to inspect draw, loot, and stats.</div>
@@ -1198,7 +1191,6 @@ function App() {
       <ModalShell
         open={modal === "add"}
         title="Add Unit"
-        subtitle="Premade enemies first, with player and custom options below."
         onClose={closeModal}
         size="wide"
       >
@@ -1649,11 +1641,11 @@ function ProgressBar({ label, value, compact = false }) {
   );
 }
 
-function CardList({ items }) {
+function CardList({ items, compact = false }) {
   return (
-    <div className="card-list">
+    <div className={`card-list ${compact ? "card-list-compact" : ""}`}>
       {items.map((item, index) => (
-        <div className="draw-card" key={`${item}-${index}`}>
+        <div className={`draw-card ${compact ? "draw-card-compact" : ""}`} key={`${item}-${index}`}>
           {item}
         </div>
       ))}

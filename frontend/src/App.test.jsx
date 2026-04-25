@@ -471,6 +471,43 @@ describe("App", () => {
     expect(await screen.findByRole("button", { name: "Cell 1, 1: Goblin 1" })).toBeInTheDocument();
   });
 
+  it("toggles move mode when clicking the already selected unit", async () => {
+    const user = userEvent.setup();
+    const movedSnapshot = buildSnapshot({
+      enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
+      combatLog: ["Moved Goblin 1 to (1, 1)"],
+    });
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/position" && requestOptions?.method === "POST") {
+          return jsonResponse(movedSnapshot);
+        }
+        if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+          throw new Error("Selecting the active unit again should toggle move mode locally");
+        }
+        return undefined;
+      },
+    });
+
+    const selectedToken = await findMapToken("Goblin 1");
+    await user.click(selectedToken);
+
+    expect(screen.getByRole("button", { name: "Cancel Move" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cell 1, 1" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/enemy-1/position",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ x: 0, y: 0 }),
+        }),
+      );
+    });
+  });
+
   it("shows a resize warning and can confirm auto-placement", async () => {
     const user = userEvent.setup();
     const resizedSnapshot = buildSnapshot({
@@ -516,6 +553,37 @@ describe("App", () => {
       );
     });
     expect(await screen.findByText("3 x 3")).toBeInTheDocument();
+  });
+
+  it("shows room validation errors from the API as readable text", async () => {
+    const user = userEvent.setup();
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/room" && requestOptions?.method === "POST") {
+          return jsonResponse(
+            {
+              detail: [
+                {
+                  loc: ["body", "columns"],
+                  msg: "Input should be less than or equal to 30",
+                },
+              ],
+            },
+            { ok: false, status: 422, statusText: "Unprocessable Entity" },
+          );
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Map size settings" }));
+    await user.clear(screen.getByLabelText("Map columns"));
+    await user.type(screen.getByLabelText("Map columns"), "60");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(await screen.findByText("columns: Input should be less than or equal to 30")).toBeInTheDocument();
   });
 
   it("shows API errors from failed actions", async () => {
