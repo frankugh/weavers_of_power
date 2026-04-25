@@ -160,6 +160,10 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def draw_turn(sid: str):
         return run_mutation(sid, lambda session: session.draw_turn())
 
+    @api_app.post("/api/battle/sessions/{sid}/turn/redraw")
+    def redraw_turn(sid: str):
+        return run_mutation(sid, lambda session: session.redraw_turn())
+
     @api_app.post("/api/battle/sessions/{sid}/turn/no-draw")
     def enemy_turn_without_draw(sid: str):
         return run_mutation(sid, lambda session: session.enemy_turn_no_draw())

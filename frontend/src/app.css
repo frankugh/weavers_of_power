@@ -746,6 +746,16 @@ button:disabled,
     0 8px 16px rgba(0, 0, 0, 0.28);
 }
 
+.map-token-player-unit {
+  border-color: rgba(154, 192, 208, 0.48);
+  background:
+    radial-gradient(circle at 35% 28%, rgba(214, 234, 241, 0.32), transparent 48%),
+    linear-gradient(180deg, rgba(36, 45, 50, 0.96), rgba(13, 18, 21, 0.96));
+  box-shadow:
+    inset 0 0 0 1px rgba(214, 234, 241, 0.08),
+    0 8px 16px rgba(0, 0, 0, 0.28);
+}
+
 .map-token-selected {
   border-color: var(--selected-line);
   box-shadow:
@@ -789,6 +799,10 @@ button:disabled,
   z-index: 1;
 }
 
+.map-token-player-unit .map-token-initial {
+  color: #e8f7fb;
+}
+
 .map-token-type {
   position: absolute;
   right: -2px;
@@ -801,7 +815,7 @@ button:disabled,
 }
 
 .map-token-player {
-  background: #7db97f;
+  background: linear-gradient(180deg, #b9dbe6, #7faebe);
 }
 
 .map-token-enemy {
@@ -901,6 +915,18 @@ button:disabled,
   font-size: 0.78rem;
 }
 
+.unplaced-player {
+  border-color: rgba(154, 192, 208, 0.24);
+  background:
+    linear-gradient(180deg, rgba(154, 192, 208, 0.12), rgba(154, 192, 208, 0.03)),
+    rgba(14, 10, 7, 0.88);
+}
+
+.unplaced-initial-player {
+  background: rgba(184, 219, 230, 0.22);
+  color: #e8f7fb;
+}
+
 .unplaced-selected {
   border-color: var(--selected-line);
   background: var(--selected-fill);
@@ -909,6 +935,18 @@ button:disabled,
 .unplaced-active {
   border-color: var(--active-line);
   background: var(--active-fill);
+}
+
+.unplaced-player.unplaced-selected {
+  background:
+    linear-gradient(180deg, rgba(154, 192, 208, 0.1), rgba(154, 192, 208, 0.03)),
+    var(--selected-fill);
+}
+
+.unplaced-player.unplaced-active {
+  background:
+    linear-gradient(180deg, rgba(154, 192, 208, 0.12), rgba(154, 192, 208, 0.04)),
+    var(--active-fill);
 }
 
 .move-button-active {
@@ -1256,6 +1294,32 @@ button:disabled,
     inset 0 0 0 2px rgba(98, 201, 210, 0.16);
 }
 
+.initiative-player {
+  border-color: rgba(154, 192, 208, 0.24);
+  background:
+    linear-gradient(180deg, rgba(154, 192, 208, 0.12), rgba(154, 192, 208, 0.04)),
+    rgba(255, 244, 216, 0.035);
+  box-shadow: inset 0 0 0 1px rgba(214, 234, 241, 0.05);
+}
+
+.initiative-player.initiative-selected {
+  background:
+    linear-gradient(180deg, rgba(154, 192, 208, 0.1), rgba(154, 192, 208, 0.03)),
+    var(--selected-fill);
+}
+
+.initiative-player.initiative-active {
+  background:
+    linear-gradient(180deg, rgba(154, 192, 208, 0.12), rgba(154, 192, 208, 0.04)),
+    var(--active-fill);
+}
+
+.initiative-player.initiative-dual {
+  background:
+    linear-gradient(180deg, rgba(154, 192, 208, 0.12), rgba(154, 192, 208, 0.04)),
+    linear-gradient(135deg, rgba(216, 182, 106, 0.16), rgba(74, 155, 169, 0.16));
+}
+
 .initiative-copy {
   display: flex;
   flex-direction: column;
@@ -1286,6 +1350,13 @@ button:disabled,
     radial-gradient(circle at 50% 20%, rgba(240, 207, 133, 0.16), transparent 52%),
     linear-gradient(180deg, rgba(46, 33, 21, 0.86), rgba(12, 9, 7, 0.92));
   flex-shrink: 0;
+}
+
+.initiative-thumb-player {
+  border-color: rgba(154, 192, 208, 0.34);
+  background:
+    radial-gradient(circle at 50% 20%, rgba(214, 234, 241, 0.22), transparent 55%),
+    linear-gradient(180deg, rgba(37, 46, 52, 0.88), rgba(15, 20, 23, 0.94));
 }
 
 .initiative-thumb img {
@@ -1396,6 +1467,13 @@ button:disabled,
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.selected-summary-player {
+  padding: 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(154, 192, 208, 0.18);
+  background: linear-gradient(180deg, rgba(154, 192, 208, 0.11), rgba(154, 192, 208, 0.03));
 }
 
 .unit-inspector .selected-summary {
@@ -1607,7 +1685,7 @@ button:disabled,
   padding: 5px 8px;
   border-radius: 10px;
   min-height: 36px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .action-copy {
@@ -1616,7 +1694,16 @@ button:disabled,
   max-width: 190px;
 }
 
+.action-controls {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .action-bar .action-buttons {
+  flex: 1 1 auto;
   min-width: 0;
   align-items: center;
   flex-wrap: nowrap;
@@ -1631,6 +1718,40 @@ button:disabled,
   border-radius: 7px;
   font-size: 0.72rem;
   white-space: nowrap;
+}
+
+.action-more {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.action-more-trigger-open {
+  border-color: var(--line-strong);
+  background: rgba(255, 244, 216, 0.1);
+}
+
+.action-more-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 176px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: linear-gradient(145deg, rgba(24, 16, 11, 0.98), rgba(11, 8, 6, 0.98));
+  box-shadow: var(--shadow-md);
+}
+
+.action-more-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
 }
 
 .action-title {
@@ -1670,6 +1791,13 @@ button:disabled,
   cursor: pointer;
 }
 
+.roster-player {
+  border-color: rgba(154, 192, 208, 0.22);
+  background:
+    linear-gradient(180deg, rgba(154, 192, 208, 0.12), rgba(154, 192, 208, 0.04)),
+    rgba(255, 244, 216, 0.04);
+}
+
 .roster-selected {
   border-color: var(--selected-line);
   background: var(--selected-fill);
@@ -1690,6 +1818,24 @@ button:disabled,
     inset 0 0 0 2px rgba(98, 201, 210, 0.16);
 }
 
+.roster-player.roster-selected {
+  background:
+    linear-gradient(180deg, rgba(154, 192, 208, 0.1), rgba(154, 192, 208, 0.03)),
+    var(--selected-fill);
+}
+
+.roster-player.roster-active {
+  background:
+    linear-gradient(180deg, rgba(154, 192, 208, 0.12), rgba(154, 192, 208, 0.04)),
+    var(--active-fill);
+}
+
+.roster-player.roster-dual {
+  background:
+    linear-gradient(180deg, rgba(154, 192, 208, 0.12), rgba(154, 192, 208, 0.04)),
+    linear-gradient(155deg, rgba(216, 182, 106, 0.18), rgba(74, 155, 169, 0.18));
+}
+
 .roster-portrait {
   width: 30px;
   height: 30px;
@@ -1697,6 +1843,13 @@ button:disabled,
   overflow: hidden;
   border: 1px solid var(--line);
   background: rgba(255, 244, 216, 0.03);
+}
+
+.roster-portrait-player {
+  border-color: rgba(154, 192, 208, 0.32);
+  background:
+    radial-gradient(circle at 50% 22%, rgba(214, 234, 241, 0.18), transparent 55%),
+    rgba(255, 244, 216, 0.03);
 }
 
 .roster-portrait img {
@@ -2157,6 +2310,10 @@ button:disabled,
 
   .action-copy {
     max-width: none;
+  }
+
+  .action-controls {
+    width: 100%;
   }
 
   .action-bar .action-buttons {

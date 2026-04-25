@@ -11,9 +11,8 @@ from engine.combat import AttackMod, apply_attack, apply_heal
 from engine.loader import load_decks, load_enemies
 from engine.loot import roll_loot
 from engine.models import Card, Deck, EnemyTemplate
-from engine.runtime import BattleState, enemy_turn, end_turn, spawn_enemy
+from engine.runtime import BattleState, draw_cards, end_turn, spawn_enemy, start_turn
 from engine.runtime_models import DeckState, EnemyInstance
-from engine.turn_hooks import on_turn_end, on_turn_start
 from persistence import (
     enemy_to_dict,
     load_save_payload,
@@ -430,23 +429,18 @@ class BattleSession:
         entity = self._require_selected_enemy()
         if self.active_turn_id is not None and self.active_turn_id != entity.instance_id:
             raise BattleSessionError("Another enemy has the active turn. End that turn first.")
+        if self.turn_in_progress:
+            raise BattleSessionError("This enemy has already drawn this turn.")
 
-        self.active_turn_id = entity.instance_id
+        if self.active_turn_id is None:
+            self.active_turn_id = entity.instance_id
+            self._start_turn(entity)
+
+        result = self._draw_cards_for_turn(entity)
         self.turn_in_progress = True
-
-        result = enemy_turn(entity, rnd=self._rng)
         self._set_visible_draw(entity, list(result.drawn))
 
-        guard_added = 0
-        for card_id in result.drawn:
-            card = self.context.card_index.get(card_id)
-            if not card:
-                continue
-            for effect in card.effects:
-                if effect.type == "guard":
-                    apply_heal(entity, guard=int(effect.amount))
-                    guard_added += int(effect.amount)
-
+        guard_added = self._apply_draw_guard(entity, result.drawn)
         if result.drawn:
             drawn_text = ", ".join(self.card_to_effect_text(card_id) for card_id in result.drawn)
             suffix = f" (+{guard_added} guard)" if guard_added else ""
@@ -456,26 +450,36 @@ class BattleSession:
 
         self.autosave()
 
+    def redraw_turn(self) -> None:
+        entity = self._require_selected_enemy()
+        if self.active_turn_id is None or self.active_turn_id != entity.instance_id:
+            raise BattleSessionError("Redraw applies only to the active enemy.")
+        if not self.turn_in_progress:
+            raise BattleSessionError("Press Draw before using Redraw.")
+
+        self._discard_current_draw(entity)
+        result = self._draw_cards_for_turn(entity)
+        self._set_visible_draw(entity, list(result.drawn))
+
+        guard_added = self._apply_draw_guard(entity, result.drawn)
+        if result.drawn:
+            drawn_text = ", ".join(self.card_to_effect_text(card_id) for card_id in result.drawn)
+            suffix = f" (+{guard_added} guard)" if guard_added else ""
+            self._add_log(f"{entity.name} redraws: {drawn_text}{suffix}")
+        else:
+            self._add_log(f"{entity.name} redraws no cards")
+
+        self.autosave()
+
     def enemy_turn_no_draw(self) -> None:
         entity = self._require_selected_enemy()
         if self.active_turn_id is not None and self.active_turn_id != entity.instance_id:
             raise BattleSessionError("Another enemy has the active turn. End that turn first.")
 
-        self.active_turn_id = entity.instance_id
-        self.turn_in_progress = False
-        self._set_visible_draw(entity, [])
-        start_log = on_turn_start(entity)
-        end_log = on_turn_end(entity)
-        self.active_turn_id = None
-        self.turn_in_progress = False
-
-        parts = [f"{entity.name} resolves turn without draw"]
-        if start_log.dot_damage:
-            parts.append(f"DOT {start_log.dot_damage}")
-        if end_log.removed_statuses:
-            parts.append(f"cleared {', '.join(end_log.removed_statuses)}")
-        self._add_log(" | ".join(parts))
-        self.autosave()
+        if self.active_turn_id is None:
+            self.active_turn_id = entity.instance_id
+            self._start_turn(entity)
+        self.next_turn()
 
     def end_turn_selected(self) -> None:
         entity = self._require_selected_enemy()
@@ -496,9 +500,8 @@ class BattleSession:
         if self.active_turn_id is not None:
             active_enemy = self.state.enemies.get(self.active_turn_id)
             if active_enemy and not self.is_player(active_enemy):
-                if self.turn_in_progress:
-                    end_turn(active_enemy)
-                    self._add_log(f"Ended turn: {active_enemy.name}")
+                end_turn(active_enemy)
+                self._add_log(f"Ended turn: {active_enemy.name}")
             self.active_turn_id = None
             self.turn_in_progress = False
 
@@ -511,7 +514,8 @@ class BattleSession:
             entity = self.state.enemies[self.selected_id]
             self.active_turn_id = entity.instance_id
             self.turn_in_progress = False
-            self._set_visible_draw(entity, [])
+            if not self.is_player(entity):
+                self._start_turn(entity)
             self._add_log(f"Active turn: {entity.name}")
         self.autosave()
 
@@ -677,6 +681,55 @@ class BattleSession:
 
     def visible_draw_for(self, entity: EnemyInstance) -> list[str]:
         return list(getattr(entity, "visible_draw", []))
+
+    def _draw_cards_for_turn(self, entity: EnemyInstance):
+        draws = entity.draws_base
+        if entity.hp_current <= 0:
+            draws = 0
+        if "paralyzed" in entity.statuses:
+            draws -= 1
+        if draws < 0:
+            draws = 0
+        return draw_cards(entity, draws, rnd=self._rng)
+
+    def _apply_draw_guard(self, entity: EnemyInstance, card_ids: list[str]) -> int:
+        guard_added = 0
+        for card_id in card_ids:
+            card = self.context.card_index.get(card_id)
+            if not card:
+                continue
+            for effect in card.effects:
+                if effect.type == "guard":
+                    apply_heal(entity, guard=int(effect.amount))
+                    guard_added += int(effect.amount)
+        return guard_added
+
+    def _guard_from_draw(self, card_ids: list[str]) -> int:
+        guard_total = 0
+        for card_id in card_ids:
+            card = self.context.card_index.get(card_id)
+            if not card:
+                continue
+            for effect in card.effects:
+                if effect.type == "guard":
+                    guard_total += int(effect.amount)
+        return guard_total
+
+    def _discard_current_draw(self, entity: EnemyInstance) -> None:
+        deck_state = entity.deck_state
+        previous_guard = self._guard_from_draw(list(deck_state.hand))
+        if previous_guard:
+            extra_guard = max(0, entity.guard_current - int(getattr(entity, "guard_base", 0)))
+            entity.guard_current = max(0, entity.guard_current - min(previous_guard, extra_guard))
+        if deck_state.hand:
+            deck_state.discard_pile.extend(deck_state.hand)
+            deck_state.hand.clear()
+
+    def _start_turn(self, entity: EnemyInstance) -> None:
+        start_log = start_turn(entity)
+        self._set_visible_draw(entity, [])
+        if start_log.dot_damage:
+            self._add_log(f"{entity.name} takes {start_log.dot_damage} DOT")
 
     @staticmethod
     def _normalized_room_size(columns: int, rows: int) -> tuple[int, int]:

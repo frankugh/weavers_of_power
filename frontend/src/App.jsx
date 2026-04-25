@@ -155,6 +155,7 @@ function positionKey(x, y) {
 
 function App() {
   const bootstrapped = useRef(false);
+  const actionMenuRef = useRef(null);
 
   const [snapshot, setSnapshot] = useState(null);
   const [meta, setMeta] = useState(null);
@@ -171,6 +172,7 @@ function App() {
   const [saves, setSaves] = useState([]);
   const [attackForm, setAttackForm] = useState(EMPTY_ATTACK_FORM);
   const [healForm, setHealForm] = useState(EMPTY_HEAL_FORM);
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [customForm, setCustomForm] = useState({
     name: "Custom",
     hp: 10,
@@ -201,6 +203,35 @@ function App() {
   useEffect(() => {
     setMoveMode(false);
   }, [snapshot?.selectedId, snapshot?.sid]);
+
+  useEffect(() => {
+    setActionMenuOpen(false);
+  }, [snapshot?.selectedId, snapshot?.sid, modal]);
+
+  useEffect(() => {
+    if (!actionMenuOpen) {
+      return undefined;
+    }
+
+    function handlePointerDown(event) {
+      if (actionMenuRef.current && !actionMenuRef.current.contains(event.target)) {
+        setActionMenuOpen(false);
+      }
+    }
+
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        setActionMenuOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [actionMenuOpen]);
 
   useEffect(() => {
     if (bootstrapped.current) {
@@ -247,15 +278,17 @@ function App() {
   const premadeTemplates = getPremadeTemplates(meta?.enemyTemplates || []);
 
   const canDraw = Boolean(
-    selectedEntity && !isPlayerSelected && (!snapshot?.activeTurnId || snapshot.activeTurnId === selectedEntity.instance_id),
-  );
-  const canEndTurn = Boolean(
     selectedEntity &&
       !isPlayerSelected &&
-      snapshot?.activeTurnId === selectedEntity.instance_id &&
-      snapshot.turnInProgress,
+      !snapshot.turnInProgress &&
+      (!snapshot?.activeTurnId || snapshot.activeTurnId === selectedEntity.instance_id),
   );
-  const canRunNoDraw = Boolean(selectedEntity && !isPlayerSelected && canDraw);
+  const canRedraw = Boolean(
+    selectedEntity &&
+      !isPlayerSelected &&
+      snapshot.turnInProgress &&
+      snapshot?.activeTurnId === selectedEntity.instance_id,
+  );
   const canAttackOrHeal = Boolean(selectedEntity && !isPlayerSelected);
   const canRollLoot = Boolean(
     selectedEntity &&
@@ -266,6 +299,7 @@ function App() {
   const selectedStatuses = Object.entries(selectedEntity?.statuses || {});
   const selectedHasDraw = Boolean(selectedEntity?.current_draw_text?.length);
   const selectedHasLoot = Boolean(selectedEntity?.loot_rolled);
+  const canOpenActionMore = Boolean(canRedraw || canAttackOrHeal || canRollLoot);
 
   function closeModal() {
     setModal(null);
@@ -479,23 +513,13 @@ function App() {
     );
   }
 
-  async function handleNoDraw() {
+  async function handleRedraw() {
     await applySnapshotRequest(
-      `/api/battle/sessions/${snapshot.sid}/turn/no-draw`,
+      `/api/battle/sessions/${snapshot.sid}/turn/redraw`,
       {
         method: "POST",
       },
-      "Turn resolved",
-    );
-  }
-
-  async function handleEndTurn() {
-    await applySnapshotRequest(
-      `/api/battle/sessions/${snapshot.sid}/turn/end`,
-      {
-        method: "POST",
-      },
-      "Turn ended",
+      "Cards redrawn",
     );
   }
 
@@ -681,49 +705,105 @@ function App() {
               </div>
             </div>
 
-            <div className="action-buttons">
-              <button
-                className={`secondary-button ${moveMode ? "move-button-active" : ""}`.trim()}
-                onClick={() => setMoveMode((current) => !current)}
-                disabled={!selectedEntity || busy}
-              >
-                {moveMode ? "Cancel Move" : "Move"}
-              </button>
-              <button className="primary-button" onClick={handleDraw} disabled={!canDraw || busy}>
-                Draw
-              </button>
-              <button
-                className="secondary-button"
-                onClick={() => {
-                  setAttackForm(EMPTY_ATTACK_FORM);
-                  setModal("attack");
-                }}
-                disabled={!canAttackOrHeal || busy}
-              >
-                Attack enemy
-              </button>
-              <button
-                className="secondary-button"
-                onClick={() => {
-                  setHealForm(EMPTY_HEAL_FORM);
-                  setModal("heal");
-                }}
-                disabled={!canAttackOrHeal || busy}
-              >
-                Heal enemy
-              </button>
-              <button className="secondary-button" onClick={handleNoDraw} disabled={!canRunNoDraw || busy}>
-                Enemy turn (no draw)
-              </button>
-              <button className="secondary-button" onClick={handleEndTurn} disabled={!canEndTurn || busy}>
-                End turn
-              </button>
-              <button className="secondary-button" onClick={handleRollLoot} disabled={!canRollLoot || busy}>
-                Roll loot
-              </button>
-              <button className="primary-button" onClick={handleNext} disabled={!snapshot.order.length || busy}>
-                Next
-              </button>
+            <div className="action-controls">
+              <div className="action-buttons">
+                <button
+                  className="primary-button"
+                  onClick={() => {
+                    setActionMenuOpen(false);
+                    handleDraw();
+                  }}
+                  disabled={!canDraw || busy}
+                >
+                  Draw
+                </button>
+                <button
+                  className="primary-button"
+                  onClick={() => {
+                    setActionMenuOpen(false);
+                    handleNext();
+                  }}
+                  disabled={!snapshot.order.length || busy}
+                >
+                  Next
+                </button>
+                <button
+                  className={`secondary-button ${moveMode ? "move-button-active" : ""}`.trim()}
+                  onClick={() => {
+                    setActionMenuOpen(false);
+                    setMoveMode((current) => !current);
+                  }}
+                  disabled={!selectedEntity || busy}
+                >
+                  {moveMode ? "Cancel Move" : "Move"}
+                </button>
+                <button
+                  className="secondary-button"
+                  onClick={() => {
+                    setActionMenuOpen(false);
+                    setAttackForm(EMPTY_ATTACK_FORM);
+                    setModal("attack");
+                  }}
+                  disabled={!canAttackOrHeal || busy}
+                >
+                  Attack enemy
+                </button>
+              </div>
+
+              <div className="action-more" ref={actionMenuRef}>
+                <button
+                  className={`secondary-button ${actionMenuOpen ? "action-more-trigger-open" : ""}`.trim()}
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-expanded={actionMenuOpen}
+                  onClick={() => setActionMenuOpen((current) => !current)}
+                  disabled={!canOpenActionMore || busy}
+                >
+                  More
+                </button>
+
+                {actionMenuOpen ? (
+                  <div className="action-more-menu" role="menu" aria-label="More actions">
+                    <button
+                      className="secondary-button action-more-item"
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setActionMenuOpen(false);
+                        handleRedraw();
+                      }}
+                      disabled={!canRedraw || busy}
+                    >
+                      Redraw
+                    </button>
+                    <button
+                      className="secondary-button action-more-item"
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setActionMenuOpen(false);
+                        setHealForm(EMPTY_HEAL_FORM);
+                        setModal("heal");
+                      }}
+                      disabled={!canAttackOrHeal || busy}
+                    >
+                      Heal enemy
+                    </button>
+                    <button
+                      className="secondary-button action-more-item"
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setActionMenuOpen(false);
+                        handleRollLoot();
+                      }}
+                      disabled={!canRollLoot || busy}
+                    >
+                      Roll loot
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </section>
 
@@ -751,7 +831,7 @@ function App() {
                     </button>
 
                     <div
-                      className={`roster-card ${getStateClassNames("roster", entityState)}`}
+                      className={`roster-card ${entity.is_player ? "roster-player" : ""} ${getStateClassNames("roster", entityState)}`.trim()}
                       data-state={entityState.toneClass || "state-idle"}
                       role="button"
                       tabIndex={busy ? -1 : 0}
@@ -769,7 +849,7 @@ function App() {
                         handleSelect(entity.instance_id);
                       }}
                     >
-                      <div className="roster-portrait">
+                      <div className={`roster-portrait ${entity.is_player ? "roster-portrait-player" : ""}`.trim()}>
                         <img src={entity.image_url} alt={entity.name} />
                       </div>
                       <div className="roster-name">{entity.name}</div>
@@ -839,7 +919,7 @@ function App() {
           <div className="unit-inspector">
             <Panel title="Unit Inspector">
               {selectedEntity ? (
-                <div className="selected-summary">
+                <div className={`selected-summary ${selectedEntity.is_player ? "selected-summary-player" : ""}`.trim()}>
                   <div className="selected-summary-top">
                     <div className="selected-kicker">
                       {selectedEntity.is_player ? "Player" : titleCaseFromSnake(selectedEntity.template_id)}
@@ -951,12 +1031,12 @@ function App() {
                   <div className="initiative-card" key={entity.instance_id}>
                     <button
                       type="button"
-                      className={`initiative-row initiative-row-tools ${getStateClassNames("initiative", entityState)}`}
+                      className={`initiative-row initiative-row-tools ${entity.is_player ? "initiative-player" : ""} ${getStateClassNames("initiative", entityState)}`.trim()}
                       data-state={entityState.toneClass || "state-idle"}
                       onClick={() => handleSelect(entity.instance_id)}
                     >
                       <div className="initiative-left">
-                        <div className="initiative-thumb">
+                        <div className={`initiative-thumb ${entity.is_player ? "initiative-thumb-player" : ""}`.trim()}>
                           <img src={entity.image_url} alt="" aria-hidden="true" />
                         </div>
                         <div className="initiative-copy">
@@ -1544,11 +1624,13 @@ function BattleRoom({
                 <button
                   key={entity.instance_id}
                   type="button"
-                  className={`unplaced-unit ${getStateClassNames("unplaced", entityState)}`}
+                  className={`unplaced-unit ${entity.is_player ? "unplaced-player" : ""} ${getStateClassNames("unplaced", entityState)}`.trim()}
                   data-state={entityState.toneClass || "state-idle"}
                   onClick={() => onSelect(entity.instance_id)}
                 >
-                  <span className="unplaced-initial">{getEntityInitial(entity)}</span>
+                  <span className={`unplaced-initial ${entity.is_player ? "unplaced-initial-player" : ""}`.trim()}>
+                    {getEntityInitial(entity)}
+                  </span>
                   <span>{entity.name}</span>
                 </button>
               );
@@ -1566,7 +1648,7 @@ function MapToken({ entity, entityState }) {
 
   return (
     <div
-      className={`map-token ${getStateClassNames("map-token", entityState)} ${entity.is_down ? "map-token-down" : ""}`.trim()}
+      className={`map-token ${entity.is_player ? "map-token-player-unit" : ""} ${getStateClassNames("map-token", entityState)} ${entity.is_down ? "map-token-down" : ""}`.trim()}
       data-state={entityState?.toneClass || "state-idle"}
     >
       <span className="map-token-initial" aria-hidden="true">

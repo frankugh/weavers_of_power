@@ -110,8 +110,8 @@ def _reshuffle_if_needed(ds: DeckState, *, rnd: random.Random) -> bool:
 
 def draw_cards(enemy: EnemyInstance, n: int, *, rnd: Optional[random.Random] = None) -> DrawResult:
     """
-    Replace enemy.deck_state.hand with up to n freshly drawn cards.
-    Any existing hand is moved to discard before the new draw.
+    Draw up to n fresh cards into enemy.deck_state.hand.
+    Existing hand cleanup is a start-of-turn concern.
     """
     if n < 0:
         raise ValueError("n must be >= 0")
@@ -122,8 +122,7 @@ def draw_cards(enemy: EnemyInstance, n: int, *, rnd: Optional[random.Random] = N
     reshuffled_any = False
 
     if ds.hand:
-        ds.discard_pile.extend(ds.hand)
-        ds.hand.clear()
+        raise ValueError("hand must be cleared at start of turn before drawing")
 
     for _ in range(n):
         # ensure we have something to draw
@@ -145,15 +144,22 @@ def draw_cards(enemy: EnemyInstance, n: int, *, rnd: Optional[random.Random] = N
     )
 
 
-def end_turn(enemy: EnemyInstance) -> None:
+def start_turn(enemy: EnemyInstance):
     """
-    Moves all cards from hand to discard, then clears end-of-turn transient statuses.
+    Starts a unit turn: discard the previous revealed hand, then apply start hooks.
     """
     ds = enemy.deck_state
     if ds.hand:
         ds.discard_pile.extend(ds.hand)
         ds.hand.clear()
+    return on_turn_start(enemy)
 
+
+def end_turn(enemy: EnemyInstance) -> None:
+    """
+    Clears end-of-turn transient statuses.
+    Drawn cards remain visible/in hand until this unit's next start turn.
+    """
     on_turn_end(enemy)
 
 
@@ -163,7 +169,7 @@ def enemy_turn(enemy: EnemyInstance, *, rnd: Optional[random.Random] = None) -> 
     Then draw cards (paralyzed => -1 draw).
     Dead enemies (hp<=0) do not draw.
     """
-    on_turn_start(enemy)
+    start_turn(enemy)
 
     if enemy.hp_current <= 0:
         # No draw when dead

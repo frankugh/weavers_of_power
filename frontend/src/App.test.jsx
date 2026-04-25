@@ -162,6 +162,66 @@ describe("App", () => {
     expect(screen.getAllByRole("button", { name: /Goblin 1/i }).length).toBeGreaterThan(0);
   });
 
+  it("keeps rare actions inside the More menu", async () => {
+    const user = userEvent.setup();
+
+    renderWithSnapshot(buildSnapshot());
+
+    await findMapToken("Goblin 1");
+
+    expect(screen.getByRole("button", { name: "Draw" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Move" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Attack enemy" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "More" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Heal enemy" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "More" }));
+
+    expect(screen.getByRole("menuitem", { name: "Redraw" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Heal enemy" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Enemy turn (no draw)" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "End turn" })).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Roll loot" })).toBeInTheDocument();
+  });
+
+  it("posts redraw from the More menu during an active drawn turn", async () => {
+    const user = userEvent.setup();
+    const redrawnSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      turnInProgress: true,
+      enemies: [buildEnemy({ current_draw_text: ["Guard 3"] })],
+      combatLog: ["Goblin 1 redraws: Attack 5"],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        activeTurnId: "enemy-1",
+        turnInProgress: true,
+        enemies: [buildEnemy({ current_draw_text: ["Attack 3"] })],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/turn/redraw" && requestOptions?.method === "POST") {
+            return jsonResponse(redrawnSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Redraw" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/turn/redraw",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+  });
+
   it("renders separate selected and active turn indicators when different units are involved", async () => {
     const goblin = buildEnemy();
     const bandit = buildEnemy({

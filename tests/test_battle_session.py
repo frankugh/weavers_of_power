@@ -97,7 +97,7 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(len(placed), 9)
         self.assertEqual(len(unplaced), 1)
 
-    def test_draw_and_end_turn_persist_state(self) -> None:
+    def test_draw_and_end_turn_keep_draw_visible_until_next_start(self) -> None:
         session = self.context.create_session("draw-turn")
         session.add_enemy_from_template("goblin")
 
@@ -112,11 +112,11 @@ class BattleSessionTests(unittest.TestCase):
         self.assertIsNone(reloaded.active_turn_id)
         self.assertFalse(reloaded.turn_in_progress)
         selected = reloaded.state.enemies[reloaded.selected_id]
-        self.assertEqual(len(selected.deck_state.hand), 0)
+        self.assertGreaterEqual(len(selected.deck_state.hand), 1)
         self.assertGreaterEqual(len(reloaded.visible_draw_for(selected)), 1)
         self.assertGreaterEqual(len(reloaded.snapshot()["enemies"][0]["current_draw_text"]), 1)
 
-    def test_draw_replaces_hand_and_clears_when_unit_becomes_active(self) -> None:
+    def test_draw_is_discarded_when_same_unit_starts_again(self) -> None:
         session = self.context.create_session("draw-replace")
         session.add_enemy_from_template("goblin")
         enemy = session.state.enemies[session.selected_id]
@@ -127,23 +127,38 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(enemy.deck_state.hand, first_visible_draw)
         self.assertGreaterEqual(len(first_visible_draw), 1)
 
-        session.draw_turn()
-        second_visible_draw = session.visible_draw_for(enemy)
-
-        self.assertEqual(enemy.deck_state.hand, second_visible_draw)
-        self.assertEqual(len(enemy.deck_state.discard_pile), len(first_visible_draw))
-        self.assertEqual(len(second_visible_draw), enemy.draws_base)
+        with self.assertRaisesRegex(ValueError, "already drawn"):
+            session.draw_turn()
 
         session.end_turn_selected()
-        self.assertEqual(len(enemy.deck_state.hand), 0)
-        self.assertEqual(session.visible_draw_for(enemy), second_visible_draw)
+        self.assertEqual(enemy.deck_state.hand, first_visible_draw)
+        self.assertEqual(session.visible_draw_for(enemy), first_visible_draw)
 
         session.next_turn()
 
         self.assertEqual(session.active_turn_id, enemy.instance_id)
         self.assertFalse(session.turn_in_progress)
+        self.assertEqual(len(enemy.deck_state.hand), 0)
+        self.assertEqual(len(enemy.deck_state.discard_pile), len(first_visible_draw))
         self.assertEqual(session.visible_draw_for(enemy), [])
         self.assertEqual(session.snapshot()["enemies"][0]["current_draw_text"], [])
+
+    def test_redraw_replaces_current_draw_during_active_turn(self) -> None:
+        session = self.context.create_session("redraw-turn")
+        session.add_enemy_from_template("goblin")
+        enemy = session.state.enemies[session.selected_id]
+
+        session.draw_turn()
+        first_hand = list(enemy.deck_state.hand)
+
+        session.redraw_turn()
+
+        self.assertTrue(session.turn_in_progress)
+        self.assertEqual(session.active_turn_id, enemy.instance_id)
+        self.assertEqual(len(enemy.deck_state.discard_pile), len(first_hand))
+        self.assertEqual(session.visible_draw_for(enemy), enemy.deck_state.hand)
+        self.assertGreaterEqual(len(session.snapshot()["enemies"][0]["current_draw_text"]), 1)
+        self.assertIn("redraws", session.combat_log[0])
 
     def test_current_draw_persists_until_that_same_unit_turn_starts_again(self) -> None:
         session = self.context.create_session("draw-persist")
@@ -171,6 +186,29 @@ class BattleSessionTests(unittest.TestCase):
 
         self.assertEqual(session.active_turn_id, first_id)
         self.assertEqual(session.visible_draw_for(first_enemy), [])
+
+    def test_next_without_draw_resolves_the_active_turn(self) -> None:
+        session = self.context.create_session("next-no-draw")
+        session.add_enemy_from_template("goblin")
+        first_id = session.selected_id
+        session.add_enemy_from_template("bandit")
+        second_id = session.selected_id
+        second_enemy = session.state.enemies[second_id]
+        second_enemy.statuses["burn"] = {"stacks": 2}
+        second_enemy.statuses["slowed"] = {}
+        hp_before = second_enemy.hp_current
+
+        session.select(first_id)
+        session.next_turn()
+
+        self.assertEqual(session.active_turn_id, second_id)
+        self.assertEqual(second_enemy.hp_current, max(0, hp_before - 2))
+        self.assertIn("slowed", second_enemy.statuses)
+
+        session.next_turn()
+
+        self.assertEqual(session.active_turn_id, first_id)
+        self.assertNotIn("slowed", second_enemy.statuses)
 
     def test_round_increments_when_next_wraps(self) -> None:
         session = self.context.create_session("round-wrap")
