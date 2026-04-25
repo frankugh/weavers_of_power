@@ -372,8 +372,8 @@ button:disabled,
   grid-template-rows: minmax(0, 1fr) auto auto;
   grid-template-areas:
     "stage rail"
-    "actions actions"
-    "roster roster";
+    "actions rail"
+    "roster rail";
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -392,11 +392,41 @@ button:disabled,
   display: flex;
   flex-direction: column;
   gap: 8px;
-  overflow-y: auto;
+  overflow: hidden;
   padding: 8px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(12, 9, 6, 0.72);
+}
+
+.unit-inspector {
+  flex: 0 0 auto;
+  max-height: min(42vh, 340px);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.right-rail-scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.right-rail-scroll .panel:last-child {
+  flex: 1 0 190px;
+  min-height: 0;
+}
+
+.unit-inspector-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(221, 185, 121, 0.14);
 }
 
 .panel,
@@ -1003,8 +1033,8 @@ button:disabled,
 }
 
 .roster-card .state-badge-compact {
-  padding: 2px 4px;
-  font-size: 0.5rem;
+  padding: 1px 3px;
+  font-size: 0.46rem;
   letter-spacing: 0.04em;
 }
 
@@ -1136,7 +1166,7 @@ button:disabled,
 
 .roster-card .roster-bar {
   width: 100%;
-  height: 3px;
+  height: 2px;
 }
 
 .draw-card {
@@ -1337,6 +1367,10 @@ button:disabled,
   gap: 8px;
 }
 
+.unit-inspector .selected-summary {
+  gap: 7px;
+}
+
 .selected-summary-top {
   display: flex;
   justify-content: space-between;
@@ -1417,6 +1451,38 @@ button:disabled,
   gap: 8px;
 }
 
+.unit-inspector .progress-block {
+  gap: 5px;
+}
+
+.unit-inspector .progress-copy {
+  font-size: 0.72rem;
+}
+
+.unit-inspector .progress-track {
+  height: 5px;
+}
+
+.unit-inspector .card-list,
+.unit-inspector .loot-grid {
+  gap: 5px;
+}
+
+.unit-inspector .draw-card,
+.unit-inspector .loot-block {
+  padding: 6px 7px;
+  border-radius: 8px;
+}
+
+.unit-inspector .loot-block span {
+  font-size: 0.64rem;
+}
+
+.unit-inspector .loot-block strong {
+  margin-top: 4px;
+  font-size: 0.82rem;
+}
+
 .log-list {
   max-height: none;
   overflow: visible;
@@ -1443,37 +1509,41 @@ button:disabled,
 .action-bar {
   grid-area: actions;
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
-  padding: 6px 10px;
-  border-radius: 12px;
-  min-height: 42px;
+  padding: 5px 8px;
+  border-radius: 10px;
+  min-height: 36px;
   overflow: hidden;
 }
 
 .action-copy {
   flex: 0 0 auto;
   min-width: 0;
-  max-width: 230px;
+  max-width: 190px;
 }
 
 .action-bar .action-buttons {
   min-width: 0;
   align-items: center;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 1px;
 }
 
 .action-bar .primary-button,
 .action-bar .secondary-button {
-  min-height: 30px;
-  padding: 5px 9px;
-  border-radius: 8px;
-  font-size: 0.78rem;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  font-size: 0.72rem;
+  white-space: nowrap;
 }
 
 .action-title {
   margin-top: 0;
   font-family: "Cormorant Garamond", serif;
-  font-size: 0.98rem;
+  font-size: 0.9rem;
   line-height: 1;
   white-space: nowrap;
   overflow: hidden;
@@ -1483,8 +1553,8 @@ button:disabled,
 .roster-strip {
   grid-area: roster;
   flex-shrink: 0;
-  padding: 5px 8px;
-  border-radius: 12px;
+  padding: 4px 7px;
+  border-radius: 10px;
   display: flex;
   gap: 5px;
   overflow-x: auto;
@@ -1492,14 +1562,14 @@ button:disabled,
 }
 
 .roster-card {
-  min-width: 78px;
-  max-width: 92px;
+  min-width: 70px;
+  max-width: 84px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 5px;
-  border-radius: 8px;
+  gap: 1px;
+  padding: 4px;
+  border-radius: 7px;
   background: rgba(255, 244, 216, 0.04);
   border-color: var(--line);
   color: var(--text);
@@ -1528,9 +1598,9 @@ button:disabled,
 }
 
 .roster-portrait {
-  width: 34px;
-  height: 34px;
-  border-radius: 6px;
+  width: 30px;
+  height: 30px;
+  border-radius: 5px;
   overflow: hidden;
   border: 1px solid var(--line);
   background: rgba(255, 244, 216, 0.03);
@@ -1545,7 +1615,7 @@ button:disabled,
 .roster-name {
   font-family: "Cormorant Garamond", serif;
   max-width: 100%;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   line-height: 1;
   text-align: center;
   white-space: nowrap;
@@ -1672,10 +1742,10 @@ button:disabled,
   align-items: center;
   justify-content: center;
   gap: 2px;
-  min-width: 58px;
-  max-width: 68px;
-  padding: 5px;
-  border-radius: 8px;
+  min-width: 52px;
+  max-width: 62px;
+  padding: 4px;
+  border-radius: 7px;
   background: rgba(255, 244, 216, 0.04);
   border: 2px dashed rgba(240, 207, 133, 0.34);
   color: rgba(240, 207, 133, 0.6);
@@ -1965,6 +2035,17 @@ button:disabled,
   }
 
   .right-rail {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .unit-inspector {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .right-rail-scroll {
+    flex: initial;
     max-height: 52vh;
     overflow-y: auto;
   }
@@ -2009,6 +2090,11 @@ button:disabled,
 
   .battle-map {
     min-height: 330px;
+  }
+
+  .right-rail-scroll {
+    max-height: none;
+    overflow: visible;
   }
 
   .premade-grid {
