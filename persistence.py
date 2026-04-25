@@ -103,8 +103,10 @@ def make_save_payload(
     round: int,
     combat_log: List[str],
     enemies: List[EnemyInstance],
+    undo_stack: Optional[List[Dict[str, Any]]] = None,
+    redo_stack: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    return {
+    payload = {
         "version": version,
         "app": "weavers_of_power_battle_sim",
         "saved_at": _utc_now_iso(),
@@ -120,6 +122,11 @@ def make_save_payload(
         "order": list(order),
         "enemies": [enemy_to_dict(e) for e in enemies],
     }
+    if undo_stack is not None:
+        payload["undo_stack"] = list(undo_stack)
+    if redo_stack is not None:
+        payload["redo_stack"] = list(redo_stack)
+    return payload
 
 
 def load_save_payload(path: Path) -> Optional[Dict[str, Any]]:

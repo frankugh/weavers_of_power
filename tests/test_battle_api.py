@@ -18,9 +18,9 @@ class BattleApiTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         saves_dir = Path(self.temp_dir.name) / "saves"
-        context = BattleSessionContext(root=PROJECT_ROOT, saves_dir=saves_dir)
+        self.context = BattleSessionContext(root=PROJECT_ROOT, saves_dir=saves_dir)
         app = FastAPI()
-        register_battle_api(app, context)
+        register_battle_api(app, self.context)
         self.client = TestClient(app)
 
     def test_meta_endpoint_returns_templates_and_decks(self) -> None:
@@ -165,6 +165,144 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(heal_response.status_code, 200)
         healed = next(enemy for enemy in heal_response.json()["enemies"] if enemy["instance_id"] == enemy_snapshot["selectedId"])
         self.assertGreaterEqual(healed["hp_current"], attacked["hp_current"])
+
+    def test_undo_restores_previous_mutation_state(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        enemy_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        entity_id = enemy_snapshot["selectedId"]
+        before = next(enemy for enemy in enemy_snapshot["enemies"] if enemy["instance_id"] == entity_id)
+
+        attack_response = self.client.post(
+            f"/api/battle/sessions/{sid}/attack",
+            json={"damage": 2, "burn": True, "poison": False, "slow": False, "paralyze": False, "modifiers": []},
+        )
+        self.assertEqual(attack_response.status_code, 200)
+        self.assertTrue(attack_response.json()["canUndo"])
+
+        undo_response = self.client.post(f"/api/battle/sessions/{sid}/undo")
+        self.assertEqual(undo_response.status_code, 200)
+        self.assertTrue(undo_response.json()["canRedo"])
+        restored = next(enemy for enemy in undo_response.json()["enemies"] if enemy["instance_id"] == entity_id)
+        self.assertEqual(restored["hp_current"], before["hp_current"])
+        self.assertNotIn("burn", restored["statuses"])
+        self.assertEqual(undo_response.json()["combatLog"], enemy_snapshot["combatLog"])
+
+        redo_response = self.client.post(f"/api/battle/sessions/{sid}/redo")
+        self.assertEqual(redo_response.status_code, 200)
+        redone = next(enemy for enemy in redo_response.json()["enemies"] if enemy["instance_id"] == entity_id)
+        attacked = next(enemy for enemy in attack_response.json()["enemies"] if enemy["instance_id"] == entity_id)
+        self.assertEqual(redone["hp_current"], attacked["hp_current"])
+        self.assertIn("burn", redone["statuses"])
+        self.assertEqual(redo_response.json()["combatLog"], attack_response.json()["combatLog"])
+        self.assertFalse(redo_response.json()["canRedo"])
+
+    def test_redo_persists_and_new_mutation_clears_redo_history(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        add_response = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        entity_id = add_response["selectedId"]
+        attacked_response = self.client.post(
+            f"/api/battle/sessions/{sid}/attack",
+            json={"damage": 4, "burn": False, "poison": False, "slow": False, "paralyze": False, "modifiers": []},
+        ).json()
+
+        undo_response = self.client.post(f"/api/battle/sessions/{sid}/undo").json()
+        self.assertEqual(undo_response["redoDepth"], 1)
+        reloaded = self.client.get(f"/api/battle/sessions/{sid}").json()
+        self.assertEqual(reloaded["redoDepth"], 1)
+
+        redo_response = self.client.post(f"/api/battle/sessions/{sid}/redo").json()
+        redone = next(enemy for enemy in redo_response["enemies"] if enemy["instance_id"] == entity_id)
+        attacked = next(enemy for enemy in attacked_response["enemies"] if enemy["instance_id"] == entity_id)
+        self.assertEqual(redone["hp_current"], attacked["hp_current"])
+        self.assertEqual(redo_response["redoDepth"], 0)
+
+        self.client.post(f"/api/battle/sessions/{sid}/undo")
+        diverged_response = self.client.post(f"/api/battle/sessions/{sid}/players").json()
+        self.assertFalse(diverged_response["canRedo"])
+        self.assertEqual(diverged_response["redoDepth"], 0)
+
+    def test_undo_is_lifo_and_persists_across_session_reload(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        add_response = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        entity_id = add_response["selectedId"]
+        attacked_response = self.client.post(
+            f"/api/battle/sessions/{sid}/attack",
+            json={"damage": 3, "burn": True, "poison": False, "slow": False, "paralyze": False, "modifiers": []},
+        ).json()
+        healed_response = self.client.post(
+            f"/api/battle/sessions/{sid}/heal",
+            json={"hp": 1, "armor": 0, "magicArmor": 0, "guard": 0},
+        ).json()
+
+        self.assertEqual(healed_response["undoDepth"], 3)
+        reloaded = self.client.get(f"/api/battle/sessions/{sid}").json()
+        self.assertEqual(reloaded["undoDepth"], 3)
+
+        undo_heal = self.client.post(f"/api/battle/sessions/{sid}/undo").json()
+        self.assertEqual(undo_heal["undoDepth"], 2)
+        after_undo_heal = next(enemy for enemy in undo_heal["enemies"] if enemy["instance_id"] == entity_id)
+        attacked_enemy = next(enemy for enemy in attacked_response["enemies"] if enemy["instance_id"] == entity_id)
+        self.assertEqual(after_undo_heal["hp_current"], attacked_enemy["hp_current"])
+
+        undo_attack = self.client.post(f"/api/battle/sessions/{sid}/undo").json()
+        self.assertEqual(undo_attack["undoDepth"], 1)
+        after_undo_attack = next(enemy for enemy in undo_attack["enemies"] if enemy["instance_id"] == entity_id)
+        added_enemy = next(enemy for enemy in add_response["enemies"] if enemy["instance_id"] == entity_id)
+        self.assertEqual(after_undo_attack["hp_current"], added_enemy["hp_current"])
+        self.assertNotIn("burn", after_undo_attack["statuses"])
+
+    def test_select_is_not_undoable_and_empty_undo_reports_error(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        empty_response = self.client.post(f"/api/battle/sessions/{sid}/undo")
+        self.assertEqual(empty_response.status_code, 400)
+        self.assertIn("Nothing to undo", empty_response.json()["detail"])
+        empty_redo_response = self.client.post(f"/api/battle/sessions/{sid}/redo")
+        self.assertEqual(empty_redo_response.status_code, 400)
+        self.assertIn("Nothing to redo", empty_redo_response.json()["detail"])
+
+        first = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        first_id = first["selectedId"]
+        second = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        second_id = second["selectedId"]
+        depth_before_select = second["undoDepth"]
+
+        select_response = self.client.post(f"/api/battle/sessions/{sid}/select", json={"instanceId": first_id})
+        self.assertEqual(select_response.status_code, 200)
+        self.assertEqual(select_response.json()["undoDepth"], depth_before_select)
+
+        undo_response = self.client.post(f"/api/battle/sessions/{sid}/undo").json()
+        self.assertEqual(undo_response["undoDepth"], depth_before_select - 1)
+        self.assertFalse(any(enemy["instance_id"] == second_id for enemy in undo_response["enemies"]))
+
+    def test_undo_stack_trims_to_twenty_entries(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+
+        latest = None
+        for _ in range(25):
+            latest = self.client.post(f"/api/battle/sessions/{sid}/players").json()
+
+        self.assertEqual(latest["undoDepth"], 20)
+
+    def test_manual_load_resets_undo_history(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        first = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        self.assertTrue(first["canUndo"])
+
+        save_response = self.client.post(f"/api/battle/sessions/{sid}/saves", json={"name": "undo-reset"})
+        saves = self.client.get(f"/api/battle/sessions/{sid}/saves").json()["saves"]
+        self.assertTrue(save_response.json()["canUndo"])
+
+        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"})
+        load_response = self.client.post(
+            f"/api/battle/sessions/{sid}/load",
+            json={"filename": saves[0]["filename"]},
+        )
+
+        self.assertEqual(load_response.status_code, 200)
+        self.assertFalse(load_response.json()["canUndo"])
+        self.assertEqual(load_response.json()["undoDepth"], 0)
+        self.assertFalse(load_response.json()["canRedo"])
+        self.assertEqual(load_response.json()["redoDepth"], 0)
 
     def test_player_and_custom_enemy_endpoints_remain_usable(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]

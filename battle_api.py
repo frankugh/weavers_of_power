@@ -82,12 +82,18 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
         except BattleSessionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    def run_mutation(sid: str, action):
+    def run_mutation(sid: str, action, *, undoable: bool = True):
         session = load_session_or_400(sid)
+        before_payload = session.undo_payload() if undoable else None
         try:
             action(session)
         except BattleSessionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if undoable:
+            after_payload = session.undo_payload()
+            if before_payload != after_payload:
+                session.remember_undo_state(before_payload)
+                session.autosave()
         return session.snapshot()
 
     @api_app.get("/api/battle/meta")
@@ -106,7 +112,7 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
 
     @api_app.post("/api/battle/sessions/{sid}/select")
     def select_entity(sid: str, request: SelectRequest):
-        return run_mutation(sid, lambda session: session.select(request.instanceId))
+        return run_mutation(sid, lambda session: session.select(request.instanceId), undoable=False)
 
     @api_app.post("/api/battle/sessions/{sid}/order")
     def move_entity(sid: str, request: OrderRequest):
@@ -176,6 +182,14 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def next_turn(sid: str):
         return run_mutation(sid, lambda session: session.next_turn())
 
+    @api_app.post("/api/battle/sessions/{sid}/undo")
+    def undo(sid: str):
+        return run_mutation(sid, lambda session: session.undo(), undoable=False)
+
+    @api_app.post("/api/battle/sessions/{sid}/redo")
+    def redo(sid: str):
+        return run_mutation(sid, lambda session: session.redo(), undoable=False)
+
     @api_app.post("/api/battle/sessions/{sid}/attack")
     def attack_selected(sid: str, request: AttackRequest):
         return run_mutation(
@@ -213,8 +227,8 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
 
     @api_app.post("/api/battle/sessions/{sid}/saves")
     def create_manual_save(sid: str, request: SaveRequest):
-        return run_mutation(sid, lambda session: session.save_manual(request.name))
+        return run_mutation(sid, lambda session: session.save_manual(request.name), undoable=False)
 
     @api_app.post("/api/battle/sessions/{sid}/load")
     def load_manual_save(sid: str, request: LoadRequest):
-        return run_mutation(sid, lambda session: session.load_manual(request.filename))
+        return run_mutation(sid, lambda session: session.load_manual(request.filename), undoable=False)

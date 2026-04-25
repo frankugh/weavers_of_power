@@ -339,6 +339,32 @@ function App() {
     }
   }
 
+  async function handleUndo() {
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/undo`,
+      {
+        method: "POST",
+      },
+      "Undid last action",
+    );
+    if (payload) {
+      setMoveMode(false);
+    }
+  }
+
+  async function handleRedo() {
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/redo`,
+      {
+        method: "POST",
+      },
+      "Redid last action",
+    );
+    if (payload) {
+      setMoveMode(false);
+    }
+  }
+
   async function refreshSaveList() {
     if (!snapshot?.sid) {
       return;
@@ -658,6 +684,12 @@ function App() {
         <div className="menu-actions">
           <button className="menu-button" onClick={createNewSession} disabled={busy}>
             New
+          </button>
+          <button className="menu-button" onClick={handleUndo} disabled={busy || !snapshot.canUndo}>
+            Undo
+          </button>
+          <button className="menu-button" onClick={handleRedo} disabled={busy || !snapshot.canRedo}>
+            Redo
           </button>
           <button
             className="menu-button"
@@ -1150,6 +1182,7 @@ function App() {
         title="Attack enemy"
         subtitle="Applies damage and optional status effects to the selected enemy card."
         onClose={closeModal}
+        closeOnOutsideClick={false}
       >
         <form className="modal-form" onSubmit={handleAttackSubmit}>
           <label className="field">
@@ -1819,13 +1852,13 @@ function ToggleField({ label, checked, onChange }) {
   );
 }
 
-function ModalShell({ open, title, subtitle, onClose, children, size = "default" }) {
+function ModalShell({ open, title, subtitle, onClose, children, size = "default", closeOnOutsideClick = true }) {
   if (!open) {
     return null;
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={closeOnOutsideClick ? onClose : undefined}>
       <div
         className={`modal-shell ${size === "wide" ? "modal-shell-wide" : ""}`.trim()}
         onClick={(event) => event.stopPropagation()}

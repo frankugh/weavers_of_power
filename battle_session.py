@@ -22,6 +22,7 @@ from persistence import (
 )
 
 LOG_LIMIT = 30
+UNDO_LIMIT = 20
 ROOM_DEFAULT_COLUMNS = 10
 ROOM_DEFAULT_ROWS = 7
 ROOM_MIN_COLUMNS = 3
@@ -198,9 +199,11 @@ class BattleSession:
     room_rows: int = ROOM_DEFAULT_ROWS
     round: int = 1
     combat_log: list[str] = field(default_factory=list)
+    undo_stack: list[dict] = field(default_factory=list)
+    redo_stack: list[dict] = field(default_factory=list)
     _rng: random.Random = field(default_factory=random.Random, repr=False)
 
-    def load_from_payload(self, payload: dict) -> None:
+    def load_from_payload(self, payload: dict, *, load_undo_stack: bool = True) -> None:
         self.state.enemies.clear()
         self.order = []
         self.selected_id = None
@@ -210,6 +213,8 @@ class BattleSession:
         self.room_rows = ROOM_DEFAULT_ROWS
         self.round = 1
         self.combat_log = []
+        self.undo_stack = []
+        self.redo_stack = []
         position_payload_present = any(
             "grid_x" in enemy_raw or "grid_y" in enemy_raw for enemy_raw in payload.get("enemies", []) or []
         )
@@ -246,13 +251,16 @@ class BattleSession:
 
         self.round = max(1, int(loaded_round or 1))
         self.combat_log = list(loaded_log or [])[:LOG_LIMIT]
+        if load_undo_stack:
+            self.undo_stack = [dict(entry) for entry in payload.get("undo_stack", [])][-UNDO_LIMIT:]
+            self.redo_stack = [dict(entry) for entry in payload.get("redo_stack", [])][-UNDO_LIMIT:]
         if position_payload_present:
             self._clear_out_of_bounds_positions()
         else:
             self._auto_place_unplaced_entities()
         self._ensure_selected()
 
-    def _build_payload(self) -> dict:
+    def _build_payload(self, *, include_undo_stack: bool = True) -> dict:
         return make_save_payload(
             version=self.context.save_version,
             sid=self.sid,
@@ -264,7 +272,20 @@ class BattleSession:
             round=self.round,
             combat_log=self.combat_log,
             enemies=list(self.state.enemies.values()),
+            undo_stack=self.undo_stack if include_undo_stack else None,
+            redo_stack=self.redo_stack if include_undo_stack else None,
         )
+
+    def undo_payload(self) -> dict:
+        payload = self._build_payload(include_undo_stack=False)
+        payload.pop("saved_at", None)
+        return payload
+
+    def remember_undo_state(self, payload: dict) -> None:
+        self.undo_stack.append(dict(payload))
+        if len(self.undo_stack) > UNDO_LIMIT:
+            self.undo_stack = self.undo_stack[-UNDO_LIMIT:]
+        self.redo_stack = []
 
     def autosave(self) -> None:
         save_current(self.context.current_path(self.sid), self._build_payload())
@@ -281,6 +302,10 @@ class BattleSession:
             "order": list(self.order),
             "enemies": [self._serialize_enemy(instance_id) for instance_id in self._ordered_enemy_ids()],
             "combatLog": list(self.combat_log),
+            "canUndo": bool(self.undo_stack),
+            "undoDepth": len(self.undo_stack),
+            "canRedo": bool(self.redo_stack),
+            "redoDepth": len(self.redo_stack),
         }
 
     def list_manual_saves(self) -> list[dict]:
@@ -595,10 +620,40 @@ class BattleSession:
         self._add_log(f"Loot rolled for {entity.name}")
         self.autosave()
 
+    def undo(self) -> None:
+        if not self.undo_stack:
+            raise BattleSessionError("Nothing to undo.")
+        current_payload = self.undo_payload()
+        previous_payload = self.undo_stack.pop()
+        remaining_undo_stack = list(self.undo_stack)
+        next_redo_stack = list(self.redo_stack)
+        next_redo_stack.append(current_payload)
+        if len(next_redo_stack) > UNDO_LIMIT:
+            next_redo_stack = next_redo_stack[-UNDO_LIMIT:]
+        self.load_from_payload(previous_payload, load_undo_stack=False)
+        self.undo_stack = remaining_undo_stack
+        self.redo_stack = next_redo_stack
+        self.autosave()
+
+    def redo(self) -> None:
+        if not self.redo_stack:
+            raise BattleSessionError("Nothing to redo.")
+        current_payload = self.undo_payload()
+        next_payload = self.redo_stack.pop()
+        remaining_redo_stack = list(self.redo_stack)
+        next_undo_stack = list(self.undo_stack)
+        next_undo_stack.append(current_payload)
+        if len(next_undo_stack) > UNDO_LIMIT:
+            next_undo_stack = next_undo_stack[-UNDO_LIMIT:]
+        self.load_from_payload(next_payload, load_undo_stack=False)
+        self.undo_stack = next_undo_stack
+        self.redo_stack = remaining_redo_stack
+        self.autosave()
+
     def save_manual(self, name: str) -> dict:
         filename = f"{safe_filename(name)}_{now_stamp()}.json"
         self._add_log(f"Manual save created: {filename}")
-        payload = self._build_payload()
+        payload = self._build_payload(include_undo_stack=False)
         path = self.context.manual_dir / filename
         save_current(path, payload)
         self.autosave()
@@ -612,7 +667,7 @@ class BattleSession:
         payload = load_save_payload(path)
         if not payload:
             raise BattleSessionError("Could not load save")
-        self.load_from_payload(payload)
+        self.load_from_payload(payload, load_undo_stack=False)
         self._add_log(f"Loaded save: {path.name}")
         self.autosave()
 

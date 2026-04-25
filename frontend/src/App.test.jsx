@@ -54,6 +54,10 @@ function buildSnapshot(overrides = {}) {
     enemies: [baseEnemy],
     room: { columns: 10, rows: 7 },
     combatLog: ["Goblin 1 is up next"],
+    canUndo: false,
+    undoDepth: 0,
+    canRedo: false,
+    redoDepth: 0,
     ...overrides,
   };
 }
@@ -162,6 +166,82 @@ describe("App", () => {
     expect(screen.getAllByRole("button", { name: /Goblin 1/i }).length).toBeGreaterThan(0);
   });
 
+  it("renders history buttons disabled when no history exists", async () => {
+    renderWithSnapshot(buildSnapshot({ canUndo: false, undoDepth: 0 }));
+
+    await findMapToken("Goblin 1");
+
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Redo" })).toBeDisabled();
+  });
+
+  it("posts Undo from the top menu and updates the snapshot", async () => {
+    const user = userEvent.setup();
+    const undoSnapshot = buildSnapshot({
+      canUndo: false,
+      undoDepth: 0,
+      canRedo: true,
+      redoDepth: 1,
+      enemies: [buildEnemy({ hp_current: 10, statuses: {} })],
+      combatLog: ["Added enemy: Goblin 1"],
+    });
+
+    renderWithSnapshot(buildSnapshot({ canUndo: true, undoDepth: 1 }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/undo" && requestOptions?.method === "POST") {
+          return jsonResponse(undoSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Undo" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/undo",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(await screen.findByText("Undid last action")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Redo" })).toBeEnabled();
+  });
+
+  it("posts Redo from the top menu and updates the snapshot", async () => {
+    const user = userEvent.setup();
+    const redoSnapshot = buildSnapshot({
+      canUndo: true,
+      undoDepth: 1,
+      canRedo: false,
+      redoDepth: 0,
+      enemies: [buildEnemy({ hp_current: 7, statuses: { burn: true } })],
+      combatLog: ["Goblin 1 takes 3 damage"],
+    });
+
+    renderWithSnapshot(buildSnapshot({ canUndo: true, undoDepth: 1, canRedo: true, redoDepth: 1 }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/redo" && requestOptions?.method === "POST") {
+          return jsonResponse(redoSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Redo" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/redo",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(await screen.findByText("Redid last action")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Redo" })).toBeDisabled();
+  });
+
   it("keeps rare actions inside the More menu", async () => {
     const user = userEvent.setup();
 
@@ -183,6 +263,19 @@ describe("App", () => {
     expect(screen.queryByRole("menuitem", { name: "Enemy turn (no draw)" })).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "End turn" })).not.toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Roll loot" })).toBeInTheDocument();
+  });
+
+  it("keeps the attack modal open when the backdrop is clicked", async () => {
+    const user = userEvent.setup();
+    const { container } = renderWithSnapshot(buildSnapshot());
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Attack enemy" }));
+
+    expect(screen.getByRole("button", { name: "Apply attack" })).toBeInTheDocument();
+    await user.click(container.querySelector(".modal-overlay"));
+
+    expect(screen.getByRole("button", { name: "Apply attack" })).toBeInTheDocument();
   });
 
   it("posts redraw from the More menu during an active drawn turn", async () => {
