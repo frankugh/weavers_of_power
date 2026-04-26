@@ -1,8 +1,8 @@
 export const MAP_ZOOM = {
   min: 24,
-  max: 72,
+  max: 172,
   step: 4,
-  defaultSize: 44,
+  defaultSize: 72,
 };
 
 export const MAP_DRAG_THRESHOLD = 4;

@@ -18,6 +18,11 @@ const ATTACK_STATUSES = [
 
 const PREMADE_TEMPLATE_IDS = ["goblin", "bandit"];
 const DEFAULT_ROOM = { columns: 10, rows: 7 };
+const DRAW_REVEAL_TIMING = {
+  enterMs: 80,
+  holdMs: 3200,
+  settleMs: 900,
+};
 const ROOM_LIMITS = {
   minColumns: 3,
   maxColumns: 99,
@@ -134,6 +139,14 @@ function getPremadeTemplates(templates) {
   return preferred.length ? preferred : templates;
 }
 
+function getDrawRevealEntity(payload) {
+  if (!payload?.enemies?.length) {
+    return null;
+  }
+  const revealId = payload.activeTurnId || payload.selectedId;
+  return payload.enemies.find((entity) => entity.instance_id === revealId) || null;
+}
+
 function getEntityInitial(entity) {
   return (entity?.name || "?").trim().charAt(0).toUpperCase() || "?";
 }
@@ -169,6 +182,8 @@ function App() {
   const [attackForm, setAttackForm] = useState(EMPTY_ATTACK_FORM);
   const [healForm, setHealForm] = useState(EMPTY_HEAL_FORM);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const [drawReveal, setDrawReveal] = useState(null);
+  const [drawDetail, setDrawDetail] = useState(null);
   const [customForm, setCustomForm] = useState({
     name: "Custom",
     hp: 10,
@@ -203,6 +218,49 @@ function App() {
   useEffect(() => {
     setActionMenuOpen(false);
   }, [snapshot?.selectedId, snapshot?.sid, modal]);
+
+  useEffect(() => {
+    if (!drawReveal) {
+      return undefined;
+    }
+
+    const nextPhase =
+      drawReveal.phase === "enter" ? "hold" : drawReveal.phase === "hold" ? "settle" : null;
+    const delay =
+      drawReveal.phase === "enter"
+        ? DRAW_REVEAL_TIMING.enterMs
+        : drawReveal.phase === "hold"
+          ? DRAW_REVEAL_TIMING.holdMs
+          : DRAW_REVEAL_TIMING.settleMs;
+
+    const timer = window.setTimeout(() => {
+      setDrawReveal((current) => {
+        if (current?.key !== drawReveal.key) {
+          return current;
+        }
+        return nextPhase ? { ...current, phase: nextPhase } : null;
+      });
+    }, delay);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [drawReveal?.key, drawReveal?.phase]);
+
+  useEffect(() => {
+    if (!drawReveal || drawReveal.phase === "settle") {
+      return undefined;
+    }
+
+    function settleRevealOnPointerDown() {
+      setDrawReveal((current) =>
+        current?.key === drawReveal.key && current.phase !== "settle" ? { ...current, phase: "settle" } : current,
+      );
+    }
+
+    window.addEventListener("pointerdown", settleRevealOnPointerDown, true);
+    return () => window.removeEventListener("pointerdown", settleRevealOnPointerDown, true);
+  }, [drawReveal?.key, drawReveal?.phase]);
 
   useEffect(() => {
     if (!actionMenuOpen) {
@@ -296,11 +354,32 @@ function App() {
   const selectedHasDraw = Boolean(selectedEntity?.current_draw_text?.length);
   const selectedHasLoot = Boolean(selectedEntity?.loot_rolled);
   const canOpenActionMore = Boolean(canRedraw || canAttackOrHeal || canRollLoot);
+  const selectedDrawPreviewHighlighted = Boolean(
+    drawReveal?.phase === "settle" && selectedEntity?.instance_id === drawReveal.entityId,
+  );
 
   function closeModal() {
     setModal(null);
     setCustomExpanded(false);
     setPendingRoomResize(null);
+    setDrawDetail(null);
+  }
+
+  function showDrawReveal(payload, kind) {
+    const entity = getDrawRevealEntity(payload);
+    const items = entity?.current_draw_text || [];
+    if (!entity || !items.length) {
+      return;
+    }
+
+    setDrawReveal({
+      key: `${kind}-${entity.instance_id}-${Date.now()}`,
+      entityId: entity.instance_id,
+      entityName: entity.name,
+      items,
+      kind,
+      phase: "enter",
+    });
   }
 
   async function applySnapshotRequest(path, options = {}, successMessage = "") {
@@ -526,23 +605,29 @@ function App() {
   }
 
   async function handleDraw() {
-    await applySnapshotRequest(
+    const payload = await applySnapshotRequest(
       `/api/battle/sessions/${snapshot.sid}/turn/draw`,
       {
         method: "POST",
       },
       "Cards drawn",
     );
+    if (payload) {
+      showDrawReveal(payload, "draw");
+    }
   }
 
   async function handleRedraw() {
-    await applySnapshotRequest(
+    const payload = await applySnapshotRequest(
       `/api/battle/sessions/${snapshot.sid}/turn/redraw`,
       {
         method: "POST",
       },
       "Cards redrawn",
     );
+    if (payload) {
+      showDrawReveal(payload, "redraw");
+    }
   }
 
   async function handleNext() {
@@ -718,6 +803,7 @@ function App() {
               selectedId={snapshot.selectedId}
               activeTurnId={snapshot.activeTurnId}
               moveMode={moveMode}
+              drawPulse={drawReveal ? { entityId: drawReveal.entityId, key: drawReveal.key } : null}
               busy={busy}
               onRoomSubmit={handleRoomSubmit}
               onSelect={handleSelect}
@@ -943,6 +1029,8 @@ function App() {
           </section>
         </section>
 
+        {drawReveal ? <DrawRevealPanel reveal={drawReveal} /> : null}
+
         <aside className="right-rail">
           <div className="unit-inspector">
             <Panel title="Unit Inspector">
@@ -971,9 +1059,24 @@ function App() {
                   </div>
 
                   {selectedHasDraw ? (
-                    <div className="unit-inspector-section unit-inspector-draw-preview">
+                    <div
+                      className={`unit-inspector-section unit-inspector-draw-preview ${
+                        selectedDrawPreviewHighlighted ? "unit-inspector-draw-preview-highlight" : ""
+                      }`.trim()}
+                    >
                       <div className="selected-draw-label">{selectedDrawIsStored ? "Previous draw" : "Current draw"}</div>
-                      <CardList items={selectedEntity.current_draw_text} compact />
+                      <CardList
+                        items={selectedEntity.current_draw_text}
+                        compact
+                        onCardClick={() => {
+                          setDrawDetail({
+                            entityName: selectedEntity.name,
+                            items: selectedEntity.current_draw_text,
+                            kind: selectedDrawIsStored ? "previous draw" : "current draw",
+                          });
+                          setModal("draw-detail");
+                        }}
+                      />
                     </div>
                   ) : null}
 
@@ -1488,6 +1591,20 @@ function App() {
       </ModalShell>
 
       <ModalShell
+        open={modal === "draw-detail" && Boolean(drawDetail)}
+        title="Draw card"
+        subtitle={drawDetail?.entityName || ""}
+        onClose={closeModal}
+        size="wide"
+      >
+        {drawDetail ? (
+          <div className="panel-body draw-detail-body">
+            <DrawCardView entityName={drawDetail.entityName} items={drawDetail.items} kind={drawDetail.kind} />
+          </div>
+        ) : null}
+      </ModalShell>
+
+      <ModalShell
         open={modal === "room-warning" && Boolean(pendingRoomResize)}
         title="Resize battle map"
         subtitle="Some units are outside the new dimensions."
@@ -1527,6 +1644,7 @@ function BattleRoom({
   selectedId,
   activeTurnId,
   moveMode,
+  drawPulse,
   busy,
   onRoomSubmit,
   onSelect,
@@ -1599,6 +1717,7 @@ function BattleRoom({
         activeTurnId={activeTurnId}
         selectedEntity={selectedEntity}
         moveMode={moveMode}
+        drawPulse={drawPulse}
         busy={busy}
         onSelect={onSelect}
         onMoveToCell={onMoveToCell}
@@ -1682,14 +1801,56 @@ function ProgressBar({ label, value, compact = false }) {
   );
 }
 
-function CardList({ items, compact = false }) {
+function DrawRevealPanel({ reveal }) {
+  return (
+    <aside
+      className={`draw-reveal-panel draw-reveal-panel-${reveal.phase}`}
+      aria-label="Draw Card Inspector"
+      aria-live="polite"
+      data-draw-reveal-phase={reveal.phase}
+    >
+      <DrawCardView entityName={reveal.entityName} items={reveal.items} kind={reveal.kind} />
+    </aside>
+  );
+}
+
+function DrawCardView({ entityName, items, kind = "draw" }) {
+  const title = kind === "redraw" ? "Redraw" : kind === "previous draw" ? "Previous draw" : "Current draw";
+
+  return (
+    <div className="draw-card-view">
+      <div className="draw-card-view-header">
+        <div>
+          <div className="selected-draw-label">{title}</div>
+          <div className="draw-card-view-title">{entityName}</div>
+        </div>
+        <span className="draw-card-view-count">{items.length}</span>
+      </div>
+      <CardList items={items} />
+    </div>
+  );
+}
+
+function CardList({ items, compact = false, onCardClick = null }) {
   return (
     <div className={`card-list ${compact ? "card-list-compact" : ""}`}>
-      {items.map((item, index) => (
-        <div className={`draw-card ${compact ? "draw-card-compact" : ""}`} key={`${item}-${index}`}>
-          {item}
-        </div>
-      ))}
+      {items.map((item, index) =>
+        onCardClick ? (
+          <button
+            type="button"
+            className={`draw-card ${compact ? "draw-card-compact" : ""}`.trim()}
+            key={`${item}-${index}`}
+            onClick={onCardClick}
+            aria-label={`Open draw card detail: ${item}`}
+          >
+            {item}
+          </button>
+        ) : (
+          <div className={`draw-card ${compact ? "draw-card-compact" : ""}`.trim()} key={`${item}-${index}`}>
+            {item}
+          </div>
+        ),
+      )}
     </div>
   );
 }

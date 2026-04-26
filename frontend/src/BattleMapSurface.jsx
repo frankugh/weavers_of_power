@@ -141,7 +141,7 @@ function drawMoveHighlights(graphics, room, cellSize, moveMode, selectedEntity, 
 function drawUnit(PIXI, layer, entity, entityState, cellSize, texture) {
   const center = cellToWorld(entity.grid_x, entity.grid_y, cellSize);
   const token = new PIXI.Container();
-  const radius = Math.max(10, Math.min(26, cellSize / 2 - 5));
+  const radius = Math.max(10, cellSize / 2 - 5);
   const hpValue = entity.is_player ? 100 : percent(entity.hp_current, entity.hp_max);
   const statusKeys = Object.keys(entity.statuses || {});
 
@@ -227,6 +227,10 @@ function drawUnit(PIXI, layer, entity, entityState, cellSize, texture) {
   layer.addChild(token);
 }
 
+function prefersReducedMotion() {
+  return typeof window !== "undefined" && Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+}
+
 function renderPixiScene(renderer, state) {
   if (!renderer) {
     return;
@@ -264,6 +268,7 @@ function BattleMapSurface({
   activeTurnId,
   selectedEntity,
   moveMode,
+  drawPulse,
   busy,
   onSelect,
   onMoveToCell,
@@ -441,6 +446,78 @@ function BattleMapSurface({
       camera,
     });
   }, [pixiReady, textureVersion, room, placedEntities, selectedId, activeTurnId, moveMode, selectedEntity, busy, hoverCell, occupiedByPosition, cellSize, camera]);
+
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer || !drawPulse?.entityId || !drawPulse?.key) {
+      return undefined;
+    }
+
+    const entity = placedEntities.find((placedEntity) => placedEntity.instance_id === drawPulse.entityId);
+    if (!entity) {
+      return undefined;
+    }
+
+    const center = cellToWorld(entity.grid_x, entity.grid_y, cellSize);
+    const radius = Math.max(12, cellSize / 2 - 2);
+    const ring = new renderer.PIXI.Graphics();
+    let destroyed = false;
+
+    ring.position.set(center.x, center.y);
+    renderer.layers.effects.addChild(ring);
+
+    function destroyRing() {
+      if (destroyed) {
+        return;
+      }
+      destroyed = true;
+      renderer.app.ticker.remove(tick);
+      ring.parent?.removeChild(ring);
+      ring.destroy();
+      renderer.app.render();
+    }
+
+    function drawRing(progress) {
+      const easeOut = 1 - (1 - progress) * (1 - progress);
+      const alpha = Math.max(0, 0.82 * (1 - progress));
+      ring.clear();
+      ring.circle(0, 0, radius + easeOut * 14).stroke({
+        color: 0xf0cf85,
+        alpha,
+        width: Math.max(1.5, 4 - progress * 2),
+      });
+      ring.circle(0, 0, radius + 3 + easeOut * 5).stroke({
+        color: 0x82d9df,
+        alpha: alpha * 0.38,
+        width: 2,
+      });
+    }
+
+    function tick() {
+      const progress = Math.min(1, (performance.now() - startedAt) / 650);
+      drawRing(progress);
+      renderer.app.render();
+      if (progress >= 1) {
+        destroyRing();
+      }
+    }
+
+    if (prefersReducedMotion()) {
+      drawRing(0);
+      renderer.app.render();
+      const timeoutId = window.setTimeout(destroyRing, 350);
+      return () => {
+        window.clearTimeout(timeoutId);
+        destroyRing();
+      };
+    }
+
+    const startedAt = performance.now();
+    renderer.app.ticker.add(tick);
+    tick();
+
+    return destroyRing;
+  }, [drawPulse?.entityId, drawPulse?.key, pixiReady, placedEntities, cellSize]);
 
   function cellFromPointer(event) {
     const surface = surfaceRef.current;
@@ -720,6 +797,8 @@ function BattleMapSurface({
         data-camera-x={camera.x}
         data-camera-y={camera.y}
         data-pixi-ready={pixiReady ? "true" : "false"}
+        data-draw-pulse-entity-id={drawPulse?.entityId || ""}
+        data-draw-pulse-key={drawPulse?.key || ""}
         onWheel={handleWheel}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}

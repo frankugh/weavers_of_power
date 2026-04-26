@@ -1,8 +1,8 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App.jsx";
-import { cellToWorld } from "./mapGeometry.js";
+import { MAP_ZOOM, cellToWorld } from "./mapGeometry.js";
 
 function jsonResponse(payload, init = {}) {
   return Promise.resolve({
@@ -104,7 +104,7 @@ function getMapViewport() {
 
 function mapPointForCell(viewport, x, y) {
   const rect = viewport.getBoundingClientRect();
-  const cellSize = Number(viewport.dataset.cellSize || 44);
+  const cellSize = Number(viewport.dataset.cellSize || MAP_ZOOM.defaultSize);
   const cameraX = Number(viewport.dataset.cameraX || 0);
   const cameraY = Number(viewport.dataset.cameraY || 0);
   const center = cellToWorld(x, y, cellSize);
@@ -177,6 +177,7 @@ describe("App", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -348,6 +349,119 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Apply attack" })).toBeInTheDocument();
   });
 
+  it("shows a temporary draw card inspector and battle map pulse after a successful draw", async () => {
+    const drawnSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      turnInProgress: true,
+      enemies: [buildEnemy({ current_draw_text: ["Attack 3", "Guard 2"] })],
+      combatLog: ["Goblin 1 draws: Attack 3, Guard 2"],
+    });
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/turn/draw" && requestOptions?.method === "POST") {
+          return jsonResponse(drawnSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "Draw" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const reveal = screen.getByRole("complementary", { name: "Draw Card Inspector" });
+    expect(within(reveal).getByText("Current draw")).toBeInTheDocument();
+    expect(within(reveal).getByText("Attack 3")).toBeInTheDocument();
+    expect(within(reveal).getByText("Guard 2")).toBeInTheDocument();
+
+    const viewport = getMapViewport();
+    expect(viewport.dataset.drawPulseEntityId).toBe("enemy-1");
+    expect(viewport.dataset.drawPulseKey).toContain("draw-enemy-1-");
+
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(reveal).toHaveAttribute("data-draw-reveal-phase", "hold");
+
+    act(() => {
+      vi.advanceTimersByTime(3201);
+    });
+    expect(reveal).toHaveAttribute("data-draw-reveal-phase", "settle");
+    expect(screen.getByRole("button", { name: "Open draw card detail: Attack 3" }).closest(".unit-inspector-draw-preview")).toHaveClass(
+      "unit-inspector-draw-preview-highlight",
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(900);
+    });
+    expect(screen.queryByRole("complementary", { name: "Draw Card Inspector" })).not.toBeInTheDocument();
+  });
+
+  it("settles the draw card inspector immediately when the screen is clicked", async () => {
+    const drawnSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      turnInProgress: true,
+      enemies: [buildEnemy({ current_draw_text: ["Attack 3"] })],
+    });
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/turn/draw" && requestOptions?.method === "POST") {
+          return jsonResponse(drawnSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "Draw" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const reveal = screen.getByRole("complementary", { name: "Draw Card Inspector" });
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(reveal).toHaveAttribute("data-draw-reveal-phase", "hold");
+
+    fireEvent.pointerDown(document.body);
+    expect(reveal).toHaveAttribute("data-draw-reveal-phase", "settle");
+
+    act(() => {
+      vi.advanceTimersByTime(900);
+    });
+    expect(screen.queryByRole("complementary", { name: "Draw Card Inspector" })).not.toBeInTheDocument();
+  });
+
+  it("opens the compact draw preview as a detail modal", async () => {
+    const user = userEvent.setup();
+
+    renderWithSnapshot(
+      buildSnapshot({
+        activeTurnId: "enemy-1",
+        turnInProgress: true,
+        enemies: [buildEnemy({ current_draw_text: ["Attack 3", "Guard 2"] })],
+      }),
+    );
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Open draw card detail: Attack 3" }));
+
+    expect(screen.getByText("Draw card")).toBeInTheDocument();
+    expect(screen.getAllByText("Attack 3").length).toBeGreaterThan(1);
+    expect(screen.getAllByText("Guard 2").length).toBeGreaterThan(1);
+  });
+
   it("posts redraw from the More menu during an active drawn turn", async () => {
     const user = userEvent.setup();
     const redrawnSnapshot = buildSnapshot({
@@ -383,6 +497,9 @@ describe("App", () => {
         expect.objectContaining({ method: "POST" }),
       );
     });
+    const reveal = await screen.findByRole("complementary", { name: "Draw Card Inspector" });
+    expect(within(reveal).getByText("Redraw")).toBeInTheDocument();
+    expect(within(reveal).getByText("Guard 3")).toBeInTheDocument();
   });
 
   it("renders separate selected and active turn indicators when different units are involved", async () => {
@@ -934,21 +1051,21 @@ describe("App", () => {
 
     await findMapToken("Goblin 1");
     const viewport = getMapViewport();
-    expect(viewport.dataset.cellSize).toBe("44");
+    expect(viewport.dataset.cellSize).toBe("72");
 
     fireEvent.wheel(viewport, { deltaY: -120, clientX: 60, clientY: 60 });
     await waitFor(() => {
-      expect(viewport.dataset.cellSize).toBe("48");
+      expect(viewport.dataset.cellSize).toBe("76");
     });
 
     await user.click(screen.getByRole("button", { name: "Zoom in battle map" }));
-    expect(viewport.dataset.cellSize).toBe("52");
+    expect(viewport.dataset.cellSize).toBe("80");
 
     await user.click(screen.getByRole("button", { name: "Zoom out battle map" }));
-    expect(viewport.dataset.cellSize).toBe("48");
+    expect(viewport.dataset.cellSize).toBe("76");
 
     await user.click(screen.getByRole("button", { name: "Reset battle map zoom" }));
-    expect(viewport.dataset.cellSize).toBe("44");
+    expect(viewport.dataset.cellSize).toBe("72");
   });
 
   it("centers the selected unit from the viewport controls", async () => {
@@ -976,7 +1093,7 @@ describe("App", () => {
     fireEvent.pointerUp(viewport, { pointerId: 11, pointerType: "touch" });
     fireEvent.pointerUp(viewport, { pointerId: 12, pointerType: "touch" });
 
-    expect(Number.parseInt(viewport.dataset.cellSize, 10)).toBeGreaterThan(44);
+    expect(Number.parseInt(viewport.dataset.cellSize, 10)).toBeGreaterThan(MAP_ZOOM.defaultSize);
   });
 
   it("shows a resize warning and can confirm auto-placement", async () => {
@@ -1079,5 +1196,6 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Draw" }));
 
     expect(await screen.findByText("Another enemy has the active turn.")).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Draw Card Inspector" })).not.toBeInTheDocument();
   });
 });
