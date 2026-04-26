@@ -1,5 +1,6 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { requestJson } from "./api.js";
+import BattleMapSurface from "./BattleMapSurface.jsx";
 
 const ATTACK_MODIFIERS = [
   { key: "stab", label: "Stab" },
@@ -23,16 +24,6 @@ const ROOM_LIMITS = {
   minRows: 3,
   maxRows: 99,
 };
-const MAP_ZOOM = {
-  min: 24,
-  max: 72,
-  step: 4,
-  defaultSize: 44,
-};
-const MAP_DRAG_THRESHOLD = 4;
-const MAP_GRID_GAP = 2;
-const MAP_VIEWPORT_PADDING = 10;
-
 const EMPTY_ATTACK_FORM = {
   damage: 1,
   modifiers: {
@@ -73,37 +64,6 @@ function percent(current, max) {
     return 0;
   }
   return Math.max(0, Math.min(100, Math.round((current / max) * 100)));
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function pointerTypeOf(event) {
-  return event.pointerType || event.nativeEvent?.pointerType || "mouse";
-}
-
-function pointerIdOf(event) {
-  return event.pointerId ?? event.nativeEvent?.pointerId ?? 1;
-}
-
-function pointerButtonOf(event) {
-  const button = event.button ?? event.nativeEvent?.button;
-  if (Number.isInteger(button) && button >= 0) {
-    return button;
-  }
-  const buttons = event.buttons ?? event.nativeEvent?.buttons;
-  if (buttons === 4) {
-    return 1;
-  }
-  return 0;
-}
-
-function pointerPointOf(event) {
-  return {
-    x: event.clientX ?? event.nativeEvent?.clientX ?? 0,
-    y: event.clientY ?? event.nativeEvent?.clientY ?? 0,
-  };
 }
 
 function barTone(value) {
@@ -187,10 +147,6 @@ function hasGridPosition(entity, room) {
     entity.grid_x < room.columns &&
     entity.grid_y < room.rows
   );
-}
-
-function positionKey(x, y) {
-  return `${x}:${y}`;
 }
 
 function App() {
@@ -1585,28 +1541,6 @@ function BattleRoom({
     () => entities.filter((entity) => !hasGridPosition(entity, room)),
     [entities, room.columns, room.rows],
   );
-  const occupantByPosition = useMemo(
-    () => new Map(placedEntities.map((entity) => [positionKey(entity.grid_x, entity.grid_y), entity])),
-    [placedEntities],
-  );
-  const cells = useMemo(
-    () =>
-      Array.from({ length: room.rows }, (_, y) =>
-        Array.from({ length: room.columns }, (_, x) => ({ x, y, entity: occupantByPosition.get(positionKey(x, y)) })),
-      ).flat(),
-    [occupantByPosition, room.columns, room.rows],
-  );
-
-  function handleCellClick(x, y, entityId) {
-    if (entityId) {
-      onSelect(entityId);
-      return;
-    }
-    if (moveMode && selectedEntity && !busy) {
-      onMoveToCell(x, y);
-    }
-  }
-
   async function handleSettingsSubmit(event) {
     await onRoomSubmit(event);
     setSettingsOpen(false);
@@ -1658,18 +1592,17 @@ function BattleRoom({
         ) : null}
       </div>
 
-      <MapViewport selectedEntity={selectedEntity}>
-        <MapGrid
-          room={room}
-          cells={cells}
-          selectedId={selectedId}
-          activeTurnId={activeTurnId}
-          moveMode={moveMode}
-          selectedEntity={selectedEntity}
-          busy={busy}
-          onCellClick={handleCellClick}
-        />
-      </MapViewport>
+      <BattleMapSurface
+        room={room}
+        entities={placedEntities}
+        selectedId={selectedId}
+        activeTurnId={activeTurnId}
+        selectedEntity={selectedEntity}
+        moveMode={moveMode}
+        busy={busy}
+        onSelect={onSelect}
+        onMoveToCell={onMoveToCell}
+      />
 
       {unplacedEntities.length ? (
         <div className="unplaced-strip">
@@ -1694,419 +1627,6 @@ function BattleRoom({
             })}
           </div>
         </div>
-      ) : null}
-    </div>
-  );
-}
-
-function MapViewport({ selectedEntity, children }) {
-  const scrollRef = useRef(null);
-  const [cellSize, setCellSize] = useState(MAP_ZOOM.defaultSize);
-  const [isPanning, setIsPanning] = useState(false);
-  const cellSizeRef = useRef(MAP_ZOOM.defaultSize);
-  const panRef = useRef(null);
-  const pinchRef = useRef(null);
-  const pointersRef = useRef(new Map());
-  const suppressClickRef = useRef(false);
-  const suppressClickTimeoutRef = useRef(null);
-
-  useEffect(() => {
-    cellSizeRef.current = cellSize;
-  }, [cellSize]);
-
-  useEffect(
-    () => () => {
-      if (suppressClickTimeoutRef.current) {
-        window.clearTimeout(suppressClickTimeoutRef.current);
-      }
-    },
-    [],
-  );
-
-  function suppressNextClickBriefly() {
-    suppressClickRef.current = true;
-    if (suppressClickTimeoutRef.current) {
-      window.clearTimeout(suppressClickTimeoutRef.current);
-    }
-    suppressClickTimeoutRef.current = window.setTimeout(() => {
-      suppressClickRef.current = false;
-      suppressClickTimeoutRef.current = null;
-    }, 120);
-  }
-
-  function updateZoom(nextSize, anchor) {
-    const viewport = scrollRef.current;
-    const oldSize = cellSizeRef.current;
-    const clampedSize = clamp(nextSize, MAP_ZOOM.min, MAP_ZOOM.max);
-    if (!viewport || clampedSize === oldSize) {
-      return;
-    }
-
-    const rect = viewport.getBoundingClientRect();
-    const anchorX = anchor ? anchor.clientX - rect.left : viewport.clientWidth / 2;
-    const anchorY = anchor ? anchor.clientY - rect.top : viewport.clientHeight / 2;
-    const contentX = viewport.scrollLeft + anchorX;
-    const contentY = viewport.scrollTop + anchorY;
-    const scale = clampedSize / oldSize;
-
-    cellSizeRef.current = clampedSize;
-    setCellSize(clampedSize);
-    window.requestAnimationFrame(() => {
-      viewport.scrollLeft = contentX * scale - anchorX;
-      viewport.scrollTop = contentY * scale - anchorY;
-    });
-  }
-
-  function handleWheel(event) {
-    event.preventDefault();
-    const direction = event.deltaY > 0 ? -1 : 1;
-    updateZoom(cellSizeRef.current + direction * MAP_ZOOM.step, event);
-  }
-
-  function beginPan(event, { captureImmediately = false } = {}) {
-    const viewport = scrollRef.current;
-    if (!viewport) {
-      return;
-    }
-    const pointerId = pointerIdOf(event);
-    const point = pointerPointOf(event);
-    panRef.current = {
-      pointerId,
-      startX: point.x,
-      startY: point.y,
-      lastX: point.x,
-      lastY: point.y,
-      startScrollLeft: viewport.scrollLeft,
-      startScrollTop: viewport.scrollTop,
-      dragging: false,
-      captured: false,
-    };
-    if (captureImmediately) {
-      viewport.setPointerCapture?.(pointerId);
-      panRef.current.captured = true;
-    }
-  }
-
-  function getPointerDistance(first, second) {
-    return Math.hypot(second.x - first.x, second.y - first.y);
-  }
-
-  function getPointerCenter(first, second) {
-    return {
-      clientX: (first.x + second.x) / 2,
-      clientY: (first.y + second.y) / 2,
-    };
-  }
-
-  function beginPinch() {
-    const viewport = scrollRef.current;
-    const touches = [...pointersRef.current.values()];
-    if (!viewport || touches.length < 2) {
-      return;
-    }
-
-    const [first, second] = touches;
-    const center = getPointerCenter(first, second);
-    const rect = viewport.getBoundingClientRect();
-    pinchRef.current = {
-      startDistance: Math.max(1, getPointerDistance(first, second)),
-      startCellSize: cellSizeRef.current,
-      startScrollLeft: viewport.scrollLeft,
-      startScrollTop: viewport.scrollTop,
-      anchorX: center.clientX - rect.left,
-      anchorY: center.clientY - rect.top,
-    };
-    panRef.current = null;
-    for (const pointerId of pointersRef.current.keys()) {
-      viewport.setPointerCapture?.(pointerId);
-    }
-    setIsPanning(true);
-  }
-
-  function handlePointerDown(event) {
-    const viewport = scrollRef.current;
-    if (!viewport) {
-      return;
-    }
-    const pointerType = pointerTypeOf(event);
-    const pointerId = pointerIdOf(event);
-    const pointerButton = pointerButtonOf(event);
-    const point = pointerPointOf(event);
-
-    if (pointerType === "touch") {
-      pointersRef.current.set(pointerId, point);
-      if (pointersRef.current.size === 2) {
-        event.preventDefault();
-        beginPinch();
-        return;
-      }
-    }
-
-    const token = event.target.closest?.("[data-map-token='true']");
-    const cell = event.target.closest?.("[data-map-cell='true']");
-    const occupiedCell = cell?.dataset.mapOccupied === "true";
-    const emptyMapStart = !token && (!cell || !occupiedCell);
-    const isMiddleMouse = pointerType !== "touch" && pointerButton === 1;
-    const isLeftMouse = pointerType !== "touch" && pointerButton === 0;
-    const canStartPan = isMiddleMouse || ((isLeftMouse || pointerType === "touch") && emptyMapStart);
-
-    if (!canStartPan) {
-      return;
-    }
-
-    if (isMiddleMouse) {
-      event.preventDefault();
-    }
-    beginPan(event, { captureImmediately: isMiddleMouse });
-  }
-
-  function handlePointerMove(event) {
-    const viewport = scrollRef.current;
-    if (!viewport) {
-      return;
-    }
-    const pointerType = pointerTypeOf(event);
-    const pointerId = pointerIdOf(event);
-    const point = pointerPointOf(event);
-
-    if (pointerType === "touch" && pointersRef.current.has(pointerId)) {
-      pointersRef.current.set(pointerId, point);
-    }
-
-    if (pinchRef.current && pointersRef.current.size >= 2) {
-      const touches = [...pointersRef.current.values()];
-      const [first, second] = touches;
-      const pinch = pinchRef.current;
-      const center = getPointerCenter(first, second);
-      const distance = Math.max(1, getPointerDistance(first, second));
-      const nextSize = clamp(
-        Math.round((pinch.startCellSize * distance) / pinch.startDistance / MAP_ZOOM.step) * MAP_ZOOM.step,
-        MAP_ZOOM.min,
-        MAP_ZOOM.max,
-      );
-      const scale = nextSize / pinch.startCellSize;
-
-      event.preventDefault();
-      cellSizeRef.current = nextSize;
-      setCellSize(nextSize);
-      viewport.scrollLeft = (pinch.startScrollLeft + pinch.anchorX) * scale - (center.clientX - viewport.getBoundingClientRect().left);
-      viewport.scrollTop = (pinch.startScrollTop + pinch.anchorY) * scale - (center.clientY - viewport.getBoundingClientRect().top);
-      return;
-    }
-
-    const pan = panRef.current;
-    if (!pan || pan.pointerId !== pointerId) {
-      return;
-    }
-
-    const deltaX = point.x - pan.startX;
-    const deltaY = point.y - pan.startY;
-    const moved = Math.hypot(deltaX, deltaY);
-    if (!pan.dragging && moved < MAP_DRAG_THRESHOLD) {
-      return;
-    }
-
-    event.preventDefault();
-    if (!pan.captured) {
-      viewport.setPointerCapture?.(pointerId);
-      pan.captured = true;
-    }
-    pan.dragging = true;
-    setIsPanning(true);
-    viewport.scrollLeft = pan.startScrollLeft - deltaX;
-    viewport.scrollTop = pan.startScrollTop - deltaY;
-    pan.lastX = point.x;
-    pan.lastY = point.y;
-  }
-
-  function finishPointer(event) {
-    const viewport = scrollRef.current;
-    const pointerType = pointerTypeOf(event);
-    const pointerId = pointerIdOf(event);
-    const wasDragging = panRef.current?.pointerId === pointerId && panRef.current.dragging;
-    const wasPinching = Boolean(pinchRef.current);
-    if (pointerType === "touch") {
-      pointersRef.current.delete(pointerId);
-      if (pointersRef.current.size < 2) {
-        pinchRef.current = null;
-      }
-    }
-    if (panRef.current?.pointerId === pointerId) {
-      panRef.current = null;
-    }
-    if (!panRef.current && !pinchRef.current) {
-      setIsPanning(false);
-    }
-    if (wasDragging || wasPinching) {
-      suppressNextClickBriefly();
-    }
-    viewport?.releasePointerCapture?.(pointerId);
-  }
-
-  function handleClickCapture(event) {
-    if (!suppressClickRef.current) {
-      return;
-    }
-    suppressClickRef.current = false;
-    if (suppressClickTimeoutRef.current) {
-      window.clearTimeout(suppressClickTimeoutRef.current);
-      suppressClickTimeoutRef.current = null;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-  }
-
-  function handleZoomOut() {
-    updateZoom(cellSizeRef.current - MAP_ZOOM.step);
-  }
-
-  function handleZoomIn() {
-    updateZoom(cellSizeRef.current + MAP_ZOOM.step);
-  }
-
-  function handleZoomReset() {
-    updateZoom(MAP_ZOOM.defaultSize);
-  }
-
-  function handleCenterSelected() {
-    const viewport = scrollRef.current;
-    if (!viewport || !hasGridPosition(selectedEntity, { columns: Infinity, rows: Infinity })) {
-      return;
-    }
-    const step = cellSizeRef.current + MAP_GRID_GAP;
-    const targetX = MAP_VIEWPORT_PADDING + selectedEntity.grid_x * step + cellSizeRef.current / 2;
-    const targetY = MAP_VIEWPORT_PADDING + selectedEntity.grid_y * step + cellSizeRef.current / 2;
-    viewport.scrollLeft = Math.max(0, targetX - viewport.clientWidth / 2);
-    viewport.scrollTop = Math.max(0, targetY - viewport.clientHeight / 2);
-  }
-
-  const zoomPercent = Math.round((cellSize / MAP_ZOOM.defaultSize) * 100);
-
-  return (
-    <div className="map-viewport-shell">
-      <div className="map-viewport-controls" aria-label="Map viewport controls">
-        <button type="button" className="map-control-button" aria-label="Zoom out battle map" onClick={handleZoomOut}>
-          -
-        </button>
-        <button type="button" className="map-control-button map-control-reset" aria-label="Reset battle map zoom" onClick={handleZoomReset}>
-          {zoomPercent}%
-        </button>
-        <button type="button" className="map-control-button" aria-label="Zoom in battle map" onClick={handleZoomIn}>
-          +
-        </button>
-        <button type="button" className="map-control-button map-control-center" aria-label="Center selected unit" onClick={handleCenterSelected}>
-          Center
-        </button>
-      </div>
-      <div
-        ref={scrollRef}
-        className={`battle-map-scroll ${isPanning ? "battle-map-scroll-panning" : ""}`.trim()}
-        role="region"
-        aria-label="Battle map viewport"
-        style={{ "--map-cell-size": `${cellSize}px` }}
-        onWheel={handleWheel}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={finishPointer}
-        onPointerCancel={finishPointer}
-        onClickCapture={handleClickCapture}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function MapGrid({ room, cells, selectedId, activeTurnId, moveMode, selectedEntity, busy, onCellClick }) {
-  const moveTargetsVisible = moveMode && selectedEntity && !busy;
-
-  function handleGridClick(event) {
-    const cell = event.target.closest?.("[data-map-cell='true']");
-    if (!cell || !event.currentTarget.contains(cell)) {
-      return;
-    }
-    onCellClick(Number(cell.dataset.mapX), Number(cell.dataset.mapY), cell.dataset.mapEntityId || null);
-  }
-
-  return (
-    <div
-      className={`battle-map-grid ${moveTargetsVisible ? "battle-map-grid-move" : ""}`.trim()}
-      role="grid"
-      aria-label="Battle room grid"
-      style={{ gridTemplateColumns: `repeat(${room.columns}, var(--map-cell-size))` }}
-      onClick={handleGridClick}
-    >
-      {cells.map(({ x, y, entity }) => {
-        const entityState = entity ? getEntityState(entity, selectedId, activeTurnId) : null;
-        const isEven = (x + y) % 2 === 0;
-        return (
-          <MapCell
-            key={positionKey(x, y)}
-            x={x}
-            y={y}
-            entity={entity}
-            entityState={entityState}
-            isEven={isEven}
-          />
-        );
-      })}
-    </div>
-  );
-}
-
-const MapCell = memo(function MapCell({ x, y, entity, entityState, isEven }) {
-  return (
-    <button
-      type="button"
-      className={["map-cell", isEven ? "map-cell-even" : "map-cell-odd", entity ? "map-cell-occupied" : ""]
-        .filter(Boolean)
-        .join(" ")}
-      data-map-cell="true"
-      data-map-x={x}
-      data-map-y={y}
-      data-map-occupied={entity ? "true" : "false"}
-      data-map-selected={entityState?.isSelected ? "true" : "false"}
-      data-map-entity-id={entity?.instance_id || ""}
-      aria-label={entity ? `Cell ${x + 1}, ${y + 1}: ${entity.name}` : `Cell ${x + 1}, ${y + 1}`}
-    >
-      {entity ? (
-        <MapToken entity={entity} entityState={entityState} />
-      ) : (
-        <span className="map-cell-coordinates" aria-hidden="true">
-          {x + 1},{y + 1}
-        </span>
-      )}
-    </button>
-  );
-});
-
-function MapToken({ entity, entityState }) {
-  const hpValue = entity.is_player ? 100 : percent(entity.hp_current, entity.hp_max);
-  const statusKeys = Object.keys(entity.statuses || {});
-
-  return (
-    <div
-      className={`map-token ${entity.is_player ? "map-token-player-unit" : ""} ${getStateClassNames("map-token", entityState)} ${entity.is_down ? "map-token-down" : ""}`.trim()}
-      data-state={entityState?.toneClass || "state-idle"}
-      data-map-token="true"
-    >
-      <span className="map-token-initial" aria-hidden="true">
-        {getEntityInitial(entity)}
-      </span>
-      {entity.image_url ? <img className="map-token-image" src={entity.image_url} alt="" aria-hidden="true" /> : null}
-      <span className={`map-token-type ${entity.is_player ? "map-token-player" : "map-token-enemy"}`} aria-hidden="true" />
-      {entity.is_down ? <span className="map-token-down-label">Down</span> : null}
-      {!entity.is_player ? (
-        <span className="map-token-health" aria-hidden="true">
-          <span style={{ width: `${hpValue}%`, background: barTone(hpValue) }} />
-        </span>
-      ) : null}
-      {statusKeys.length ? (
-        <span className="map-token-statuses" aria-hidden="true">
-          {statusKeys.slice(0, 3).map((statusKey) => (
-            <span key={statusKey}>{statusKey.charAt(0).toUpperCase()}</span>
-          ))}
-        </span>
       ) : null}
     </div>
   );
