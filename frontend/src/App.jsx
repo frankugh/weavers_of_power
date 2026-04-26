@@ -354,6 +354,7 @@ function App() {
   const selectedHasDraw = Boolean(selectedEntity?.current_draw_text?.length);
   const selectedHasLoot = Boolean(selectedEntity?.loot_rolled);
   const canOpenActionMore = Boolean(canRedraw || canAttackOrHeal || canRollLoot);
+  const sessionHasHistory = Boolean(snapshot?.canUndo || snapshot?.canRedo || snapshot?.undoDepth || snapshot?.redoDepth);
   const selectedDrawPreviewHighlighted = Boolean(
     drawReveal?.phase === "settle" && selectedEntity?.instance_id === drawReveal.entityId,
   );
@@ -412,6 +413,14 @@ function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function requestNewSession() {
+    if (!sessionHasHistory) {
+      createNewSession();
+      return;
+    }
+    setModal("new-session-confirm");
   }
 
   async function handleUndo() {
@@ -763,7 +772,7 @@ function App() {
         </div>
 
         <div className="menu-actions">
-          <button className="menu-button" onClick={createNewSession} disabled={busy}>
+          <button className="menu-button" onClick={requestNewSession} disabled={busy}>
             New
           </button>
           <button className="menu-button" onClick={handleUndo} disabled={busy || !snapshot.canUndo}>
@@ -1591,6 +1600,26 @@ function App() {
       </ModalShell>
 
       <ModalShell
+        open={modal === "new-session-confirm"}
+        title="Confirm New Session"
+        onClose={closeModal}
+        closeOnOutsideClick={false}
+        showCloseButton={false}
+      >
+        <div className="panel-body modal-form">
+          <div className="subtle-copy">Current session progress will be discarded.</div>
+          <div className="modal-actions">
+            <button className="primary-button danger-button" type="button" onClick={createNewSession} disabled={busy}>
+              Start New Session
+            </button>
+            <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
         open={modal === "draw-detail" && Boolean(drawDetail)}
         title="Draw card"
         subtitle={drawDetail?.entityName || ""}
@@ -1939,7 +1968,16 @@ function ToggleField({ label, checked, onChange }) {
   );
 }
 
-function ModalShell({ open, title, subtitle, onClose, children, size = "default", closeOnOutsideClick = true }) {
+function ModalShell({
+  open,
+  title,
+  subtitle,
+  onClose,
+  children,
+  size = "default",
+  closeOnOutsideClick = true,
+  showCloseButton = true,
+}) {
   if (!open) {
     return null;
   }
@@ -1955,9 +1993,11 @@ function ModalShell({ open, title, subtitle, onClose, children, size = "default"
             <div className="panel-title">{title}</div>
             {subtitle ? <div className="panel-detail">{subtitle}</div> : null}
           </div>
-          <button className="small-button" onClick={onClose}>
-            Close
-          </button>
+          {showCloseButton ? (
+            <button className="small-button" onClick={onClose}>
+              Close
+            </button>
+          ) : null}
         </div>
         {children}
       </div>

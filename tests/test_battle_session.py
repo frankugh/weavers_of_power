@@ -62,8 +62,25 @@ class BattleSessionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "occupied"):
             session.set_entity_position(second_id, 0, 0)
+        session.state.enemies[first_id].hp_current = 0
+        session.set_entity_position(second_id, 0, 0)
+        moved_second = session.state.enemies[second_id]
+        self.assertEqual((moved_second.grid_x, moved_second.grid_y), (0, 0))
         with self.assertRaisesRegex(ValueError, "outside"):
             session.set_entity_position(second_id, 99, 0)
+
+    def test_auto_place_ignores_down_units_as_blockers(self) -> None:
+        session = self.context.create_session("map-down-passable")
+        session.add_enemy_from_template("goblin")
+        down_id = session.selected_id
+        session.state.enemies[down_id].hp_current = 0
+
+        session.add_player()
+        player = session.state.enemies[session.selected_id]
+        down = session.state.enemies[down_id]
+
+        self.assertEqual((down.grid_x, down.grid_y), (4, 3))
+        self.assertEqual((player.grid_x, player.grid_y), (4, 3))
 
     def test_resize_warns_then_auto_places_out_of_bounds_units(self) -> None:
         session = self.context.create_session("map-resize")

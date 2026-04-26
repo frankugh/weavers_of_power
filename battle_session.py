@@ -441,7 +441,7 @@ class BattleSession:
         y = int(y)
         if not self._position_in_bounds(x, y):
             raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is outside the battle map")
-        occupying = self._entity_at_position(x, y, exclude_id=instance_id)
+        occupying = self._entity_at_position(x, y, exclude_id=instance_id, blocking_only=True)
         if occupying:
             raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is occupied by {occupying.name}")
 
@@ -832,9 +832,12 @@ class BattleSession:
         y: int,
         *,
         exclude_id: Optional[str] = None,
+        blocking_only: bool = False,
     ) -> Optional[EnemyInstance]:
         for entity in self.state.enemies.values():
             if entity.instance_id == exclude_id:
+                continue
+            if blocking_only and not self._blocks_position(entity):
                 continue
             if self._has_position(entity) and int(entity.grid_x) == x and int(entity.grid_y) == y:
                 return entity
@@ -845,9 +848,15 @@ class BattleSession:
         for entity in self.state.enemies.values():
             if entity.instance_id == exclude_id:
                 continue
+            if not self._blocks_position(entity):
+                continue
             if self._has_position(entity) and self._position_in_bounds(entity.grid_x, entity.grid_y):
                 positions.add((int(entity.grid_x), int(entity.grid_y)))
         return positions
+
+    @staticmethod
+    def _blocks_position(entity: EnemyInstance) -> bool:
+        return not BattleSession.is_down(entity)
 
     def _candidate_positions(self) -> list[tuple[int, int]]:
         center_x = (self.room_columns - 1) / 2

@@ -365,6 +365,22 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(resize_confirm.status_code, 200)
         self.assertEqual(resize_confirm.json()["room"], {"columns": 3, "rows": 3})
 
+        down_response = self.client.post(
+            f"/api/battle/sessions/{sid}/attack",
+            json={"damage": 999},
+        )
+        self.assertEqual(down_response.status_code, 200)
+        down_first = next(enemy for enemy in down_response.json()["enemies"] if enemy["instance_id"] == first_id)
+        self.assertTrue(down_first["is_down"])
+
+        passable_response = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{second_id}/position",
+            json={"x": 0, "y": 0},
+        )
+        self.assertEqual(passable_response.status_code, 200)
+        stacked_second = next(enemy for enemy in passable_response.json()["enemies"] if enemy["instance_id"] == second_id)
+        self.assertEqual((stacked_second["grid_x"], stacked_second["grid_y"]), (0, 0))
+
 
 if __name__ == "__main__":
     unittest.main()

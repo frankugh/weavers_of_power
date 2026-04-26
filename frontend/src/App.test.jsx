@@ -246,6 +246,78 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Redo" })).toBeDisabled();
   });
 
+  it("starts a new session directly when the current session has no history", async () => {
+    const user = userEvent.setup();
+    const newSnapshot = buildSnapshot({
+      sid: "sid-456",
+      selectedId: null,
+      activeTurnId: null,
+      order: [],
+      enemies: [],
+      combatLog: [],
+    });
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions" && requestOptions?.method === "POST") {
+          return jsonResponse(newSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "New" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/battle/sessions", expect.objectContaining({ method: "POST" }));
+    });
+    expect(screen.queryByText("Start New Session")).not.toBeInTheDocument();
+    expect(window.location.search).toContain("sid=sid-456");
+  });
+
+  it("requires confirmation before starting a new session when history exists", async () => {
+    const user = userEvent.setup();
+    const newSnapshot = buildSnapshot({
+      sid: "sid-456",
+      selectedId: null,
+      activeTurnId: null,
+      order: [],
+      enemies: [],
+      combatLog: [],
+    });
+
+    renderWithSnapshot(buildSnapshot({ canUndo: true, undoDepth: 1 }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions" && requestOptions?.method === "POST") {
+          return jsonResponse(newSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "New" }));
+
+    expect(screen.getByText("Confirm New Session")).toBeInTheDocument();
+    expect(screen.getByText("Current session progress will be discarded.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+    expect(global.fetch).not.toHaveBeenCalledWith("/api/battle/sessions", expect.objectContaining({ method: "POST" }));
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByText("Confirm New Session")).not.toBeInTheDocument();
+    expect(window.location.search).toContain("sid=sid-123");
+
+    await user.click(screen.getByRole("button", { name: "New" }));
+    await user.click(screen.getByRole("button", { name: "Start New Session" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/battle/sessions", expect.objectContaining({ method: "POST" }));
+    });
+    expect(await screen.findByText("Started a new session")).toBeInTheDocument();
+    expect(window.location.search).toContain("sid=sid-456");
+  });
+
   it("posts Undo from the top menu and updates the snapshot", async () => {
     const user = userEvent.setup();
     const undoSnapshot = buildSnapshot({
@@ -809,6 +881,100 @@ describe("App", () => {
       );
     });
     expect(await screen.findByText("Moved Goblin 1 to (1, 1)")).toBeInTheDocument();
+  });
+
+  it("moves the selected unit onto a cell occupied only by a down unit", async () => {
+    const user = userEvent.setup();
+    const downEnemy = buildEnemy({
+      instance_id: "enemy-2",
+      name: "Down Goblin",
+      hp_current: 0,
+      is_down: true,
+      grid_x: 0,
+      grid_y: 0,
+    });
+    const movedSnapshot = buildSnapshot({
+      order: ["enemy-1", "enemy-2"],
+      enemies: [buildEnemy({ grid_x: 0, grid_y: 0 }), downEnemy],
+      combatLog: ["Moved Goblin 1 to (1, 1)"],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        order: ["enemy-1", "enemy-2"],
+        enemies: [buildEnemy(), downEnemy],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/entities/enemy-1/position" && requestOptions?.method === "POST") {
+            return jsonResponse(movedSnapshot);
+          }
+          if (url === "/api/battle/sessions/sid-123/select") {
+            throw new Error("Move onto down-only cell should not select the down unit");
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Move" }));
+    pointerClickMapCell(0, 0);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/enemy-1/position",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ x: 0, y: 0 }),
+        }),
+      );
+    });
+  });
+
+  it("selects a down unit on the battle map outside move mode", async () => {
+    const downEnemy = buildEnemy({
+      instance_id: "enemy-2",
+      name: "Down Goblin",
+      hp_current: 0,
+      is_down: true,
+      grid_x: 0,
+      grid_y: 0,
+    });
+    const selectedSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      order: ["enemy-1", "enemy-2"],
+      enemies: [buildEnemy(), downEnemy],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        order: ["enemy-1", "enemy-2"],
+        enemies: [buildEnemy(), downEnemy],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+            return jsonResponse(selectedSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Goblin 1");
+    pointerClickMapCell(0, 0);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/select",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ instanceId: "enemy-2" }),
+        }),
+      );
+    });
+    expect(await screen.findByText("Selected: Down Goblin")).toBeInTheDocument();
   });
 
   it("keeps a 99x99 battle map as a canvas surface without cell buttons", async () => {

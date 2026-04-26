@@ -71,6 +71,25 @@ function positionKey(x, y) {
   return `${x}:${y}`;
 }
 
+function isBlockingEntity(entity) {
+  return !entity?.is_down;
+}
+
+function getEntitiesAtPosition(entitiesByPosition, cell) {
+  if (!cell) {
+    return [];
+  }
+  return entitiesByPosition.get(positionKey(cell.x, cell.y)) || [];
+}
+
+function getBlockingEntity(entities) {
+  return entities.find(isBlockingEntity) || null;
+}
+
+function getTopSelectableEntity(entities) {
+  return getBlockingEntity(entities) || entities[0] || null;
+}
+
 function percent(current, max) {
   if (!max) {
     return 0;
@@ -116,7 +135,7 @@ function drawGrid(graphics, room, cellSize) {
   graphics.stroke({ color: 0x513a23, alpha: 0.62, width: 1 });
 }
 
-function drawMoveHighlights(graphics, room, cellSize, moveMode, selectedEntity, busy, hoverCell, occupiedByPosition) {
+function drawMoveHighlights(graphics, room, cellSize, moveMode, selectedEntity, busy, hoverCell, blockingByPosition) {
   graphics.clear();
 
   if (!moveMode || !selectedEntity || busy) {
@@ -129,7 +148,7 @@ function drawMoveHighlights(graphics, room, cellSize, moveMode, selectedEntity, 
     .fill({ color: 0x7db97f, alpha: 0.045 })
     .stroke({ color: 0x7db97f, alpha: 0.38, width: 2 });
 
-  if (hoverCell && !occupiedByPosition.has(positionKey(hoverCell.x, hoverCell.y))) {
+  if (hoverCell && !blockingByPosition.has(positionKey(hoverCell.x, hoverCell.y))) {
     const bounds = cellBounds(hoverCell.x, hoverCell.y, cellSize);
     graphics
       .rect(bounds.x, bounds.y, bounds.width, bounds.height)
@@ -237,26 +256,28 @@ function renderPixiScene(renderer, state) {
   }
 
   const { PIXI, app, world, layers, textures } = renderer;
-  const { room, placedEntities, selectedId, activeTurnId, moveMode, selectedEntity, busy, hoverCell, occupiedByPosition, cellSize, camera } = state;
+  const { room, placedEntities, selectedId, activeTurnId, moveMode, selectedEntity, busy, hoverCell, blockingByPosition, cellSize, camera } = state;
 
   world.position.set(camera.x, camera.y);
   drawGrid(layers.terrain, room, cellSize);
-  drawMoveHighlights(layers.highlights, room, cellSize, moveMode, selectedEntity, busy, hoverCell, occupiedByPosition);
+  drawMoveHighlights(layers.highlights, room, cellSize, moveMode, selectedEntity, busy, hoverCell, blockingByPosition);
   clearLayer(layers.units);
 
-  placedEntities.forEach((entity) => {
-    drawUnit(
-      PIXI,
-      layers.units,
-      entity,
-      {
-        isSelected: entity.instance_id === selectedId,
-        isActive: entity.instance_id === activeTurnId,
-      },
-      cellSize,
-      entity.image_url ? textures.get(entity.image_url) : null,
-    );
-  });
+  [...placedEntities]
+    .sort((first, second) => Number(second.is_down) - Number(first.is_down))
+    .forEach((entity) => {
+      drawUnit(
+        PIXI,
+        layers.units,
+        entity,
+        {
+          isSelected: entity.instance_id === selectedId,
+          isActive: entity.instance_id === activeTurnId,
+        },
+        cellSize,
+        entity.image_url ? textures.get(entity.image_url) : null,
+      );
+    });
 
   app.render();
 }
@@ -290,8 +311,22 @@ function BattleMapSurface({
   const [textureVersion, setTextureVersion] = useState(0);
 
   const placedEntities = useMemo(() => entities.filter((entity) => hasGridPosition(entity, room)), [entities, room.columns, room.rows]);
-  const occupiedByPosition = useMemo(
-    () => new Map(placedEntities.map((entity) => [positionKey(entity.grid_x, entity.grid_y), entity])),
+  const entitiesByPosition = useMemo(() => {
+    const next = new Map();
+    placedEntities.forEach((entity) => {
+      const key = positionKey(entity.grid_x, entity.grid_y);
+      const current = next.get(key) || [];
+      next.set(key, [...current, entity]);
+    });
+    return next;
+  }, [placedEntities]);
+  const blockingByPosition = useMemo(
+    () =>
+      new Map(
+        placedEntities
+          .filter(isBlockingEntity)
+          .map((entity) => [positionKey(entity.grid_x, entity.grid_y), entity]),
+      ),
     [placedEntities],
   );
 
@@ -441,11 +476,11 @@ function BattleMapSurface({
       selectedEntity,
       busy,
       hoverCell,
-      occupiedByPosition,
+      blockingByPosition,
       cellSize,
       camera,
     });
-  }, [pixiReady, textureVersion, room, placedEntities, selectedId, activeTurnId, moveMode, selectedEntity, busy, hoverCell, occupiedByPosition, cellSize, camera]);
+  }, [pixiReady, textureVersion, room, placedEntities, selectedId, activeTurnId, moveMode, selectedEntity, busy, hoverCell, blockingByPosition, cellSize, camera]);
 
   useEffect(() => {
     const renderer = rendererRef.current;
@@ -614,10 +649,10 @@ function BattleMapSurface({
     }
 
     const cell = cellFromPointer(event);
-    const occupied = cell ? occupiedByPosition.has(positionKey(cell.x, cell.y)) : false;
+    const blocking = cell ? blockingByPosition.has(positionKey(cell.x, cell.y)) : false;
     const isMiddleMouse = pointerType !== "touch" && pointerButton === 1;
     const isLeftMouse = pointerType !== "touch" && pointerButton === 0;
-    const canStartPan = isMiddleMouse || ((isLeftMouse || pointerType === "touch") && !occupied);
+    const canStartPan = isMiddleMouse || ((isLeftMouse || pointerType === "touch") && !blocking);
 
     if (!canStartPan) {
       panRef.current = null;
@@ -717,13 +752,24 @@ function BattleMapSurface({
       return;
     }
 
-    const occupant = occupiedByPosition.get(positionKey(clickCell.x, clickCell.y));
-    if (occupant) {
-      onSelect(occupant.instance_id);
+    const cellEntities = getEntitiesAtPosition(entitiesByPosition, clickCell);
+    const selectedOccupant = selectedEntity
+      ? cellEntities.find((entity) => entity.instance_id === selectedEntity.instance_id)
+      : null;
+    const blockingOccupant = getBlockingEntity(cellEntities);
+
+    if (selectedOccupant) {
+      onSelect(selectedOccupant.instance_id);
       return;
     }
-    if (moveMode && selectedEntity && !busy) {
+    if (moveMode && selectedEntity && !busy && !blockingOccupant) {
       onMoveToCell(clickCell.x, clickCell.y);
+      return;
+    }
+
+    const occupant = getTopSelectableEntity(cellEntities);
+    if (occupant) {
+      onSelect(occupant.instance_id);
     }
   }
 
