@@ -193,7 +193,7 @@ function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [modal, setModal] = useState(null);
-  const [customExpanded, setCustomExpanded] = useState(false);
+  const [addUnitTab, setAddUnitTab] = useState("premade");
   const [templateSearch, setTemplateSearch] = useState("");
   const [templateCategory, setTemplateCategory] = useState("All");
   const [mapMode, setMapMode] = useState(MAP_MODES.IDLE);
@@ -217,6 +217,14 @@ function App() {
     draws: 1,
     movement: 6,
     coreDeckId: "",
+  });
+  const [pcForm, setPcForm] = useState({
+    name: "",
+    hp: 10,
+    armor: 0,
+    magicArmor: 0,
+    draws: 0,
+    movement: 6,
   });
 
   useEffect(() => {
@@ -458,7 +466,7 @@ function App() {
 
   function closeModal() {
     setModal(null);
-    setCustomExpanded(false);
+    setAddUnitTab("premade");
     setTemplateSearch("");
     setTemplateCategory("All");
     setPendingRoomResize(null);
@@ -572,7 +580,7 @@ function App() {
   }
 
   function openAddUnitModal() {
-    setCustomExpanded(false);
+    setAddUnitTab("premade");
     setTemplateSearch("");
     setTemplateCategory("All");
     setModal("add");
@@ -847,12 +855,18 @@ function App() {
       `/api/battle/sessions/${snapshot.sid}/players`,
       {
         method: "POST",
+        body: JSON.stringify(pcForm),
       },
       "Player added",
     );
     if (payload) {
       closeModal();
     }
+  }
+
+  async function handleAddPC(event) {
+    event.preventDefault();
+    await handleAddPlayer();
   }
 
   async function handleAddCustomEnemy(event) {
@@ -1395,23 +1409,19 @@ function App() {
                   <div className="unit-stat-strip">
                     <span className="unit-stat-chip unit-stat-hp">
                       <span>HP</span>
-                      <strong>{selectedEntity.is_player ? "Player" : `${selectedEntity.hp_current}/${selectedEntity.hp_max}`}</strong>
+                      <strong>{`${selectedEntity.hp_current}/${selectedEntity.hp_max}`}</strong>
                     </span>
                     <span className="unit-stat-chip">
                       <span>Armor</span>
-                      <strong>{selectedEntity.is_player ? "-" : `${selectedEntity.armor_current}/${selectedEntity.armor_max}`}</strong>
+                      <strong>{`${selectedEntity.armor_current}/${selectedEntity.armor_max}`}</strong>
                     </span>
                     <span className="unit-stat-chip unit-stat-arcane">
                       <span>M Armor</span>
-                      <strong>
-                        {selectedEntity.is_player
-                          ? "-"
-                          : `${selectedEntity.magic_armor_current}/${selectedEntity.magic_armor_max}`}
-                      </strong>
+                      <strong>{`${selectedEntity.magic_armor_current}/${selectedEntity.magic_armor_max}`}</strong>
                     </span>
                     <span className="unit-stat-chip unit-stat-guard">
                       <span>Guard</span>
-                      <strong>{selectedEntity.is_player ? "-" : `${selectedEntity.guard_current}`}</strong>
+                      <strong>{selectedEntity.guard_current}</strong>
                     </span>
                     <span className="unit-stat-chip">
                       <span>Draw</span>
@@ -1419,23 +1429,21 @@ function App() {
                     </span>
                     <span className="unit-stat-chip unit-stat-move">
                       <span>Move</span>
-                      <strong>{selectedEntity.is_player ? "-" : `${selectedEntity.effective_movement}`}</strong>
+                      <strong>{selectedEntity.effective_movement}</strong>
                     </span>
                   </div>
 
-                  {!selectedEntity.is_player ? (
-                    <>
-                      <ProgressBar label="Vitality" value={percent(selectedEntity.hp_current, selectedEntity.hp_max)} compact />
-                      {selectedStatuses.length ? (
-                        <div className="selected-statuses">
-                          {selectedStatuses.map(([statusKey, statusValue]) => (
-                            <span className="status-pill" key={statusKey}>
-                              {formatStatusLabel(statusKey, statusValue)}
-                            </span>
-                          ))}
-                        </div>
-                      ) : null}
-                    </>
+                  {selectedEntity.hp_max > 0 ? (
+                    <ProgressBar label="Vitality" value={percent(selectedEntity.hp_current, selectedEntity.hp_max)} compact />
+                  ) : null}
+                  {!selectedEntity.is_player && selectedStatuses.length ? (
+                    <div className="selected-statuses">
+                      {selectedStatuses.map(([statusKey, statusValue]) => (
+                        <span className="status-pill" key={statusKey}>
+                          {formatStatusLabel(statusKey, statusValue)}
+                        </span>
+                      ))}
+                    </div>
                   ) : null}
 
                   {selectedHasLoot ? (
@@ -1803,81 +1811,146 @@ function App() {
         size="wide"
       >
         <div className="panel-body add-unit-body">
-          <section className="add-unit-section">
-            <div className="form-section-title">Premade Enemies</div>
-            <div className="template-library-controls">
-              <label className="field template-search-field">
-                <span>Search enemies</span>
-                <input
-                  type="search"
-                  value={templateSearch}
-                  onChange={(event) => setTemplateSearch(event.target.value)}
-                  placeholder="Name or id"
-                />
-              </label>
-              <div className="template-category-tabs" role="tablist" aria-label="Enemy categories">
-                {templateCategories.map((category) => (
+          <div className="add-unit-tabs" role="tablist">
+            {[["premade", "Premade"], ["pc", "Player Character"], ["custom", "Custom Enemy"]].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={addUnitTab === id}
+                className={`add-unit-tab ${addUnitTab === id ? "add-unit-tab-active" : ""}`.trim()}
+                onClick={() => setAddUnitTab(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {addUnitTab === "premade" && (
+            <div className="add-unit-tab-panel">
+              <div className="template-library-controls">
+                <label className="field template-search-field">
+                  <span>Search enemies</span>
+                  <input
+                    type="search"
+                    value={templateSearch}
+                    onChange={(event) => setTemplateSearch(event.target.value)}
+                    placeholder="Name or id"
+                  />
+                </label>
+                <div className="template-category-tabs" role="tablist" aria-label="Enemy categories">
+                  {templateCategories.map((category) => (
+                    <button
+                      key={category}
+                      type="button"
+                      className={`template-category-tab ${templateCategory === category ? "template-category-tab-active" : ""}`.trim()}
+                      onClick={() => setTemplateCategory(category)}
+                      role="tab"
+                      aria-selected={templateCategory === category}
+                    >
+                      {category === "All" ? "All" : titleCaseFromSnake(category)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="premade-grid">
+                {shownTemplates.map((template) => (
                   <button
-                    key={category}
+                    key={template.id}
                     type="button"
-                    className={`template-category-tab ${templateCategory === category ? "template-category-tab-active" : ""}`.trim()}
-                    onClick={() => setTemplateCategory(category)}
-                    role="tab"
-                    aria-selected={templateCategory === category}
+                    className="premade-card"
+                    onClick={() => handleAddEnemyFromTemplate(template.id)}
+                    disabled={busy}
                   >
-                    {category === "All" ? "All" : titleCaseFromSnake(category)}
+                    <div className="premade-card-art">
+                      <img src={template.imageUrl} alt={template.name} />
+                    </div>
+                    <div className="premade-card-copy">
+                      <div className="premade-card-kicker">{titleCaseFromSnake(getTemplateCategory(template))}</div>
+                      <div className="premade-card-name">{template.name}</div>
+                      <div className="premade-card-meta">{titleCaseFromSnake(template.id)}</div>
+                    </div>
                   </button>
                 ))}
+                {!shownTemplates.length ? <div className="empty-copy premade-empty">No enemies match these filters.</div> : null}
               </div>
             </div>
-            <div className="premade-grid">
-              {shownTemplates.map((template) => (
-                <button
-                  key={template.id}
-                  type="button"
-                  className="premade-card"
-                  onClick={() => handleAddEnemyFromTemplate(template.id)}
-                  disabled={busy}
-                >
-                  <div className="premade-card-art">
-                    <img src={template.imageUrl} alt={template.name} />
-                  </div>
-                  <div className="premade-card-copy">
-                    <div className="premade-card-kicker">{titleCaseFromSnake(getTemplateCategory(template))}</div>
-                    <div className="premade-card-name">{template.name}</div>
-                    <div className="premade-card-meta">{titleCaseFromSnake(template.id)}</div>
-                  </div>
-                </button>
-              ))}
-              {!shownTemplates.length ? <div className="empty-copy premade-empty">No enemies match these filters.</div> : null}
+          )}
+
+          {addUnitTab === "pc" && (
+            <div className="add-unit-tab-panel">
+              <form className="modal-form" onSubmit={handleAddPC}>
+                <div className="field-grid">
+                  <label className="field field-full">
+                    <span>Name</span>
+                    <input
+                      type="text"
+                      placeholder="Player 1"
+                      value={pcForm.name}
+                      onChange={(event) => setPcForm((current) => ({ ...current, name: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>HP</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={pcForm.hp}
+                      onChange={(event) => setPcForm((current) => ({ ...current, hp: Number(event.target.value) }))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Armor</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={pcForm.armor}
+                      onChange={(event) => setPcForm((current) => ({ ...current, armor: Number(event.target.value) }))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Magic armor</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={pcForm.magicArmor}
+                      onChange={(event) => setPcForm((current) => ({ ...current, magicArmor: Number(event.target.value) }))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Draws</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={pcForm.draws}
+                      onChange={(event) => setPcForm((current) => ({ ...current, draws: Number(event.target.value) }))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Movement</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={pcForm.movement}
+                      onChange={(event) => setPcForm((current) => ({ ...current, movement: Number(event.target.value) }))}
+                    />
+                  </label>
+                </div>
+                <div className="modal-actions">
+                  <button className="primary-button" type="submit" disabled={busy}>
+                    Add player character
+                  </button>
+                  <button className="secondary-button" type="button" onClick={closeModal}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
             </div>
-          </section>
+          )}
 
-          <section className="add-unit-section">
-            <div className="form-section-title">Add Player</div>
-            <button type="button" className="secondary-button add-player-card" onClick={handleAddPlayer} disabled={busy}>
-              Add player card
-            </button>
-          </section>
-
-          <section className="add-unit-section">
-            <div className="add-unit-custom-header">
-              <div>
-                <div className="form-section-title">Custom Enemy</div>
-                <div className="subtle-copy">Compact runtime enemy using an existing deck.</div>
-              </div>
-              <button
-                type="button"
-                className="small-button"
-                onClick={() => setCustomExpanded((current) => !current)}
-                disabled={busy || meta.decks.length === 0}
-              >
-                {customExpanded ? "Hide" : "Show"}
-              </button>
-            </div>
-
-            {customExpanded ? (
-              <form className="modal-form add-unit-custom-form" onSubmit={handleAddCustomEnemy}>
+          {addUnitTab === "custom" && (
+            <div className="add-unit-tab-panel">
+              <form className="modal-form" onSubmit={handleAddCustomEnemy}>
                 <div className="field-grid">
                   <label className="field field-full">
                     <span>Name</span>
@@ -1950,7 +2023,6 @@ function App() {
                     </select>
                   </label>
                 </div>
-
                 <div className="modal-actions">
                   <button className="primary-button" type="submit" disabled={busy}>
                     Add custom enemy
@@ -1960,8 +2032,8 @@ function App() {
                   </button>
                 </div>
               </form>
-            ) : null}
-          </section>
+            </div>
+          )}
         </div>
       </ModalShell>
 

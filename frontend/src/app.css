@@ -2140,21 +2140,43 @@ button.draw-card:hover {
 .add-unit-body {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 0;
   padding-top: 10px;
 }
 
-.add-unit-section {
+.add-unit-tabs {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-top: 14px;
-  border-top: 1px solid rgba(221, 185, 121, 0.14);
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 14px;
 }
 
-.add-unit-section:first-child {
-  padding-top: 0;
-  border-top: 0;
+.add-unit-tab {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(20, 14, 10, 0.72);
+  color: var(--muted);
+  padding: 7px 14px;
+  font-size: 0.82rem;
+}
+
+.add-unit-tab:hover,
+.add-unit-tab-active {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: rgba(221, 185, 121, 0.12);
+}
+
+.add-unit-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 16px;
+}
+
+.premade-grid {
+  max-height: 380px;
+  overflow-y: auto;
 }
 
 .premade-grid {
@@ -2260,21 +2282,6 @@ button.draw-card:hover {
 
 .premade-empty {
   grid-column: 1 / -1;
-}
-
-.add-player-card {
-  justify-content: center;
-}
-
-.add-unit-custom-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.add-unit-custom-form {
-  padding-top: 2px;
 }
 
 .screen-state {

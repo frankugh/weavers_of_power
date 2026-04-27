@@ -82,21 +82,29 @@ def spawn_custom_enemy(
     )
 
 
-def spawn_player(name: str) -> EnemyInstance:
+def spawn_player(
+    name: str,
+    *,
+    hp: int = 0,
+    armor: int = 0,
+    magic_armor: int = 0,
+    draws: int = 0,
+    movement: int = 6,
+) -> EnemyInstance:
     return EnemyInstance(
         instance_id=uuid_short(),
         template_id="player",
         name=name,
         image=None,
-        hp_current=0,
-        hp_max=0,
-        armor_current=0,
-        armor_max=0,
-        magic_armor_current=0,
-        magic_armor_max=0,
+        hp_current=hp,
+        hp_max=hp,
+        armor_current=armor,
+        armor_max=armor,
+        magic_armor_current=magic_armor,
+        magic_armor_max=magic_armor,
         guard_current=0,
-        draws_base=0,
-        movement=4,
+        draws_base=draws,
+        movement=movement,
         deck_state=DeckState(draw_pile=[], discard_pile=[], hand=[]),
         statuses={},
     )
@@ -388,8 +396,25 @@ class BattleSession:
         self._add_log(f"Added custom enemy: {instance.name}")
         self.autosave()
 
-    def add_player(self) -> None:
-        instance = spawn_player(f"Player {self._next_suffix('Player')}")
+    def add_player(
+        self,
+        *,
+        name: str = "",
+        hp: int = 0,
+        armor: int = 0,
+        magic_armor: int = 0,
+        draws: int = 0,
+        movement: int = 6,
+    ) -> None:
+        resolved_name = name.strip() or f"Player {self._next_suffix('Player')}"
+        instance = spawn_player(
+            resolved_name,
+            hp=max(0, int(hp)),
+            armor=max(0, int(armor)),
+            magic_armor=max(0, int(magic_armor)),
+            draws=max(0, int(draws)),
+            movement=max(0, int(movement)),
+        )
         self.state.add_enemy(instance)
         self._auto_place_entity(instance)
         self.order.append(instance.instance_id)

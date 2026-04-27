@@ -50,6 +50,15 @@ class CustomEnemyRequest(BaseModel):
     coreDeckId: str
 
 
+class AddPlayerRequest(BaseModel):
+    name: str = ""
+    hp: int = Field(default=0, ge=0)
+    armor: int = Field(default=0, ge=0)
+    magicArmor: int = Field(default=0, ge=0)
+    draws: int = Field(default=0, ge=0)
+    movement: int = Field(default=6, ge=0)
+
+
 class AddEnemyRequest(BaseModel):
     templateId: Optional[str] = None
     custom: Optional[CustomEnemyRequest] = None
@@ -155,8 +164,18 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
         return run_mutation(sid, mutate)
 
     @api_app.post("/api/battle/sessions/{sid}/players")
-    def add_player(sid: str):
-        return run_mutation(sid, lambda session: session.add_player())
+    def add_player(sid: str, request: AddPlayerRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.add_player(
+                name=request.name,
+                hp=request.hp,
+                armor=request.armor,
+                magic_armor=request.magicArmor,
+                draws=request.draws,
+                movement=request.movement,
+            ),
+        )
 
     @api_app.delete("/api/battle/sessions/{sid}/entities/{instance_id}")
     def delete_entity(sid: str, instance_id: str):

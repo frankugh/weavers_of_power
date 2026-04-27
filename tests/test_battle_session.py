@@ -132,6 +132,7 @@ class BattleSessionTests(unittest.TestCase):
         entity_id = session.selected_id
         session.set_entity_position(entity_id, 0, 0)
         session.next_turn()
+        session.start_new_round()  # single unit always wraps
 
         session.move_entity_with_movement(entity_id, 2, 0)
         session.move_entity_with_movement(entity_id, 3, 0)
@@ -170,6 +171,7 @@ class BattleSessionTests(unittest.TestCase):
         entity_id = session.selected_id
         session.set_entity_position(entity_id, 0, 0)
         session.next_turn()
+        session.start_new_round()  # single unit always wraps
 
         session.move_entity_with_movement(entity_id, 1, 1)
         self.assertEqual(session.movement_state["movement_used"], 1)
@@ -268,6 +270,7 @@ class BattleSessionTests(unittest.TestCase):
         entity_id = session.selected_id
         session.set_entity_position(entity_id, 0, 0)
         session.next_turn()
+        session.start_new_round()  # single unit always wraps
         session.move_entity_with_movement(entity_id, 2, 0)
 
         reloaded = self.context.load_session("movement-persist")
@@ -275,6 +278,7 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(reloaded.movement_state["movement_used"], 2)
 
         reloaded.next_turn()
+        reloaded.start_new_round()  # single unit wraps again
         self.assertEqual(reloaded.movement_state["entity_id"], entity_id)
         self.assertEqual(reloaded.movement_state["movement_used"], 0)
 
@@ -361,6 +365,7 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(session.visible_draw_for(enemy), first_visible_draw)
 
         session.next_turn()
+        session.start_new_round()  # single unit always wraps
 
         self.assertEqual(session.active_turn_id, enemy.instance_id)
         self.assertFalse(session.turn_in_progress)
@@ -409,6 +414,7 @@ class BattleSessionTests(unittest.TestCase):
 
         session.select(second_id)
         session.next_turn()
+        session.start_new_round()  # wraps back to first unit
 
         self.assertEqual(session.active_turn_id, first_id)
         self.assertEqual(session.visible_draw_for(first_enemy), [])
@@ -432,6 +438,7 @@ class BattleSessionTests(unittest.TestCase):
         self.assertIn("slowed", second_enemy.statuses)
 
         session.next_turn()
+        session.start_new_round()  # wraps back to first unit
 
         self.assertEqual(session.active_turn_id, first_id)
         self.assertNotIn("slowed", second_enemy.statuses)
@@ -484,6 +491,9 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(session.round, 1)
 
         session.next_turn()
+        self.assertTrue(session.pending_new_round)
+        self.assertEqual(session.round, 1)  # not incremented yet
+        session.start_new_round()
 
         reloaded = self.context.load_session("round-wrap")
         self.assertEqual(reloaded.selected_id, first_id)
@@ -537,6 +547,83 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(session.round, 1)
         self.assertEqual(session.combat_log, [])
         self.assertEqual(session.snapshot()["room"], {"columns": 10, "rows": 7})
+
+    def test_pending_new_round_is_set_on_wrap_and_cleared_by_start_new_round(self) -> None:
+        session = self.context.create_session("pending-round")
+        session.add_enemy_from_template("goblin")
+        first_id = session.selected_id
+        session.add_enemy_from_template("bandit")
+        second_id = session.selected_id
+
+        session.select(first_id)
+        session.next_turn()
+        self.assertFalse(session.pending_new_round)  # not yet wrapped
+        self.assertEqual(session.active_turn_id, second_id)
+
+        session.next_turn()
+        self.assertTrue(session.pending_new_round)
+        self.assertIsNone(session.active_turn_id)
+        self.assertEqual(session.round, 1)  # not incremented yet
+
+        # persists across reload
+        reloaded = self.context.load_session("pending-round")
+        self.assertTrue(reloaded.pending_new_round)
+        self.assertIsNone(reloaded.active_turn_id)
+
+        reloaded.start_new_round()
+        self.assertFalse(reloaded.pending_new_round)
+        self.assertEqual(reloaded.round, 2)
+        self.assertEqual(reloaded.active_turn_id, first_id)
+        self.assertIn("Round 2 begins", reloaded.combat_log)
+
+    def test_start_new_round_uses_initiative_order_not_selected_id(self) -> None:
+        session = self.context.create_session("round-order")
+        session.add_enemy_from_template("goblin")
+        first_id = session.selected_id
+        session.add_enemy_from_template("bandit")
+        second_id = session.selected_id
+
+        session.select(first_id)
+        session.next_turn()  # first → second
+        session.next_turn()  # second → wraps, pending_new_round = True
+
+        # Add a unit during GM adjustments — this changes selected_id
+        session.add_enemy_from_template("goblin")
+        late_id = session.selected_id
+        self.assertNotEqual(late_id, first_id)
+
+        session.start_new_round()
+
+        # Must be first in order, not the late-added unit
+        self.assertEqual(session.active_turn_id, first_id)
+
+    def test_add_player_with_stats_persists_correctly(self) -> None:
+        session = self.context.create_session("player-stats")
+        session.add_player(name="Mira", hp=18, armor=1, magic_armor=0, draws=2, movement=5)
+
+        player = next(e for e in session.state.enemies.values() if session.is_player(e))
+        self.assertEqual(player.name, "Mira")
+        self.assertEqual(player.hp_max, 18)
+        self.assertEqual(player.hp_current, 18)
+        self.assertEqual(player.armor_max, 1)
+        self.assertEqual(player.movement, 5)
+        self.assertEqual(player.draws_base, 2)
+
+        reloaded = self.context.load_session("player-stats")
+        restored = next(e for e in reloaded.state.enemies.values() if reloaded.is_player(e))
+        self.assertEqual(restored.name, "Mira")
+        self.assertEqual(restored.hp_max, 18)
+        self.assertEqual(restored.movement, 5)
+
+    def test_add_player_without_name_gets_auto_name(self) -> None:
+        session = self.context.create_session("player-autoname")
+        session.add_player()
+        session.add_player()
+
+        players = [e for e in session.state.enemies.values() if session.is_player(e)]
+        names = {p.name for p in players}
+        self.assertEqual(len(names), 2)
+        self.assertTrue(all("Player" in n for n in names))
 
 
 if __name__ == "__main__":

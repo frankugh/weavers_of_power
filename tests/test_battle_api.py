@@ -76,6 +76,7 @@ class BattleApiTests(unittest.TestCase):
         self.client.post(f"/api/battle/sessions/{sid}/room", json={"columns": 20, "rows": 20})
         self.client.post(f"/api/battle/sessions/{sid}/entities/{entity_id}/position", json={"x": 0, "y": 0})
         self.client.post(f"/api/battle/sessions/{sid}/turn/next")
+        self.client.post(f"/api/battle/sessions/{sid}/round/start")  # single unit wraps
 
         moved = self.client.post(f"/api/battle/sessions/{sid}/entities/{entity_id}/move", json={"x": 2, "y": 0})
         self.assertEqual(moved.status_code, 200)
@@ -171,9 +172,10 @@ class BattleApiTests(unittest.TestCase):
         ended_enemy = next(enemy for enemy in end_response.json()["enemies"] if enemy["instance_id"] == entity_id)
         self.assertGreaterEqual(len(ended_enemy["current_draw_text"]), 1)
 
-        next_response = self.client.post(f"/api/battle/sessions/{sid}/turn/next")
-        self.assertEqual(next_response.status_code, 200)
-        next_payload = next_response.json()
+        self.client.post(f"/api/battle/sessions/{sid}/turn/next")  # single unit wraps
+        start_response = self.client.post(f"/api/battle/sessions/{sid}/round/start")
+        self.assertEqual(start_response.status_code, 200)
+        next_payload = start_response.json()
         next_enemy = next(enemy for enemy in next_payload["enemies"] if enemy["instance_id"] == entity_id)
 
         self.assertEqual(next_payload["activeTurnId"], entity_id)
@@ -278,7 +280,7 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(redo_response["redoDepth"], 0)
 
         self.client.post(f"/api/battle/sessions/{sid}/undo")
-        diverged_response = self.client.post(f"/api/battle/sessions/{sid}/players").json()
+        diverged_response = self.client.post(f"/api/battle/sessions/{sid}/players", json={}).json()
         self.assertFalse(diverged_response["canRedo"])
         self.assertEqual(diverged_response["redoDepth"], 0)
 
@@ -340,7 +342,7 @@ class BattleApiTests(unittest.TestCase):
 
         latest = None
         for _ in range(25):
-            latest = self.client.post(f"/api/battle/sessions/{sid}/players").json()
+            latest = self.client.post(f"/api/battle/sessions/{sid}/players", json={}).json()
 
         self.assertEqual(latest["undoDepth"], 20)
 
@@ -368,9 +370,16 @@ class BattleApiTests(unittest.TestCase):
     def test_player_and_custom_enemy_endpoints_remain_usable(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
 
-        player_response = self.client.post(f"/api/battle/sessions/{sid}/players")
+        player_response = self.client.post(
+            f"/api/battle/sessions/{sid}/players",
+            json={"name": "Aldric", "hp": 20, "armor": 2, "magicArmor": 0, "draws": 1, "movement": 5},
+        )
         self.assertEqual(player_response.status_code, 200)
-        self.assertTrue(any(enemy["template_id"] == "player" for enemy in player_response.json()["enemies"]))
+        player = next(e for e in player_response.json()["enemies"] if e["template_id"] == "player")
+        self.assertEqual(player["name"], "Aldric")
+        self.assertEqual(player["hp_max"], 20)
+        self.assertEqual(player["armor_max"], 2)
+        self.assertEqual(player["movement"], 5)
 
         custom_response = self.client.post(
             f"/api/battle/sessions/{sid}/enemies",
@@ -441,6 +450,51 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(passable_response.status_code, 200)
         stacked_second = next(enemy for enemy in passable_response.json()["enemies"] if enemy["instance_id"] == second_id)
         self.assertEqual((stacked_second["grid_x"], stacked_second["grid_y"]), (0, 0))
+
+    def test_pending_new_round_flag_and_round_start_endpoint(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"})
+        first_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()["selectedId"]
+        self.client.post(f"/api/battle/sessions/{sid}/select", json={"instanceId": self.client.get(f"/api/battle/sessions/{sid}").json()["order"][0]})
+
+        first_next = self.client.post(f"/api/battle/sessions/{sid}/turn/next").json()
+        self.assertFalse(first_next["pendingNewRound"])
+        self.assertIsNotNone(first_next["activeTurnId"])
+
+        second_next = self.client.post(f"/api/battle/sessions/{sid}/turn/next").json()
+        self.assertTrue(second_next["pendingNewRound"])
+        self.assertIsNone(second_next["activeTurnId"])
+        self.assertEqual(second_next["round"], 1)
+
+        # pendingNewRound persists across reload
+        reloaded = self.client.get(f"/api/battle/sessions/{sid}").json()
+        self.assertTrue(reloaded["pendingNewRound"])
+
+        start = self.client.post(f"/api/battle/sessions/{sid}/round/start").json()
+        self.assertFalse(start["pendingNewRound"])
+        self.assertEqual(start["round"], 2)
+        self.assertIsNotNone(start["activeTurnId"])
+
+    def test_add_player_with_stats_endpoint(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+
+        response = self.client.post(
+            f"/api/battle/sessions/{sid}/players",
+            json={"name": "Aldric", "hp": 15, "armor": 2, "magicArmor": 1, "draws": 0, "movement": 6},
+        )
+        self.assertEqual(response.status_code, 200)
+        player = next(e for e in response.json()["enemies"] if e["template_id"] == "player")
+        self.assertEqual(player["name"], "Aldric")
+        self.assertEqual(player["hp_max"], 15)
+        self.assertEqual(player["armor_max"], 2)
+        self.assertEqual(player["magic_armor_max"], 1)
+        self.assertEqual(player["movement"], 6)
+
+        # default name when omitted
+        default_response = self.client.post(f"/api/battle/sessions/{sid}/players", json={})
+        self.assertEqual(default_response.status_code, 200)
+        default_player = next(e for e in default_response.json()["enemies"] if "Player" in e["name"])
+        self.assertIn("Player", default_player["name"])
 
 
 if __name__ == "__main__":
