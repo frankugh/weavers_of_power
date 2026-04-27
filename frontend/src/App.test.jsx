@@ -63,6 +63,19 @@ function buildSnapshot(overrides = {}) {
   };
 }
 
+function buildMovementState(overrides = {}) {
+  return {
+    entityId: "enemy-1",
+    movementUsed: 0,
+    diagonalStepsUsed: 0,
+    dashUsed: false,
+    baseMovement: 6,
+    maxMovement: 6,
+    remainingMovement: 6,
+    ...overrides,
+  };
+}
+
 const metaPayload = {
   enemyTemplates: [
     { id: "goblin", name: "Goblin", imageUrl: "/images/goblin.png" },
@@ -402,6 +415,7 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "More" }));
 
     expect(screen.getByRole("menuitem", { name: "Redraw" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Reposition unit" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Heal enemy" })).toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "Enemy turn (no draw)" })).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "End turn" })).not.toBeInTheDocument();
@@ -854,13 +868,15 @@ describe("App", () => {
   it("moves the selected unit to a free battle map cell", async () => {
     const user = userEvent.setup();
     const movedSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState({ movementUsed: 4, remainingMovement: 2 }),
       enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
       combatLog: ["Moved Goblin 1 to (1, 1)"],
     });
 
-    renderWithSnapshot(buildSnapshot(), {
+    renderWithSnapshot(buildSnapshot({ activeTurnId: "enemy-1", movementState: buildMovementState() }), {
       extraFetch: (url, requestOptions) => {
-        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/position" && requestOptions?.method === "POST") {
+        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/move" && requestOptions?.method === "POST") {
           return jsonResponse(movedSnapshot);
         }
         return undefined;
@@ -873,10 +889,10 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
-        "/api/battle/sessions/sid-123/entities/enemy-1/position",
+        "/api/battle/sessions/sid-123/entities/enemy-1/move",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ x: 0, y: 0 }),
+          body: JSON.stringify({ x: 0, y: 0, dash: false }),
         }),
       );
     });
@@ -894,6 +910,8 @@ describe("App", () => {
       grid_y: 0,
     });
     const movedSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState({ movementUsed: 5, remainingMovement: 1 }),
       order: ["enemy-1", "enemy-2"],
       enemies: [buildEnemy({ grid_x: 0, grid_y: 0 }), downEnemy],
       combatLog: ["Moved Goblin 1 to (1, 1)"],
@@ -901,12 +919,14 @@ describe("App", () => {
 
     renderWithSnapshot(
       buildSnapshot({
+        activeTurnId: "enemy-1",
+        movementState: buildMovementState(),
         order: ["enemy-1", "enemy-2"],
         enemies: [buildEnemy(), downEnemy],
       }),
       {
         extraFetch: (url, requestOptions) => {
-          if (url === "/api/battle/sessions/sid-123/entities/enemy-1/position" && requestOptions?.method === "POST") {
+          if (url === "/api/battle/sessions/sid-123/entities/enemy-1/move" && requestOptions?.method === "POST") {
             return jsonResponse(movedSnapshot);
           }
           if (url === "/api/battle/sessions/sid-123/select") {
@@ -923,10 +943,10 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
-        "/api/battle/sessions/sid-123/entities/enemy-1/position",
+        "/api/battle/sessions/sid-123/entities/enemy-1/move",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ x: 0, y: 0 }),
+          body: JSON.stringify({ x: 0, y: 0, dash: false }),
         }),
       );
     });
@@ -977,17 +997,146 @@ describe("App", () => {
     expect(await screen.findByText("Selected: Down Goblin")).toBeInTheDocument();
   });
 
+  it("does not enter move mode when the selected unit is not active", async () => {
+    const bandit = buildEnemy({
+      instance_id: "enemy-2",
+      template_id: "bandit",
+      name: "Bandit 1",
+      image_url: "/images/bandit.png",
+      grid_x: 5,
+      grid_y: 3,
+      effective_movement: 6,
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        activeTurnId: "enemy-2",
+        movementState: buildMovementState({ entityId: "enemy-2", baseMovement: 6, remainingMovement: 6 }),
+        order: ["enemy-1", "enemy-2"],
+        enemies: [buildEnemy(), bandit],
+      }),
+      {
+        extraFetch: (url) => {
+          if (url === "/api/battle/sessions/sid-123/select") {
+            throw new Error("Clicking the already selected inactive unit should stay local");
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Goblin 1");
+    expect(screen.getByRole("button", { name: "Move" })).toBeDisabled();
+    pointerClickMapCell(4, 3);
+
+    expect(getMapViewport().dataset.mapMode).toBe("idle");
+    expect(screen.queryByRole("button", { name: "Cancel Move" })).not.toBeInTheDocument();
+  });
+
+  it("repositions the selected unit from the More menu without active-turn movement", async () => {
+    const user = userEvent.setup();
+    const repositionedSnapshot = buildSnapshot({
+      enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
+      combatLog: ["Repositioned Goblin 1 to (1, 1)"],
+    });
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/position" && requestOptions?.method === "POST") {
+          return jsonResponse(repositionedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Reposition unit" }));
+    expect(getMapViewport().dataset.mapMode).toBe("reposition");
+
+    pointerClickMapCell(0, 0);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/enemy-1/position",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ x: 0, y: 0 }),
+        }),
+      );
+    });
+  });
+
+  it("confirms dash movement before posting a dash move", async () => {
+    const user = userEvent.setup();
+    const dashedSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState({
+        movementUsed: 8,
+        dashUsed: true,
+        maxMovement: 12,
+        remainingMovement: 4,
+      }),
+      enemies: [buildEnemy({ grid_x: 6, grid_y: 3 })],
+      combatLog: ["Moved Goblin 1 to (7, 4) for 2 movement using Dash"],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        activeTurnId: "enemy-1",
+        movementState: buildMovementState({ movementUsed: 6, remainingMovement: 0 }),
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/entities/enemy-1/move" && requestOptions?.method === "POST") {
+            return jsonResponse(dashedSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Move" }));
+    expect(Number(getMapViewport().dataset.reachableDash)).toBeGreaterThan(0);
+
+    pointerClickMapCell(6, 3);
+    expect(await screen.findByText("This movement requires a Dash action.")).toBeInTheDocument();
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      "/api/battle/sessions/sid-123/entities/enemy-1/move",
+      expect.anything(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(getMapViewport().dataset.mapMode).toBe("move");
+
+    pointerClickMapCell(6, 3);
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/enemy-1/move",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ x: 6, y: 3, dash: true }),
+        }),
+      );
+    });
+  });
+
   it("keeps a 99x99 battle map as a canvas surface without cell buttons", async () => {
     const user = userEvent.setup();
     const movedSnapshot = buildSnapshot({
       room: { columns: 99, rows: 99 },
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState({ movementUsed: 5, remainingMovement: 1 }),
       enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
       combatLog: ["Moved Goblin 1 to (1, 1)"],
     });
 
-    renderWithSnapshot(buildSnapshot({ room: { columns: 99, rows: 99 } }), {
+    renderWithSnapshot(buildSnapshot({ room: { columns: 99, rows: 99 }, activeTurnId: "enemy-1", movementState: buildMovementState() }), {
       extraFetch: (url, requestOptions) => {
-        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/position" && requestOptions?.method === "POST") {
+        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/move" && requestOptions?.method === "POST") {
           return jsonResponse(movedSnapshot);
         }
         return undefined;
@@ -1002,10 +1151,10 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
-        "/api/battle/sessions/sid-123/entities/enemy-1/position",
+        "/api/battle/sessions/sid-123/entities/enemy-1/move",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ x: 0, y: 0 }),
+          body: JSON.stringify({ x: 0, y: 0, dash: false }),
         }),
       );
     });
@@ -1018,6 +1167,8 @@ describe("App", () => {
     const setPointerCapture = vi.fn();
     const releasePointerCapture = vi.fn();
     const movedSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState({ movementUsed: 5, remainingMovement: 1 }),
       enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
       combatLog: ["Moved Goblin 1 to (1, 1)"],
     });
@@ -1032,9 +1183,9 @@ describe("App", () => {
     });
 
     try {
-      renderWithSnapshot(buildSnapshot(), {
+      renderWithSnapshot(buildSnapshot({ activeTurnId: "enemy-1", movementState: buildMovementState() }), {
         extraFetch: (url, requestOptions) => {
-          if (url === "/api/battle/sessions/sid-123/entities/enemy-1/position" && requestOptions?.method === "POST") {
+          if (url === "/api/battle/sessions/sid-123/entities/enemy-1/move" && requestOptions?.method === "POST") {
             return jsonResponse(movedSnapshot);
           }
           return undefined;
@@ -1052,10 +1203,10 @@ describe("App", () => {
 
       await waitFor(() => {
         expect(global.fetch).toHaveBeenCalledWith(
-          "/api/battle/sessions/sid-123/entities/enemy-1/position",
+          "/api/battle/sessions/sid-123/entities/enemy-1/move",
           expect.objectContaining({
             method: "POST",
-            body: JSON.stringify({ x: 0, y: 0 }),
+            body: JSON.stringify({ x: 0, y: 0, dash: false }),
           }),
         );
       });
@@ -1076,13 +1227,15 @@ describe("App", () => {
   it("toggles move mode when clicking the already selected unit", async () => {
     const user = userEvent.setup();
     const movedSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState({ movementUsed: 5, remainingMovement: 1 }),
       enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
       combatLog: ["Moved Goblin 1 to (1, 1)"],
     });
 
-    renderWithSnapshot(buildSnapshot(), {
+    renderWithSnapshot(buildSnapshot({ activeTurnId: "enemy-1", movementState: buildMovementState() }), {
       extraFetch: (url, requestOptions) => {
-        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/position" && requestOptions?.method === "POST") {
+        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/move" && requestOptions?.method === "POST") {
           return jsonResponse(movedSnapshot);
         }
         if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
@@ -1101,10 +1254,10 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
-        "/api/battle/sessions/sid-123/entities/enemy-1/position",
+        "/api/battle/sessions/sid-123/entities/enemy-1/move",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ x: 0, y: 0 }),
+          body: JSON.stringify({ x: 0, y: 0, dash: false }),
         }),
       );
     });
@@ -1112,9 +1265,9 @@ describe("App", () => {
 
   it("pans with left drag on an empty cell without moving the selected unit", async () => {
     const user = userEvent.setup();
-    renderWithSnapshot(buildSnapshot({ room: { columns: 24, rows: 18 } }), {
+    renderWithSnapshot(buildSnapshot({ room: { columns: 24, rows: 18 }, activeTurnId: "enemy-1", movementState: buildMovementState() }), {
       extraFetch: (url) => {
-        if (url.includes("/position")) {
+        if (url.includes("/move")) {
           throw new Error("Panning should not move a unit");
         }
         return undefined;
@@ -1130,7 +1283,7 @@ describe("App", () => {
     expect(Number(viewport.dataset.cameraX)).toBe(-40);
     expect(Number(viewport.dataset.cameraY)).toBe(-50);
     expect(global.fetch).not.toHaveBeenCalledWith(
-      "/api/battle/sessions/sid-123/entities/enemy-1/position",
+      "/api/battle/sessions/sid-123/entities/enemy-1/move",
       expect.anything(),
     );
   });
@@ -1139,13 +1292,15 @@ describe("App", () => {
     const user = userEvent.setup();
     const movedSnapshot = buildSnapshot({
       room: { columns: 24, rows: 18 },
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState({ movementUsed: 5, remainingMovement: 1 }),
       enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
       combatLog: ["Moved Goblin 1 to (1, 1)"],
     });
 
-    renderWithSnapshot(buildSnapshot({ room: { columns: 24, rows: 18 } }), {
+    renderWithSnapshot(buildSnapshot({ room: { columns: 24, rows: 18 }, activeTurnId: "enemy-1", movementState: buildMovementState() }), {
       extraFetch: (url, requestOptions) => {
-        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/position" && requestOptions?.method === "POST") {
+        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/move" && requestOptions?.method === "POST") {
           return jsonResponse(movedSnapshot);
         }
         return undefined;
@@ -1160,10 +1315,10 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
-        "/api/battle/sessions/sid-123/entities/enemy-1/position",
+        "/api/battle/sessions/sid-123/entities/enemy-1/move",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ x: 0, y: 0 }),
+          body: JSON.stringify({ x: 0, y: 0, dash: false }),
         }),
       );
     });

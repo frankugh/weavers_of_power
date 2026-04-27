@@ -18,6 +18,11 @@ const ATTACK_STATUSES = [
 
 const PREMADE_TEMPLATE_IDS = ["goblin", "bandit"];
 const DEFAULT_ROOM = { columns: 10, rows: 7 };
+const MAP_MODES = {
+  IDLE: "idle",
+  MOVE: "move",
+  REPOSITION: "reposition",
+};
 const DRAW_REVEAL_TIMING = {
   enterMs: 80,
   holdMs: 3200,
@@ -174,9 +179,10 @@ function App() {
   const [notice, setNotice] = useState("");
   const [modal, setModal] = useState(null);
   const [customExpanded, setCustomExpanded] = useState(false);
-  const [moveMode, setMoveMode] = useState(false);
+  const [mapMode, setMapMode] = useState(MAP_MODES.IDLE);
   const [roomForm, setRoomForm] = useState(DEFAULT_ROOM);
   const [pendingRoomResize, setPendingRoomResize] = useState(null);
+  const [pendingDashMove, setPendingDashMove] = useState(null);
   const [saveName, setSaveName] = useState("session");
   const [saves, setSaves] = useState([]);
   const [attackForm, setAttackForm] = useState(EMPTY_ATTACK_FORM);
@@ -212,8 +218,8 @@ function App() {
   }, [snapshot?.room?.columns, snapshot?.room?.rows]);
 
   useEffect(() => {
-    setMoveMode(false);
-  }, [snapshot?.selectedId, snapshot?.sid]);
+    setMapMode(MAP_MODES.IDLE);
+  }, [snapshot?.selectedId, snapshot?.sid, snapshot?.activeTurnId]);
 
   useEffect(() => {
     setActionMenuOpen(false);
@@ -329,6 +335,24 @@ function App() {
   const activeDetachedEntity =
     activeEntity && activeEntity.instance_id !== selectedEntity?.instance_id ? activeEntity : null;
   const isPlayerSelected = Boolean(selectedEntity?.is_player);
+  const movementState = snapshot?.movementState || null;
+  const selectedIsActive = Boolean(selectedEntity && snapshot?.activeTurnId === selectedEntity.instance_id);
+  const selectedMovementBase =
+    selectedIsActive && movementState?.entityId === selectedEntity?.instance_id
+      ? Number(movementState.baseMovement)
+      : Number(selectedEntity?.effective_movement || 0);
+  const selectedMovementUsed =
+    selectedIsActive && movementState?.entityId === selectedEntity?.instance_id
+      ? Number(movementState.movementUsed)
+      : 0;
+  const selectedMovementRemaining = Math.max(0, selectedMovementBase * 2 - selectedMovementUsed);
+  const canUseMove = Boolean(
+    selectedEntity &&
+      selectedIsActive &&
+      hasGridPosition(selectedEntity, room) &&
+      selectedMovementRemaining > 0,
+  );
+  const canReposition = Boolean(selectedEntity);
   const premadeTemplates = getPremadeTemplates(meta?.enemyTemplates || []);
 
   const canDraw = Boolean(
@@ -353,7 +377,7 @@ function App() {
   const selectedStatuses = Object.entries(selectedEntity?.statuses || {});
   const selectedHasDraw = Boolean(selectedEntity?.current_draw_text?.length);
   const selectedHasLoot = Boolean(selectedEntity?.loot_rolled);
-  const canOpenActionMore = Boolean(canRedraw || canAttackOrHeal || canRollLoot);
+  const canOpenActionMore = Boolean(canRedraw || canAttackOrHeal || canRollLoot || canReposition);
   const sessionHasHistory = Boolean(snapshot?.canUndo || snapshot?.canRedo || snapshot?.undoDepth || snapshot?.redoDepth);
   const selectedDrawPreviewHighlighted = Boolean(
     drawReveal?.phase === "settle" && selectedEntity?.instance_id === drawReveal.entityId,
@@ -363,6 +387,7 @@ function App() {
     setModal(null);
     setCustomExpanded(false);
     setPendingRoomResize(null);
+    setPendingDashMove(null);
     setDrawDetail(null);
   }
 
@@ -432,7 +457,7 @@ function App() {
       "Undid last action",
     );
     if (payload) {
-      setMoveMode(false);
+      setMapMode(MAP_MODES.IDLE);
     }
   }
 
@@ -445,7 +470,7 @@ function App() {
       "Redid last action",
     );
     if (payload) {
-      setMoveMode(false);
+      setMapMode(MAP_MODES.IDLE);
     }
   }
 
@@ -480,7 +505,9 @@ function App() {
       return;
     }
     if (snapshot?.selectedId === instanceId) {
-      setMoveMode((current) => !current);
+      if (snapshot?.activeTurnId === instanceId && canUseMove) {
+        setMapMode((current) => (current === MAP_MODES.MOVE ? MAP_MODES.IDLE : MAP_MODES.MOVE));
+      }
       return;
     }
     const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/select`, {
@@ -488,7 +515,7 @@ function App() {
       body: JSON.stringify({ instanceId }),
     });
     if (payload) {
-      setMoveMode(false);
+      setMapMode(MAP_MODES.IDLE);
     }
   }
 
@@ -503,7 +530,35 @@ function App() {
     );
   }
 
-  async function handleMoveSelectedToCell(x, y) {
+  function setMapModeAfterMovement(payload) {
+    const nextMovementState = payload?.movementState;
+    const canKeepMoving =
+      nextMovementState?.entityId === payload?.selectedId &&
+      payload?.activeTurnId === payload?.selectedId &&
+      Number(nextMovementState.baseMovement) * 2 - Number(nextMovementState.movementUsed) > 0;
+    setMapMode(canKeepMoving ? MAP_MODES.MOVE : MAP_MODES.IDLE);
+  }
+
+  async function submitRestrictedMove(x, y, { dash = false } = {}) {
+    if (!selectedEntity) {
+      return;
+    }
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/entities/${selectedEntity.instance_id}/move`,
+      {
+        method: "POST",
+        body: JSON.stringify({ x, y, dash }),
+      },
+      `Moved ${selectedEntity.name}`,
+    );
+    if (payload) {
+      setPendingDashMove(null);
+      setModal(null);
+      setMapModeAfterMovement(payload);
+    }
+  }
+
+  async function submitReposition(x, y) {
     if (!selectedEntity) {
       return;
     }
@@ -513,11 +568,34 @@ function App() {
         method: "POST",
         body: JSON.stringify({ x, y }),
       },
-      `Moved ${selectedEntity.name}`,
+      `Repositioned ${selectedEntity.name}`,
     );
     if (payload) {
-      setMoveMode(false);
+      setMapMode(MAP_MODES.IDLE);
     }
+  }
+
+  async function handleMoveSelectedToCell(x, y, target = {}) {
+    if (mapMode === MAP_MODES.REPOSITION) {
+      await submitReposition(x, y);
+      return;
+    }
+    if (mapMode !== MAP_MODES.MOVE) {
+      return;
+    }
+    if (target.requiresDash) {
+      setPendingDashMove({ x, y });
+      setModal("dash-confirm");
+      return;
+    }
+    await submitRestrictedMove(x, y);
+  }
+
+  async function confirmDashMove() {
+    if (!pendingDashMove) {
+      return;
+    }
+    await submitRestrictedMove(pendingDashMove.x, pendingDashMove.y, { dash: true });
   }
 
   function normalizeRoomFormValue(value, fallback) {
@@ -537,7 +615,7 @@ function App() {
       setNotice(`Battle map set to ${payload.room.columns}x${payload.room.rows}`);
       setPendingRoomResize(null);
       setModal(null);
-      setMoveMode(false);
+      setMapMode(MAP_MODES.IDLE);
       return payload;
     } catch (requestError) {
       if (!autoPlaceOutOfBounds && requestError.message.includes("Resize would move")) {
@@ -811,7 +889,8 @@ function App() {
               selectedEntity={selectedEntity}
               selectedId={snapshot.selectedId}
               activeTurnId={snapshot.activeTurnId}
-              moveMode={moveMode}
+              mapMode={mapMode}
+              movementState={movementState}
               drawPulse={drawReveal ? { entityId: drawReveal.entityId, key: drawReveal.key } : null}
               busy={busy}
               onRoomSubmit={handleRoomSubmit}
@@ -851,14 +930,14 @@ function App() {
                   Next
                 </button>
                 <button
-                  className={`secondary-button ${moveMode ? "move-button-active" : ""}`.trim()}
+                  className={`secondary-button ${mapMode === MAP_MODES.MOVE ? "move-button-active" : ""}`.trim()}
                   onClick={() => {
                     setActionMenuOpen(false);
-                    setMoveMode((current) => !current);
+                    setMapMode((current) => (current === MAP_MODES.MOVE ? MAP_MODES.IDLE : MAP_MODES.MOVE));
                   }}
-                  disabled={!selectedEntity || busy}
+                  disabled={!canUseMove || busy}
                 >
-                  {moveMode ? "Cancel Move" : "Move"}
+                  {mapMode === MAP_MODES.MOVE ? "Cancel Move" : "Move"}
                 </button>
                 <button
                   className="secondary-button"
@@ -887,6 +966,20 @@ function App() {
 
                 {actionMenuOpen ? (
                   <div className="action-more-menu" role="menu" aria-label="More actions">
+                    <button
+                      className="secondary-button action-more-item"
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setActionMenuOpen(false);
+                        setMapMode((current) =>
+                          current === MAP_MODES.REPOSITION ? MAP_MODES.IDLE : MAP_MODES.REPOSITION,
+                        );
+                      }}
+                      disabled={!canReposition || busy}
+                    >
+                      Reposition unit
+                    </button>
                     <button
                       className="secondary-button action-more-item"
                       type="button"
@@ -1660,6 +1753,25 @@ function App() {
           </div>
         </div>
       </ModalShell>
+
+      <ModalShell
+        open={modal === "dash-confirm" && Boolean(pendingDashMove)}
+        title="Dash movement"
+        onClose={closeModal}
+        closeOnOutsideClick={false}
+      >
+        <div className="panel-body modal-form">
+          <div className="subtle-copy">This movement requires a Dash action.</div>
+          <div className="modal-actions">
+            <button className="primary-button" type="button" onClick={confirmDashMove} disabled={busy}>
+              Continue
+            </button>
+            <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </ModalShell>
     </div>
   );
 }
@@ -1672,7 +1784,8 @@ function BattleRoom({
   selectedEntity,
   selectedId,
   activeTurnId,
-  moveMode,
+  mapMode,
+  movementState,
   drawPulse,
   busy,
   onRoomSubmit,
@@ -1745,7 +1858,8 @@ function BattleRoom({
         selectedId={selectedId}
         activeTurnId={activeTurnId}
         selectedEntity={selectedEntity}
-        moveMode={moveMode}
+        mapMode={mapMode}
+        movementState={movementState}
         drawPulse={drawPulse}
         busy={busy}
         onSelect={onSelect}

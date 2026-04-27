@@ -36,6 +36,10 @@ class PositionRequest(BaseModel):
     y: int = Field(ge=0)
 
 
+class MoveRequest(PositionRequest):
+    dash: bool = False
+
+
 class CustomEnemyRequest(BaseModel):
     name: str = "Custom"
     hp: int = Field(default=10, ge=1)
@@ -161,6 +165,13 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/position")
     def move_entity_position(sid: str, instance_id: str, request: PositionRequest):
         return run_mutation(sid, lambda session: session.set_entity_position(instance_id, request.x, request.y))
+
+    @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/move")
+    def move_entity_with_movement(sid: str, instance_id: str, request: MoveRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.move_entity_with_movement(instance_id, request.x, request.y, dash=request.dash),
+        )
 
     @api_app.post("/api/battle/sessions/{sid}/turn/draw")
     def draw_turn(sid: str):

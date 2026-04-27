@@ -69,6 +69,111 @@ class BattleSessionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside"):
             session.set_entity_position(second_id, 99, 0)
 
+    def test_active_unit_can_spend_movement_pool_across_multiple_moves_and_dash(self) -> None:
+        session = self.context.create_session("movement-pool")
+        session.add_enemy_from_template("bandit")
+        entity_id = session.selected_id
+        session.set_entity_position(entity_id, 0, 0)
+        session.next_turn()
+
+        session.move_entity_with_movement(entity_id, 2, 0)
+        session.move_entity_with_movement(entity_id, 3, 0)
+        with self.assertRaisesRegex(ValueError, "requires a Dash"):
+            session.move_entity_with_movement(entity_id, 7, 0)
+
+        session.move_entity_with_movement(entity_id, 7, 0, dash=True)
+        session.move_entity_with_movement(entity_id, 7, 3)
+
+        self.assertEqual(session.movement_state["movement_used"], 10)
+        self.assertTrue(session.movement_state["dash_used"])
+        moved = session.state.enemies[entity_id]
+        self.assertEqual((moved.grid_x, moved.grid_y), (7, 3))
+
+    def test_movement_rejects_non_active_and_over_double_pool_moves(self) -> None:
+        session = self.context.create_session("movement-limits")
+        session.set_room_size(20, 20)
+        session.add_enemy_from_template("goblin")
+        first_id = session.selected_id
+        session.add_enemy_from_template("bandit")
+        second_id = session.selected_id
+        session.set_entity_position(first_id, 0, 0)
+        session.set_entity_position(second_id, 0, 1)
+        session.select(first_id)
+        session.next_turn()
+
+        self.assertEqual(session.active_turn_id, second_id)
+        with self.assertRaisesRegex(ValueError, "Only the active"):
+            session.move_entity_with_movement(first_id, 1, 0)
+        with self.assertRaisesRegex(ValueError, "not reachable|not have enough"):
+            session.move_entity_with_movement(second_id, 13, 1, dash=True)
+
+    def test_diagonal_movement_cost_parity_continues_across_moves(self) -> None:
+        session = self.context.create_session("movement-diagonal-parity")
+        session.add_enemy_from_template("bandit")
+        entity_id = session.selected_id
+        session.set_entity_position(entity_id, 0, 0)
+        session.next_turn()
+
+        session.move_entity_with_movement(entity_id, 1, 1)
+        self.assertEqual(session.movement_state["movement_used"], 1)
+        self.assertEqual(session.movement_state["diagonal_steps_used"], 1)
+
+        session.move_entity_with_movement(entity_id, 2, 2)
+        self.assertEqual(session.movement_state["movement_used"], 3)
+        self.assertEqual(session.movement_state["diagonal_steps_used"], 2)
+
+        session.move_entity_with_movement(entity_id, 3, 3)
+        self.assertEqual(session.movement_state["movement_used"], 4)
+        self.assertEqual(session.movement_state["diagonal_steps_used"], 3)
+
+    def test_movement_pathing_blocks_living_units_but_not_down_units(self) -> None:
+        session = self.context.create_session("movement-blockers")
+        session.set_room_size(3, 3)
+        session.add_enemy_from_template("bandit")
+        mover_id = session.selected_id
+        session.add_enemy_from_template("goblin")
+        top_blocker_id = session.selected_id
+        session.add_enemy_from_template("goblin")
+        middle_blocker_id = session.selected_id
+        session.add_enemy_from_template("goblin")
+        bottom_blocker_id = session.selected_id
+
+        for instance_id in (mover_id, top_blocker_id, middle_blocker_id, bottom_blocker_id):
+            entity = session.state.enemies[instance_id]
+            entity.grid_x = None
+            entity.grid_y = None
+        session.set_entity_position(mover_id, 0, 1)
+        session.set_entity_position(top_blocker_id, 1, 0)
+        session.set_entity_position(middle_blocker_id, 1, 1)
+        session.set_entity_position(bottom_blocker_id, 1, 2)
+        session.select(mover_id)
+        session.draw_turn()
+
+        with self.assertRaisesRegex(ValueError, "not reachable"):
+            session.move_entity_with_movement(mover_id, 2, 1)
+
+        session.state.enemies[middle_blocker_id].hp_current = 0
+        session.move_entity_with_movement(mover_id, 2, 1)
+
+        moved = session.state.enemies[mover_id]
+        self.assertEqual((moved.grid_x, moved.grid_y), (2, 1))
+
+    def test_movement_state_persists_and_resets_on_next_active_turn(self) -> None:
+        session = self.context.create_session("movement-persist")
+        session.add_enemy_from_template("bandit")
+        entity_id = session.selected_id
+        session.set_entity_position(entity_id, 0, 0)
+        session.next_turn()
+        session.move_entity_with_movement(entity_id, 2, 0)
+
+        reloaded = self.context.load_session("movement-persist")
+        self.assertEqual(reloaded.movement_state["entity_id"], entity_id)
+        self.assertEqual(reloaded.movement_state["movement_used"], 2)
+
+        reloaded.next_turn()
+        self.assertEqual(reloaded.movement_state["entity_id"], entity_id)
+        self.assertEqual(reloaded.movement_state["movement_used"], 0)
+
     def test_auto_place_ignores_down_units_as_blockers(self) -> None:
         session = self.context.create_session("map-down-passable")
         session.add_enemy_from_template("goblin")

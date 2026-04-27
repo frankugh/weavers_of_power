@@ -102,6 +102,7 @@ def make_save_payload(
     room: Dict[str, int],
     round: int,
     combat_log: List[str],
+    movement_state: Optional[Dict[str, Any]],
     enemies: List[EnemyInstance],
     undo_stack: Optional[List[Dict[str, Any]]] = None,
     redo_stack: Optional[List[Dict[str, Any]]] = None,
@@ -118,6 +119,7 @@ def make_save_payload(
             "room": dict(room),
             "round": int(round),
             "combat_log": list(combat_log),
+            "movement_state": dict(movement_state) if movement_state else None,
         },
         "order": list(order),
         "enemies": [enemy_to_dict(e) for e in enemies],
@@ -153,7 +155,7 @@ def save_current(path: Path, payload: Dict[str, Any]) -> None:
 
 def restore_state_from_payload(
     payload: Dict[str, Any],
-) -> Tuple[List[str], Optional[str], Optional[str], bool, Dict[str, int], List[EnemyInstance], int, List[str]]:
+) -> Tuple[List[str], Optional[str], Optional[str], bool, Dict[str, int], Optional[Dict[str, Any]], List[EnemyInstance], int, List[str]]:
     order = list(payload.get("order", []))
     ui = payload.get("ui", {}) or {}
     selected_id = ui.get("selected_id")
@@ -166,8 +168,10 @@ def restore_state_from_payload(
     }
     round = int(ui.get("round", 1) or 1)
     combat_log = list(ui.get("combat_log", []) or [])
+    movement_state_raw = ui.get("movement_state")
+    movement_state = dict(movement_state_raw) if isinstance(movement_state_raw, dict) else None
 
     enemies_raw = payload.get("enemies", []) or []
     enemies = [enemy_from_dict(ed) for ed in enemies_raw]
 
-    return order, selected_id, active_turn_id, turn_in_progress, room, enemies, round, combat_log
+    return order, selected_id, active_turn_id, turn_in_progress, room, movement_state, enemies, round, combat_log

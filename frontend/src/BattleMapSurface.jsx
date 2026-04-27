@@ -135,25 +135,192 @@ function drawGrid(graphics, room, cellSize) {
   graphics.stroke({ color: 0x513a23, alpha: 0.62, width: 1 });
 }
 
-function drawMoveHighlights(graphics, room, cellSize, moveMode, selectedEntity, busy, hoverCell, blockingByPosition) {
+function heapPush(heap, item) {
+  heap.push(item);
+  let index = heap.length - 1;
+  while (index > 0) {
+    const parent = Math.floor((index - 1) / 2);
+    if (compareQueueItems(heap[parent], item) <= 0) {
+      break;
+    }
+    heap[index] = heap[parent];
+    index = parent;
+  }
+  heap[index] = item;
+}
+
+function heapPop(heap) {
+  if (!heap.length) {
+    return null;
+  }
+  const root = heap[0];
+  const last = heap.pop();
+  if (heap.length && last) {
+    let index = 0;
+    while (true) {
+      let child = index * 2 + 1;
+      if (child >= heap.length) {
+        break;
+      }
+      const right = child + 1;
+      if (right < heap.length && compareQueueItems(heap[right], heap[child]) < 0) {
+        child = right;
+      }
+      if (compareQueueItems(last, heap[child]) <= 0) {
+        break;
+      }
+      heap[index] = heap[child];
+      index = child;
+    }
+    heap[index] = last;
+  }
+  return root;
+}
+
+function compareQueueItems(first, second) {
+  return first.cost - second.cost || second.diagonalSteps - first.diagonalSteps;
+}
+
+function movementStateNumber(movementState, key, fallback = 0) {
+  const value = Number(movementState?.[key]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function getReachableMovementCells(room, selectedEntity, movementState, blockingByPosition) {
+  const reachable = new Map();
+  if (!hasGridPosition(selectedEntity, room)) {
+    return reachable;
+  }
+
+  const baseMovement = Math.max(
+    0,
+    movementStateNumber(movementState, "baseMovement", Number(selectedEntity?.effective_movement || 0)),
+  );
+  const movementUsed = Math.max(0, movementStateNumber(movementState, "movementUsed", 0));
+  const diagonalStepsUsed = Math.max(0, movementStateNumber(movementState, "diagonalStepsUsed", 0));
+  const dashUsed = Boolean(movementState?.dashUsed);
+  const maxRemaining = Math.max(0, baseMovement * 2 - movementUsed);
+  if (!maxRemaining) {
+    return reachable;
+  }
+
+  const start = { x: selectedEntity.grid_x, y: selectedEntity.grid_y };
+  const startParity = diagonalStepsUsed % 2;
+  const queue = [{ cost: 0, diagonalSteps: 0, x: start.x, y: start.y, parity: startParity }];
+  const best = new Map([[`${start.x}:${start.y}:${startParity}`, { cost: 0, diagonalSteps: 0 }]]);
+  const directions = [
+    [-1, -1],
+    [0, -1],
+    [1, -1],
+    [-1, 0],
+    [1, 0],
+    [-1, 1],
+    [0, 1],
+    [1, 1],
+  ];
+
+  while (queue.length) {
+    const current = heapPop(queue);
+    const currentBest = best.get(`${current.x}:${current.y}:${current.parity}`);
+    if (!currentBest || currentBest.cost !== current.cost || currentBest.diagonalSteps !== current.diagonalSteps) {
+      continue;
+    }
+
+    for (const [dx, dy] of directions) {
+      const nextX = current.x + dx;
+      const nextY = current.y + dy;
+      if (nextX < 0 || nextY < 0 || nextX >= room.columns || nextY >= room.rows) {
+        continue;
+      }
+      if (blockingByPosition.has(positionKey(nextX, nextY))) {
+        continue;
+      }
+
+      const isDiagonal = dx !== 0 && dy !== 0;
+      const stepCost = isDiagonal ? (current.parity === 0 ? 1 : 2) : 1;
+      const nextCost = current.cost + stepCost;
+      if (nextCost > maxRemaining) {
+        continue;
+      }
+
+      const nextParity = isDiagonal ? 1 - current.parity : current.parity;
+      const nextDiagonalSteps = current.diagonalSteps + (isDiagonal ? 1 : 0);
+      const key = `${nextX}:${nextY}:${nextParity}`;
+      const previous = best.get(key);
+      if (previous && (previous.cost < nextCost || (previous.cost === nextCost && previous.diagonalSteps >= nextDiagonalSteps))) {
+        continue;
+      }
+
+      const totalCost = movementUsed + nextCost;
+      const requiresDash = !dashUsed && totalCost > baseMovement;
+      const cellKey = positionKey(nextX, nextY);
+      const currentCell = reachable.get(cellKey);
+      const kind = dashUsed || totalCost > baseMovement ? "dash" : "normal";
+      if (!currentCell || currentCell.cost > nextCost) {
+        reachable.set(cellKey, {
+          x: nextX,
+          y: nextY,
+          cost: nextCost,
+          diagonalSteps: nextDiagonalSteps,
+          kind,
+          requiresDash,
+        });
+      }
+
+      best.set(key, { cost: nextCost, diagonalSteps: nextDiagonalSteps });
+      heapPush(queue, { cost: nextCost, diagonalSteps: nextDiagonalSteps, x: nextX, y: nextY, parity: nextParity });
+    }
+  }
+
+  reachable.delete(positionKey(start.x, start.y));
+  return reachable;
+}
+
+function countReachableByKind(reachableCells, kind) {
+  let count = 0;
+  for (const cell of reachableCells.values()) {
+    if (cell.kind === kind) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function drawMoveHighlights(graphics, room, cellSize, mapMode, selectedEntity, busy, hoverCell, blockingByPosition, reachableCells) {
   graphics.clear();
 
-  if (!moveMode || !selectedEntity || busy) {
+  if (mapMode === "idle" || !selectedEntity || busy) {
     return;
   }
 
   const contentSize = mapContentSize(room, cellSize);
-  graphics
-    .rect(10, 10, contentSize.width - 20, contentSize.height - 20)
-    .fill({ color: 0x7db97f, alpha: 0.045 })
-    .stroke({ color: 0x7db97f, alpha: 0.38, width: 2 });
+  if (mapMode === "reposition") {
+    graphics
+      .rect(10, 10, contentSize.width - 20, contentSize.height - 20)
+      .fill({ color: 0x82d9df, alpha: 0.035 })
+      .stroke({ color: 0x82d9df, alpha: 0.32, width: 2 });
+  } else {
+    for (const cell of reachableCells.values()) {
+      const bounds = cellBounds(cell.x, cell.y, cellSize);
+      const isDash = cell.kind === "dash";
+      graphics
+        .rect(bounds.x, bounds.y, bounds.width, bounds.height)
+        .fill({ color: 0x7db97f, alpha: isDash ? 0.075 : 0.16 })
+        .stroke({ color: 0x7db97f, alpha: isDash ? 0.18 : 0.34, width: 1 });
+    }
+  }
 
-  if (hoverCell && !blockingByPosition.has(positionKey(hoverCell.x, hoverCell.y))) {
+  const hoverKey = hoverCell ? positionKey(hoverCell.x, hoverCell.y) : "";
+  const hoverInfo = reachableCells.get(hoverKey);
+  const canHoverReposition =
+    mapMode === "reposition" && hoverCell && !blockingByPosition.has(positionKey(hoverCell.x, hoverCell.y));
+  if (hoverInfo || canHoverReposition) {
     const bounds = cellBounds(hoverCell.x, hoverCell.y, cellSize);
+    const isDash = hoverInfo?.kind === "dash";
     graphics
       .rect(bounds.x, bounds.y, bounds.width, bounds.height)
-      .fill({ color: 0x7db97f, alpha: 0.18 })
-      .stroke({ color: 0x7db97f, alpha: 0.76, width: 2 });
+      .fill({ color: isDash ? 0xa7d8aa : 0x7db97f, alpha: isDash ? 0.11 : 0.2 })
+      .stroke({ color: isDash ? 0xa7d8aa : 0x7db97f, alpha: 0.82, width: 2 });
   }
 }
 
@@ -256,11 +423,34 @@ function renderPixiScene(renderer, state) {
   }
 
   const { PIXI, app, world, layers, textures } = renderer;
-  const { room, placedEntities, selectedId, activeTurnId, moveMode, selectedEntity, busy, hoverCell, blockingByPosition, cellSize, camera } = state;
+  const {
+    room,
+    placedEntities,
+    selectedId,
+    activeTurnId,
+    mapMode,
+    selectedEntity,
+    busy,
+    hoverCell,
+    blockingByPosition,
+    reachableCells,
+    cellSize,
+    camera,
+  } = state;
 
   world.position.set(camera.x, camera.y);
   drawGrid(layers.terrain, room, cellSize);
-  drawMoveHighlights(layers.highlights, room, cellSize, moveMode, selectedEntity, busy, hoverCell, blockingByPosition);
+  drawMoveHighlights(
+    layers.highlights,
+    room,
+    cellSize,
+    mapMode,
+    selectedEntity,
+    busy,
+    hoverCell,
+    blockingByPosition,
+    reachableCells,
+  );
   clearLayer(layers.units);
 
   [...placedEntities]
@@ -288,7 +478,8 @@ function BattleMapSurface({
   selectedId,
   activeTurnId,
   selectedEntity,
-  moveMode,
+  mapMode = "idle",
+  movementState = null,
   drawPulse,
   busy,
   onSelect,
@@ -328,6 +519,13 @@ function BattleMapSurface({
           .map((entity) => [positionKey(entity.grid_x, entity.grid_y), entity]),
       ),
     [placedEntities],
+  );
+  const reachableCells = useMemo(
+    () =>
+      mapMode === "move"
+        ? getReachableMovementCells(room, selectedEntity, movementState, blockingByPosition)
+        : new Map(),
+    [room, selectedEntity, movementState, blockingByPosition, mapMode],
   );
 
   useEffect(() => {
@@ -472,15 +670,31 @@ function BattleMapSurface({
       placedEntities,
       selectedId,
       activeTurnId,
-      moveMode,
+      mapMode,
       selectedEntity,
       busy,
       hoverCell,
       blockingByPosition,
+      reachableCells,
       cellSize,
       camera,
     });
-  }, [pixiReady, textureVersion, room, placedEntities, selectedId, activeTurnId, moveMode, selectedEntity, busy, hoverCell, blockingByPosition, cellSize, camera]);
+  }, [
+    pixiReady,
+    textureVersion,
+    room,
+    placedEntities,
+    selectedId,
+    activeTurnId,
+    mapMode,
+    selectedEntity,
+    busy,
+    hoverCell,
+    blockingByPosition,
+    reachableCells,
+    cellSize,
+    camera,
+  ]);
 
   useEffect(() => {
     const renderer = rendererRef.current;
@@ -762,8 +976,18 @@ function BattleMapSurface({
       onSelect(selectedOccupant.instance_id);
       return;
     }
-    if (moveMode && selectedEntity && !busy && !blockingOccupant) {
-      onMoveToCell(clickCell.x, clickCell.y);
+    if (mapMode === "reposition" && selectedEntity && !busy && !blockingOccupant) {
+      onMoveToCell(clickCell.x, clickCell.y, { mode: "reposition" });
+      return;
+    }
+
+    const reachableTarget = reachableCells.get(positionKey(clickCell.x, clickCell.y));
+    if (mapMode === "move" && selectedEntity && !busy && reachableTarget && !blockingOccupant) {
+      onMoveToCell(clickCell.x, clickCell.y, {
+        mode: "move",
+        cost: reachableTarget.cost,
+        requiresDash: reachableTarget.requiresDash,
+      });
       return;
     }
 
@@ -817,6 +1041,8 @@ function BattleMapSurface({
   }
 
   const zoomPercent = Math.round((cellSize / MAP_ZOOM.defaultSize) * 100);
+  const reachableNormalCount = countReachableByKind(reachableCells, "normal");
+  const reachableDashCount = countReachableByKind(reachableCells, "dash");
 
   return (
     <div className="map-viewport-shell">
@@ -843,6 +1069,9 @@ function BattleMapSurface({
         data-camera-x={camera.x}
         data-camera-y={camera.y}
         data-pixi-ready={pixiReady ? "true" : "false"}
+        data-map-mode={mapMode}
+        data-reachable-normal={reachableNormalCount}
+        data-reachable-dash={reachableDashCount}
         data-draw-pulse-entity-id={drawPulse?.entityId || ""}
         data-draw-pulse-key={drawPulse?.key || ""}
         onWheel={handleWheel}

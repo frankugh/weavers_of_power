@@ -63,6 +63,35 @@ class BattleApiTests(unittest.TestCase):
         )
         self.assertEqual(too_large_response.status_code, 422)
 
+    def test_restricted_move_endpoint_tracks_pool_and_position_repositions_freely(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        added = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        entity_id = added["selectedId"]
+        self.client.post(f"/api/battle/sessions/{sid}/room", json={"columns": 20, "rows": 20})
+        self.client.post(f"/api/battle/sessions/{sid}/entities/{entity_id}/position", json={"x": 0, "y": 0})
+        self.client.post(f"/api/battle/sessions/{sid}/turn/next")
+
+        moved = self.client.post(f"/api/battle/sessions/{sid}/entities/{entity_id}/move", json={"x": 2, "y": 0})
+        self.assertEqual(moved.status_code, 200)
+        self.assertEqual(moved.json()["movementState"]["movementUsed"], 2)
+        self.assertFalse(moved.json()["movementState"]["dashUsed"])
+
+        repositioned = self.client.post(f"/api/battle/sessions/{sid}/entities/{entity_id}/position", json={"x": 5, "y": 0})
+        self.assertEqual(repositioned.status_code, 200)
+        self.assertEqual(repositioned.json()["movementState"]["movementUsed"], 2)
+
+        dash_required = self.client.post(f"/api/battle/sessions/{sid}/entities/{entity_id}/move", json={"x": 10, "y": 0})
+        self.assertEqual(dash_required.status_code, 400)
+        self.assertIn("Dash", dash_required.json()["detail"])
+
+        dashed = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{entity_id}/move",
+            json={"x": 10, "y": 0, "dash": True},
+        )
+        self.assertEqual(dashed.status_code, 200)
+        self.assertEqual(dashed.json()["movementState"]["movementUsed"], 7)
+        self.assertTrue(dashed.json()["movementState"]["dashUsed"])
+
     def test_enemy_flow_and_manual_save_endpoints(self) -> None:
         snapshot = self.client.post("/api/battle/sessions").json()
         sid = snapshot["sid"]

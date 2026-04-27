@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import heapq
 from pathlib import Path
 import random
 import uuid
@@ -199,6 +200,7 @@ class BattleSession:
     room_rows: int = ROOM_DEFAULT_ROWS
     round: int = 1
     combat_log: list[str] = field(default_factory=list)
+    movement_state: Optional[dict] = None
     undo_stack: list[dict] = field(default_factory=list)
     redo_stack: list[dict] = field(default_factory=list)
     _rng: random.Random = field(default_factory=random.Random, repr=False)
@@ -213,6 +215,7 @@ class BattleSession:
         self.room_rows = ROOM_DEFAULT_ROWS
         self.round = 1
         self.combat_log = []
+        self.movement_state = None
         self.undo_stack = []
         self.redo_stack = []
         position_payload_present = any(
@@ -225,6 +228,7 @@ class BattleSession:
             loaded_active,
             loaded_tip,
             loaded_room,
+            loaded_movement_state,
             enemies,
             loaded_round,
             loaded_log,
@@ -251,6 +255,7 @@ class BattleSession:
 
         self.round = max(1, int(loaded_round or 1))
         self.combat_log = list(loaded_log or [])[:LOG_LIMIT]
+        self._load_movement_state(loaded_movement_state)
         if load_undo_stack:
             self.undo_stack = [dict(entry) for entry in payload.get("undo_stack", [])][-UNDO_LIMIT:]
             self.redo_stack = [dict(entry) for entry in payload.get("redo_stack", [])][-UNDO_LIMIT:]
@@ -271,6 +276,7 @@ class BattleSession:
             room={"columns": self.room_columns, "rows": self.room_rows},
             round=self.round,
             combat_log=self.combat_log,
+            movement_state=self.movement_state,
             enemies=list(self.state.enemies.values()),
             undo_stack=self.undo_stack if include_undo_stack else None,
             redo_stack=self.redo_stack if include_undo_stack else None,
@@ -298,6 +304,7 @@ class BattleSession:
             "selectedId": self.selected_id,
             "activeTurnId": self.active_turn_id,
             "turnInProgress": self.turn_in_progress,
+            "movementState": self._movement_state_snapshot(),
             "room": {"columns": self.room_columns, "rows": self.room_rows},
             "order": list(self.order),
             "enemies": [self._serialize_enemy(instance_id) for instance_id in self._ordered_enemy_ids()],
@@ -387,6 +394,9 @@ class BattleSession:
         if self.active_turn_id == instance_id:
             self.active_turn_id = None
             self.turn_in_progress = False
+            self.movement_state = None
+        elif self.movement_state and self.movement_state.get("entity_id") == instance_id:
+            self.movement_state = None
         self.state.remove_enemy(instance_id)
         if instance_id in self.order:
             self.order.remove(instance_id)
@@ -447,7 +457,58 @@ class BattleSession:
 
         self._set_position(entity, x, y)
         self.selected_id = instance_id
-        self._add_log(f"Moved {entity.name} to ({x + 1}, {y + 1})")
+        self._add_log(f"Repositioned {entity.name} to ({x + 1}, {y + 1})")
+        self.autosave()
+
+    def move_entity_with_movement(self, instance_id: str, x: int, y: int, *, dash: bool = False) -> None:
+        entity = self.state.enemies.get(instance_id)
+        if not entity:
+            raise BattleSessionError(f"Entity '{instance_id}' does not exist")
+        if self.active_turn_id != instance_id:
+            raise BattleSessionError("Only the active unit can use Move.")
+        if not self._has_position(entity) or not self._position_in_bounds(entity.grid_x, entity.grid_y):
+            raise BattleSessionError(f"{entity.name} must be on the battle map to move")
+
+        x = int(x)
+        y = int(y)
+        if not self._position_in_bounds(x, y):
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is outside the battle map")
+        occupying = self._entity_at_position(x, y, exclude_id=instance_id, blocking_only=True)
+        if occupying:
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is occupied by {occupying.name}")
+
+        movement_state = self._movement_state_for_active()
+        movement_used = int(movement_state["movement_used"])
+        diagonal_steps_used = int(movement_state["diagonal_steps_used"])
+        base_movement = self.effective_movement(entity)
+        max_movement = base_movement * 2 if movement_state["dash_used"] else base_movement
+        route = self._movement_route_cost(
+            entity,
+            x,
+            y,
+            diagonal_steps_used=diagonal_steps_used,
+            max_cost=max(base_movement * 2 - movement_used, 0),
+        )
+        if route is None:
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is not reachable")
+
+        move_cost, diagonal_steps = route
+        next_movement_used = movement_used + move_cost
+        needs_dash = next_movement_used > base_movement and not movement_state["dash_used"]
+        if needs_dash and not dash:
+            raise BattleSessionError("This movement requires a Dash action.")
+        if needs_dash:
+            max_movement = base_movement * 2
+        if next_movement_used > max_movement:
+            raise BattleSessionError(f"{entity.name} does not have enough movement remaining")
+
+        self._set_position(entity, x, y)
+        self.selected_id = instance_id
+        movement_state["movement_used"] = next_movement_used
+        movement_state["diagonal_steps_used"] = diagonal_steps_used + diagonal_steps
+        movement_state["dash_used"] = bool(movement_state["dash_used"] or needs_dash)
+        dash_suffix = " using Dash" if needs_dash else ""
+        self._add_log(f"Moved {entity.name} to ({x + 1}, {y + 1}) for {move_cost} movement{dash_suffix}")
         self.autosave()
 
     def draw_turn(self) -> None:
@@ -460,6 +521,7 @@ class BattleSession:
         if self.active_turn_id is None:
             self.active_turn_id = entity.instance_id
             self._start_turn(entity)
+            self._reset_movement_state(entity.instance_id)
 
         result = self._draw_cards_for_turn(entity)
         self.turn_in_progress = True
@@ -504,6 +566,7 @@ class BattleSession:
         if self.active_turn_id is None:
             self.active_turn_id = entity.instance_id
             self._start_turn(entity)
+            self._reset_movement_state(entity.instance_id)
         self.next_turn()
 
     def end_turn_selected(self) -> None:
@@ -516,6 +579,7 @@ class BattleSession:
         end_turn(entity)
         self.active_turn_id = None
         self.turn_in_progress = False
+        self.movement_state = None
         self._add_log(f"Ended turn: {entity.name}")
         self.autosave()
 
@@ -529,6 +593,7 @@ class BattleSession:
                 self._add_log(f"Ended turn: {active_enemy.name}")
             self.active_turn_id = None
             self.turn_in_progress = False
+            self.movement_state = None
 
         wrapped = self._select_next_in_order(current_turn_id)
         if wrapped:
@@ -541,6 +606,7 @@ class BattleSession:
             self.turn_in_progress = False
             if not self.is_player(entity):
                 self._start_turn(entity)
+            self._reset_movement_state(entity.instance_id)
             self._add_log(f"Active turn: {entity.name}")
         self.autosave()
 
@@ -698,6 +764,129 @@ class BattleSession:
         if "slowed" in getattr(entity, "statuses", {}):
             return max(0, int(entity.movement) // 2)
         return int(entity.movement)
+
+    def _reset_movement_state(self, entity_id: Optional[str]) -> None:
+        self.movement_state = (
+            {
+                "entity_id": entity_id,
+                "movement_used": 0,
+                "diagonal_steps_used": 0,
+                "dash_used": False,
+            }
+            if entity_id
+            else None
+        )
+
+    def _load_movement_state(self, movement_state: Optional[dict]) -> None:
+        if not self.active_turn_id:
+            self.movement_state = None
+            return
+        if not movement_state or movement_state.get("entity_id") != self.active_turn_id:
+            self._reset_movement_state(self.active_turn_id)
+            return
+        self.movement_state = {
+            "entity_id": self.active_turn_id,
+            "movement_used": max(0, int(movement_state.get("movement_used", 0) or 0)),
+            "diagonal_steps_used": max(0, int(movement_state.get("diagonal_steps_used", 0) or 0)),
+            "dash_used": bool(movement_state.get("dash_used", False)),
+        }
+
+    def _movement_state_for_active(self) -> dict:
+        if not self.active_turn_id:
+            raise BattleSessionError("No unit has the active turn.")
+        if not self.movement_state or self.movement_state.get("entity_id") != self.active_turn_id:
+            self._reset_movement_state(self.active_turn_id)
+        return self.movement_state
+
+    def _movement_state_snapshot(self) -> Optional[dict]:
+        if not self.active_turn_id or self.active_turn_id not in self.state.enemies:
+            return None
+        movement_state = self._movement_state_for_active()
+        entity = self.state.enemies[self.active_turn_id]
+        base_movement = self.effective_movement(entity)
+        max_movement = base_movement * 2 if movement_state["dash_used"] else base_movement
+        return {
+            "entityId": movement_state["entity_id"],
+            "movementUsed": movement_state["movement_used"],
+            "diagonalStepsUsed": movement_state["diagonal_steps_used"],
+            "dashUsed": movement_state["dash_used"],
+            "baseMovement": base_movement,
+            "maxMovement": max_movement,
+            "remainingMovement": max(0, max_movement - movement_state["movement_used"]),
+        }
+
+    def _movement_route_cost(
+        self,
+        entity: EnemyInstance,
+        target_x: int,
+        target_y: int,
+        *,
+        diagonal_steps_used: int,
+        max_cost: Optional[int] = None,
+    ) -> Optional[tuple[int, int]]:
+        start = (int(entity.grid_x), int(entity.grid_y))
+        target = (int(target_x), int(target_y))
+        if start == target:
+            return (0, 0)
+
+        occupied = self._occupied_positions(exclude_id=entity.instance_id)
+        start_parity = int(diagonal_steps_used) % 2
+        queue: list[tuple[int, int, int, int, int, int]] = [(0, 0, 0, start[0], start[1], start_parity)]
+        best: dict[tuple[int, int, int], tuple[int, int]] = {(start[0], start[1], start_parity): (0, 0)}
+        directions = [
+            (-1, -1),
+            (0, -1),
+            (1, -1),
+            (-1, 0),
+            (1, 0),
+            (-1, 1),
+            (0, 1),
+            (1, 1),
+        ]
+
+        while queue:
+            cost, _neg_diagonal_steps, diagonal_steps, x, y, parity = heapq.heappop(queue)
+            if best.get((x, y, parity)) != (cost, diagonal_steps):
+                continue
+            if (x, y) == target:
+                return (cost, diagonal_steps)
+
+            for dx, dy in directions:
+                next_x = x + dx
+                next_y = y + dy
+                if not self._position_in_bounds(next_x, next_y):
+                    continue
+                if (next_x, next_y) in occupied:
+                    continue
+
+                is_diagonal = dx != 0 and dy != 0
+                step_cost = 1
+                next_parity = parity
+                next_diagonal_steps = diagonal_steps
+                if is_diagonal:
+                    step_cost = 1 if parity == 0 else 2
+                    next_parity = 1 - parity
+                    next_diagonal_steps += 1
+
+                next_cost = cost + step_cost
+                if max_cost is not None and next_cost > max_cost:
+                    continue
+
+                key = (next_x, next_y, next_parity)
+                previous = best.get(key)
+                next_value = (next_cost, next_diagonal_steps)
+                if previous is not None and (
+                    previous[0] < next_cost
+                    or (previous[0] == next_cost and previous[1] >= next_diagonal_steps)
+                ):
+                    continue
+                best[key] = next_value
+                heapq.heappush(
+                    queue,
+                    (next_cost, -next_diagonal_steps, next_diagonal_steps, next_x, next_y, next_parity),
+                )
+
+        return None
 
     def format_statuses(self, statuses: dict) -> str:
         if not statuses:
