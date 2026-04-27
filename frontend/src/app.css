@@ -1720,6 +1720,53 @@ button.draw-card:hover {
   text-align: left;
 }
 
+.unit-context-menu {
+  position: fixed;
+  z-index: 32;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 164px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: linear-gradient(145deg, rgba(24, 16, 11, 0.98), rgba(11, 8, 6, 0.98));
+  box-shadow: var(--shadow-md);
+}
+
+.unit-context-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.unit-preview-body {
+  padding: 0 22px;
+}
+
+.unit-preview-frame {
+  display: grid;
+  place-items: center;
+  min-height: 260px;
+  max-height: min(68vh, 720px);
+  overflow: hidden;
+  border: 1px solid rgba(240, 207, 133, 0.18);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(240, 207, 133, 0.1), transparent 52%),
+    rgba(5, 4, 3, 0.58);
+}
+
+.unit-preview-image {
+  display: block;
+  width: 100%;
+  max-width: 760px;
+  max-height: min(64vh, 680px);
+  object-fit: contain;
+}
+
 .action-title {
   margin-top: 0;
   font-family: "Cormorant Garamond", serif;

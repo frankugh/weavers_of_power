@@ -13,6 +13,7 @@ import {
 } from "./mapGeometry.js";
 
 const VIEWPORT_FALLBACK = { left: 0, top: 0, width: 800, height: 500 };
+const UNIT_DOUBLE_CLICK_MS = 320;
 
 function pointerTypeOf(event) {
   return event.pointerType || event.nativeEvent?.pointerType || "mouse";
@@ -484,12 +485,15 @@ function BattleMapSurface({
   busy,
   onSelect,
   onMoveToCell,
+  onUnitContextMenu,
+  onUnitDoubleClick,
 }) {
   const surfaceRef = useRef(null);
   const rendererRef = useRef(null);
   const panRef = useRef(null);
   const pinchRef = useRef(null);
   const pointersRef = useRef(new Map());
+  const lastUnitClickRef = useRef(null);
   const cellSizeRef = useRef(MAP_ZOOM.defaultSize);
   const cameraRef = useRef({ x: 0, y: 0 });
   const viewportRef = useRef(VIEWPORT_FALLBACK);
@@ -942,10 +946,12 @@ function BattleMapSurface({
   function finishPointer(event) {
     const pointerType = pointerTypeOf(event);
     const pointerId = pointerIdOf(event);
+    const pointerButton = pointerButtonOf(event);
     const pan = panRef.current;
     const wasDragging = pan?.pointerId === pointerId && pan.dragging;
     const wasPinching = Boolean(pinchRef.current);
-    const clickCell = !wasDragging && !wasPinching && pan?.button !== 1 ? cellFromPointer(event) : null;
+    const canClick = pointerType === "touch" || pointerButton === 0;
+    const clickCell = canClick && !wasDragging && !wasPinching && pan?.button !== 1 ? cellFromPointer(event) : null;
 
     if (pointerType === "touch") {
       pointersRef.current.delete(pointerId);
@@ -971,6 +977,33 @@ function BattleMapSurface({
       ? cellEntities.find((entity) => entity.instance_id === selectedEntity.instance_id)
       : null;
     const blockingOccupant = getBlockingEntity(cellEntities);
+    const occupant = getTopSelectableEntity(cellEntities);
+
+    if (occupant) {
+      const now = Date.now();
+      const previousClick = lastUnitClickRef.current;
+      const isDoubleClick =
+        previousClick &&
+        previousClick.entityId === occupant.instance_id &&
+        previousClick.x === clickCell.x &&
+        previousClick.y === clickCell.y &&
+        now - previousClick.time <= UNIT_DOUBLE_CLICK_MS;
+
+      lastUnitClickRef.current = isDoubleClick
+        ? null
+        : {
+            entityId: occupant.instance_id,
+            x: clickCell.x,
+            y: clickCell.y,
+            time: now,
+          };
+
+      if (isDoubleClick && onUnitDoubleClick?.(occupant.instance_id)) {
+        return;
+      }
+    } else {
+      lastUnitClickRef.current = null;
+    }
 
     if (selectedOccupant) {
       onSelect(selectedOccupant.instance_id);
@@ -991,10 +1024,24 @@ function BattleMapSurface({
       return;
     }
 
-    const occupant = getTopSelectableEntity(cellEntities);
     if (occupant) {
       onSelect(occupant.instance_id);
     }
+  }
+
+  function handleContextMenu(event) {
+    event.preventDefault();
+    const clickCell = cellFromPointer(event);
+    const occupant = getTopSelectableEntity(getEntitiesAtPosition(entitiesByPosition, clickCell));
+    if (!occupant) {
+      return;
+    }
+
+    onUnitContextMenu?.({
+      instanceId: occupant.instance_id,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
   }
 
   function handleZoomOut() {
@@ -1079,6 +1126,7 @@ function BattleMapSurface({
         onPointerMove={handlePointerMove}
         onPointerUp={finishPointer}
         onPointerCancel={finishPointer}
+        onContextMenu={handleContextMenu}
       />
     </div>
   );

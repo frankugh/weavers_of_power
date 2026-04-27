@@ -513,6 +513,8 @@ class BattleSession:
 
     def draw_turn(self) -> None:
         entity = self._require_selected_enemy()
+        if not self._can_take_turn(entity):
+            raise BattleSessionError("Down units cannot take a turn.")
         if self.active_turn_id is not None and self.active_turn_id != entity.instance_id:
             raise BattleSessionError("Another enemy has the active turn. End that turn first.")
         if self.turn_in_progress:
@@ -560,6 +562,8 @@ class BattleSession:
 
     def enemy_turn_no_draw(self) -> None:
         entity = self._require_selected_enemy()
+        if not self._can_take_turn(entity):
+            raise BattleSessionError("Down units cannot take a turn.")
         if self.active_turn_id is not None and self.active_turn_id != entity.instance_id:
             raise BattleSessionError("Another enemy has the active turn. End that turn first.")
 
@@ -602,12 +606,13 @@ class BattleSession:
 
         if self.selected_id:
             entity = self.state.enemies[self.selected_id]
-            self.active_turn_id = entity.instance_id
-            self.turn_in_progress = False
-            if not self.is_player(entity):
-                self._start_turn(entity)
-            self._reset_movement_state(entity.instance_id)
-            self._add_log(f"Active turn: {entity.name}")
+            if self._can_take_turn(entity):
+                self.active_turn_id = entity.instance_id
+                self.turn_in_progress = False
+                if not self.is_player(entity):
+                    self._start_turn(entity)
+                self._reset_movement_state(entity.instance_id)
+                self._add_log(f"Active turn: {entity.name}")
         self.autosave()
 
     def apply_attack_to_selected(
@@ -1123,12 +1128,23 @@ class BattleSession:
             return False
         anchor_id = current_id if current_id in self.order else self.selected_id
         if anchor_id not in self.order:
+            for instance_id in self.order:
+                entity = self.state.enemies.get(instance_id)
+                if entity and self._can_take_turn(entity):
+                    self.selected_id = instance_id
+                    return False
             self.selected_id = self.order[0]
             return False
         current_index = self.order.index(anchor_id)
-        next_index = (current_index + 1) % len(self.order)
-        self.selected_id = self.order[next_index]
-        return next_index == 0
+        for offset in range(1, len(self.order) + 1):
+            next_index = (current_index + offset) % len(self.order)
+            instance_id = self.order[next_index]
+            entity = self.state.enemies.get(instance_id)
+            if entity and self._can_take_turn(entity):
+                self.selected_id = instance_id
+                return next_index <= current_index
+        self.selected_id = anchor_id if anchor_id in self.state.enemies else self.order[0]
+        return False
 
     def _next_suffix(self, base_name: str) -> int:
         max_found = 0
@@ -1168,3 +1184,6 @@ class BattleSession:
     @staticmethod
     def is_down(entity: EnemyInstance) -> bool:
         return (not BattleSession.is_player(entity)) and int(getattr(entity, "hp_current", 0)) <= 0
+
+    def _can_take_turn(self, entity: EnemyInstance) -> bool:
+        return not self.is_down(entity)

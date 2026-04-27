@@ -332,6 +332,41 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(session.active_turn_id, first_id)
         self.assertNotIn("slowed", second_enemy.statuses)
 
+    def test_next_turn_skips_down_units(self) -> None:
+        session = self.context.create_session("skip-down-turns")
+        session.add_enemy_from_template("goblin")
+        first_id = session.selected_id
+        session.add_enemy_from_template("bandit")
+        down_id = session.selected_id
+        session.add_enemy_from_template("goblin")
+        third_id = session.selected_id
+        session.state.enemies[down_id].hp_current = 0
+
+        session.select(first_id)
+        session.next_turn()
+
+        self.assertEqual(session.selected_id, third_id)
+        self.assertEqual(session.active_turn_id, third_id)
+        self.assertFalse(session.turn_in_progress)
+
+    def test_down_units_cannot_start_turns(self) -> None:
+        session = self.context.create_session("down-turn-blocked")
+        session.add_enemy_from_template("goblin")
+        first_id = session.selected_id
+        session.add_enemy_from_template("bandit")
+        second_id = session.selected_id
+        session.state.enemies[first_id].hp_current = 0
+        session.state.enemies[second_id].hp_current = 0
+
+        session.select(first_id)
+        with self.assertRaisesRegex(ValueError, "Down units cannot take a turn"):
+            session.draw_turn()
+
+        session.next_turn()
+
+        self.assertIsNone(session.active_turn_id)
+        self.assertFalse(session.turn_in_progress)
+
     def test_round_increments_when_next_wraps(self) -> None:
         session = self.context.create_session("round-wrap")
         session.add_enemy_from_template("goblin")

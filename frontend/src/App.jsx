@@ -167,9 +167,14 @@ function hasGridPosition(entity, room) {
   );
 }
 
+function isTemplateLootable(entity) {
+  return Boolean(entity && !entity.is_player && entity.template_id !== "custom" && entity.template_id !== "player");
+}
+
 function App() {
   const bootstrapped = useRef(false);
   const actionMenuRef = useRef(null);
+  const unitContextMenuRef = useRef(null);
 
   const [snapshot, setSnapshot] = useState(null);
   const [meta, setMeta] = useState(null);
@@ -188,6 +193,8 @@ function App() {
   const [attackForm, setAttackForm] = useState(EMPTY_ATTACK_FORM);
   const [healForm, setHealForm] = useState(EMPTY_HEAL_FORM);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const [unitContextMenu, setUnitContextMenu] = useState(null);
+  const [previewEntityId, setPreviewEntityId] = useState(null);
   const [drawReveal, setDrawReveal] = useState(null);
   const [drawDetail, setDrawDetail] = useState(null);
   const [customForm, setCustomForm] = useState({
@@ -224,6 +231,10 @@ function App() {
   useEffect(() => {
     setActionMenuOpen(false);
   }, [snapshot?.selectedId, snapshot?.sid, modal]);
+
+  useEffect(() => {
+    setUnitContextMenu(null);
+  }, [snapshot?.sid, modal]);
 
   useEffect(() => {
     if (!drawReveal) {
@@ -294,6 +305,31 @@ function App() {
   }, [actionMenuOpen]);
 
   useEffect(() => {
+    if (!unitContextMenu) {
+      return undefined;
+    }
+
+    function handlePointerDown(event) {
+      if (unitContextMenuRef.current && !unitContextMenuRef.current.contains(event.target)) {
+        setUnitContextMenu(null);
+      }
+    }
+
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        setUnitContextMenu(null);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [unitContextMenu]);
+
+  useEffect(() => {
     if (bootstrapped.current) {
       return;
     }
@@ -330,11 +366,18 @@ function App() {
   const selectedEntity =
     orderedEnemies.find((entity) => entity.instance_id === snapshot?.selectedId) || orderedEnemies[0] || null;
   const activeEntity = orderedEnemies.find((entity) => entity.instance_id === snapshot?.activeTurnId) || null;
+  const contextMenuEntity = unitContextMenu
+    ? orderedEnemies.find((entity) => entity.instance_id === unitContextMenu.entityId) || null
+    : null;
+  const previewEntity = previewEntityId
+    ? orderedEnemies.find((entity) => entity.instance_id === previewEntityId) || null
+    : null;
   const selectedEntityState = selectedEntity ? getEntityState(selectedEntity, snapshot.selectedId, snapshot.activeTurnId) : null;
   const selectedDrawIsStored = Boolean(snapshot?.activeTurnId && selectedEntity && snapshot.activeTurnId !== selectedEntity.instance_id);
   const activeDetachedEntity =
     activeEntity && activeEntity.instance_id !== selectedEntity?.instance_id ? activeEntity : null;
   const isPlayerSelected = Boolean(selectedEntity?.is_player);
+  const selectedIsDown = Boolean(selectedEntity?.is_down);
   const movementState = snapshot?.movementState || null;
   const selectedIsActive = Boolean(selectedEntity && snapshot?.activeTurnId === selectedEntity.instance_id);
   const selectedMovementBase =
@@ -347,8 +390,9 @@ function App() {
       : 0;
   const selectedMovementRemaining = Math.max(0, selectedMovementBase * 2 - selectedMovementUsed);
   const canUseMove = Boolean(
-    selectedEntity &&
+      selectedEntity &&
       selectedIsActive &&
+      !selectedIsDown &&
       hasGridPosition(selectedEntity, room) &&
       selectedMovementRemaining > 0,
   );
@@ -358,22 +402,20 @@ function App() {
   const canDraw = Boolean(
     selectedEntity &&
       !isPlayerSelected &&
+      !selectedIsDown &&
       !snapshot.turnInProgress &&
       (!snapshot?.activeTurnId || snapshot.activeTurnId === selectedEntity.instance_id),
   );
   const canRedraw = Boolean(
     selectedEntity &&
       !isPlayerSelected &&
+      !selectedIsDown &&
       snapshot.turnInProgress &&
       snapshot?.activeTurnId === selectedEntity.instance_id,
   );
   const canAttackOrHeal = Boolean(selectedEntity && !isPlayerSelected);
-  const canRollLoot = Boolean(
-    selectedEntity &&
-      !isPlayerSelected &&
-      selectedEntity.template_id !== "custom" &&
-      selectedEntity.template_id !== "player",
-  );
+  const canRollLoot = isTemplateLootable(selectedEntity);
+  const canContextRollLoot = Boolean(contextMenuEntity?.is_down && !contextMenuEntity?.loot_rolled && isTemplateLootable(contextMenuEntity));
   const selectedStatuses = Object.entries(selectedEntity?.statuses || {});
   const selectedHasDraw = Boolean(selectedEntity?.current_draw_text?.length);
   const selectedHasLoot = Boolean(selectedEntity?.loot_rolled);
@@ -389,6 +431,7 @@ function App() {
     setPendingRoomResize(null);
     setPendingDashMove(null);
     setDrawDetail(null);
+    setPreviewEntityId(null);
   }
 
   function showDrawReveal(payload, kind) {
@@ -504,6 +547,7 @@ function App() {
     if (busy) {
       return;
     }
+    setUnitContextMenu(null);
     if (snapshot?.selectedId === instanceId) {
       if (snapshot?.activeTurnId === instanceId && canUseMove) {
         setMapMode((current) => (current === MAP_MODES.MOVE ? MAP_MODES.IDLE : MAP_MODES.MOVE));
@@ -517,6 +561,111 @@ function App() {
     if (payload) {
       setMapMode(MAP_MODES.IDLE);
     }
+  }
+
+  async function selectEntityForAction(instanceId, { allowWhileBusy = false } = {}) {
+    if (!snapshot?.sid || (busy && !allowWhileBusy)) {
+      return null;
+    }
+    if (snapshot?.selectedId === instanceId) {
+      return snapshot;
+    }
+
+    setBusy(true);
+    setError("");
+    try {
+      const payload = await requestJson(`/api/battle/sessions/${snapshot.sid}/select`, {
+        method: "POST",
+        body: JSON.stringify({ instanceId }),
+      });
+      setSnapshot(payload);
+      setNotice("");
+      setMapMode(MAP_MODES.IDLE);
+      return payload;
+    } catch (requestError) {
+      setError(requestError.message);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleUnitContextMenu({ instanceId, clientX, clientY }) {
+    if (busy || !orderedEnemies.some((entity) => entity.instance_id === instanceId)) {
+      return;
+    }
+    setActionMenuOpen(false);
+    setUnitContextMenu(null);
+    const payload = await selectEntityForAction(instanceId);
+    if (!payload?.enemies?.some((entity) => entity.instance_id === instanceId)) {
+      return;
+    }
+    setUnitContextMenu({ entityId: instanceId, x: clientX, y: clientY });
+  }
+
+  async function openAttackForEntity(instanceId, options = {}) {
+    const payload = await selectEntityForAction(instanceId, options);
+    if (!payload) {
+      return;
+    }
+    setUnitContextMenu(null);
+    setActionMenuOpen(false);
+    setMapMode(MAP_MODES.IDLE);
+    setAttackForm(EMPTY_ATTACK_FORM);
+    setModal("attack");
+  }
+
+  async function openHealForEntity(instanceId) {
+    const payload = await selectEntityForAction(instanceId);
+    if (!payload) {
+      return;
+    }
+    setUnitContextMenu(null);
+    setActionMenuOpen(false);
+    setMapMode(MAP_MODES.IDLE);
+    setHealForm(EMPTY_HEAL_FORM);
+    setModal("heal");
+  }
+
+  async function openRepositionForEntity(instanceId) {
+    const payload = await selectEntityForAction(instanceId);
+    if (!payload) {
+      return;
+    }
+    setUnitContextMenu(null);
+    setActionMenuOpen(false);
+    setMapMode(MAP_MODES.REPOSITION);
+  }
+
+  async function rollLootForEntity(instanceId) {
+    const payload = await selectEntityForAction(instanceId);
+    if (!payload) {
+      return;
+    }
+    setUnitContextMenu(null);
+    setActionMenuOpen(false);
+    setMapMode(MAP_MODES.IDLE);
+    await handleRollLoot();
+  }
+
+  function openUnitPreview(instanceId) {
+    const target = orderedEnemies.find((entity) => entity.instance_id === instanceId);
+    if (!target) {
+      return;
+    }
+    setUnitContextMenu(null);
+    setActionMenuOpen(false);
+    setPreviewEntityId(instanceId);
+    setModal("unit-preview");
+  }
+
+  function handleUnitDoubleClick(instanceId) {
+    const target = orderedEnemies.find((entity) => entity.instance_id === instanceId);
+    if (!target || target.is_player || target.is_down || snapshot?.activeTurnId === instanceId) {
+      return false;
+    }
+    openAttackForEntity(instanceId, { allowWhileBusy: true });
+    return true;
   }
 
   async function handleMove(instanceId, direction) {
@@ -896,6 +1045,8 @@ function App() {
               onRoomSubmit={handleRoomSubmit}
               onSelect={handleSelect}
               onMoveToCell={handleMoveSelectedToCell}
+              onUnitContextMenu={handleUnitContextMenu}
+              onUnitDoubleClick={handleUnitDoubleClick}
             />
           </section>
 
@@ -1378,6 +1529,90 @@ function App() {
         </aside>
       </main>
 
+      {unitContextMenu && contextMenuEntity ? (
+        <div
+          ref={unitContextMenuRef}
+          className="unit-context-menu"
+          role="menu"
+          aria-label={`Unit actions for ${contextMenuEntity.name}`}
+          style={{ left: `${unitContextMenu.x}px`, top: `${unitContextMenu.y}px` }}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          {contextMenuEntity.is_player ? null : contextMenuEntity.is_down ? (
+            canContextRollLoot ? (
+              <button
+                className="secondary-button unit-context-item"
+                type="button"
+                role="menuitem"
+                onClick={() => rollLootForEntity(contextMenuEntity.instance_id)}
+                disabled={busy}
+              >
+                Roll loot
+              </button>
+            ) : null
+          ) : (
+            <>
+              <button
+                className="secondary-button unit-context-item"
+                type="button"
+                role="menuitem"
+                onClick={() => openAttackForEntity(contextMenuEntity.instance_id)}
+                disabled={busy}
+              >
+                Attack unit
+              </button>
+              <button
+                className="secondary-button unit-context-item"
+                type="button"
+                role="menuitem"
+                onClick={() => openHealForEntity(contextMenuEntity.instance_id)}
+                disabled={busy}
+              >
+                Heal unit
+              </button>
+            </>
+          )}
+          <button
+            className="secondary-button unit-context-item"
+            type="button"
+            role="menuitem"
+            onClick={() => openRepositionForEntity(contextMenuEntity.instance_id)}
+            disabled={busy}
+          >
+            Reposition unit
+          </button>
+          <button
+            className="secondary-button unit-context-item"
+            type="button"
+            role="menuitem"
+            onClick={() => openUnitPreview(contextMenuEntity.instance_id)}
+            disabled={busy}
+          >
+            Show unit
+          </button>
+        </div>
+      ) : null}
+
+      <ModalShell
+        open={modal === "unit-preview" && Boolean(previewEntity)}
+        title={previewEntity?.name || "Show unit"}
+        subtitle={previewEntity?.is_player ? "Player" : previewEntity ? titleCaseFromSnake(previewEntity.template_id) : ""}
+        onClose={closeModal}
+        size="wide"
+      >
+        {previewEntity ? (
+          <div className="unit-preview-body">
+            <div className="unit-preview-frame">
+              <img
+                className="unit-preview-image"
+                src={previewEntity.image_url}
+                alt={`${previewEntity.name} preview`}
+              />
+            </div>
+          </div>
+        ) : null}
+      </ModalShell>
+
       <ModalShell
         open={modal === "attack"}
         title="Attack enemy"
@@ -1791,6 +2026,8 @@ function BattleRoom({
   onRoomSubmit,
   onSelect,
   onMoveToCell,
+  onUnitContextMenu,
+  onUnitDoubleClick,
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const placedEntities = useMemo(
@@ -1864,6 +2101,8 @@ function BattleRoom({
         busy={busy}
         onSelect={onSelect}
         onMoveToCell={onMoveToCell}
+        onUnitContextMenu={onUnitContextMenu}
+        onUnitDoubleClick={onUnitDoubleClick}
       />
 
       {unplacedEntities.length ? (

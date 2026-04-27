@@ -148,6 +148,35 @@ function pointerClickMapCell(x, y, pointerId = 1) {
   });
 }
 
+function pointerRightClickMapCell(x, y, pointerId = 51) {
+  const viewport = getMapViewport();
+  const point = mapPointForCell(viewport, x, y);
+
+  fireEvent.pointerDown(viewport, {
+    pointerId,
+    pointerType: "mouse",
+    button: 2,
+    buttons: 2,
+    ...point,
+  });
+  fireEvent.pointerUp(viewport, {
+    pointerId,
+    pointerType: "mouse",
+    button: 2,
+    buttons: 0,
+    ...point,
+  });
+  fireEvent.contextMenu(viewport, {
+    button: 2,
+    ...point,
+  });
+}
+
+function pointerDoubleClickMapCell(x, y) {
+  pointerClickMapCell(x, y, 61);
+  pointerClickMapCell(x, y, 62);
+}
+
 function pointerDragFromCell(x, y, deltaX, deltaY, options = {}) {
   const viewport = getMapViewport();
   const point = mapPointForCell(viewport, x, y);
@@ -995,6 +1024,473 @@ describe("App", () => {
       );
     });
     expect(await screen.findByText("Selected: Down Goblin")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Draw" })).toBeDisabled();
+  });
+
+  it("selects a standing enemy before showing context actions on right-click", async () => {
+    const bandit = buildEnemy({
+      instance_id: "enemy-2",
+      template_id: "bandit",
+      name: "Bandit 1",
+      image_url: "/images/bandit.png",
+      grid_x: 5,
+      grid_y: 3,
+    });
+    const selectedBanditSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      order: ["enemy-1", "enemy-2"],
+      enemies: [buildEnemy(), bandit],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        order: ["enemy-1", "enemy-2"],
+        enemies: [buildEnemy(), bandit],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+            return jsonResponse(selectedBanditSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Bandit 1");
+    pointerRightClickMapCell(5, 3);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/select",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ instanceId: "enemy-2" }),
+        }),
+      );
+    });
+    const menu = await screen.findByRole("menu", { name: "Unit actions for Bandit 1" });
+    expect(within(menu).getByRole("menuitem", { name: "Attack unit" })).toBeInTheDocument();
+    expect(within(menu).getByRole("menuitem", { name: "Heal unit" })).toBeInTheDocument();
+    expect(within(menu).getByRole("menuitem", { name: "Reposition unit" })).toBeInTheDocument();
+    expect(within(menu).getByRole("menuitem", { name: "Show unit" })).toBeInTheDocument();
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Attack unit",
+      "Heal unit",
+      "Reposition unit",
+      "Show unit",
+    ]);
+  });
+
+  it("limits player and down enemy context actions", async () => {
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      hp_current: 0,
+      hp_max: 0,
+      armor_current: 0,
+      armor_max: 0,
+      magic_armor_current: 0,
+      magic_armor_max: 0,
+      guard_current: 0,
+      draws_base: 0,
+      effective_movement: 0,
+      grid_x: 5,
+      grid_y: 3,
+    });
+    const downEnemy = buildEnemy({
+      instance_id: "enemy-2",
+      name: "Down Goblin",
+      hp_current: 0,
+      is_down: true,
+      grid_x: 0,
+      grid_y: 0,
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        order: ["enemy-1", "player-1", "enemy-2"],
+        enemies: [buildEnemy(), player, downEnemy],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+            const { instanceId } = JSON.parse(requestOptions.body);
+            return jsonResponse(
+              buildSnapshot({
+                selectedId: instanceId,
+                order: ["enemy-1", "player-1", "enemy-2"],
+                enemies: [buildEnemy(), player, downEnemy],
+              }),
+            );
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Player 1");
+    pointerRightClickMapCell(5, 3);
+
+    const playerMenu = await screen.findByRole("menu", { name: "Unit actions for Player 1" });
+    expect(within(playerMenu).getByRole("menuitem", { name: "Reposition unit" })).toBeInTheDocument();
+    expect(within(playerMenu).getByRole("menuitem", { name: "Show unit" })).toBeInTheDocument();
+    expect(within(playerMenu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Reposition unit",
+      "Show unit",
+    ]);
+    expect(within(playerMenu).queryByRole("menuitem", { name: "Attack unit" })).not.toBeInTheDocument();
+    expect(within(playerMenu).queryByRole("menuitem", { name: "Heal unit" })).not.toBeInTheDocument();
+    expect(within(playerMenu).queryByRole("menuitem", { name: "Roll loot" })).not.toBeInTheDocument();
+
+    fireEvent.mouseDown(document.body);
+    pointerRightClickMapCell(0, 0);
+
+    const downMenu = await screen.findByRole("menu", { name: "Unit actions for Down Goblin" });
+    expect(within(downMenu).getByRole("menuitem", { name: "Roll loot" })).toBeInTheDocument();
+    expect(within(downMenu).getByRole("menuitem", { name: "Reposition unit" })).toBeInTheDocument();
+    expect(within(downMenu).getByRole("menuitem", { name: "Show unit" })).toBeInTheDocument();
+    expect(within(downMenu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Roll loot",
+      "Reposition unit",
+      "Show unit",
+    ]);
+    expect(within(downMenu).queryByRole("menuitem", { name: "Attack unit" })).not.toBeInTheDocument();
+    expect(within(downMenu).queryByRole("menuitem", { name: "Heal unit" })).not.toBeInTheDocument();
+  });
+
+  it("opens a large unit preview from the context menu", async () => {
+    const user = userEvent.setup();
+    const bandit = buildEnemy({
+      instance_id: "enemy-2",
+      template_id: "bandit",
+      name: "Bandit 1",
+      image_url: "/images/bandit.png",
+      grid_x: 5,
+      grid_y: 3,
+    });
+    const selectedBanditSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      order: ["enemy-1", "enemy-2"],
+      enemies: [buildEnemy(), bandit],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        order: ["enemy-1", "enemy-2"],
+        enemies: [buildEnemy(), bandit],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+            return jsonResponse(selectedBanditSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Bandit 1");
+    pointerRightClickMapCell(5, 3);
+    await user.click(await screen.findByRole("menuitem", { name: "Show unit" }));
+
+    const previewImage = screen.getByRole("img", { name: "Bandit 1 preview" });
+    const previewModal = previewImage.closest(".modal-shell");
+    expect(within(previewModal).getByText("Bandit 1")).toBeInTheDocument();
+    expect(within(previewModal).getByText("Bandit")).toBeInTheDocument();
+    expect(previewImage).toHaveAttribute("src", "/images/bandit.png");
+
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("img", { name: "Bandit 1 preview" })).not.toBeInTheDocument();
+  });
+
+  it("opens attack and heal modals from the unit context menu", async () => {
+    const user = userEvent.setup();
+    const bandit = buildEnemy({
+      instance_id: "enemy-2",
+      template_id: "bandit",
+      name: "Bandit 1",
+      image_url: "/images/bandit.png",
+      grid_x: 5,
+      grid_y: 3,
+    });
+    const selectedBanditSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      order: ["enemy-1", "enemy-2"],
+      enemies: [buildEnemy(), bandit],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        order: ["enemy-1", "enemy-2"],
+        enemies: [buildEnemy(), bandit],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+            return jsonResponse(selectedBanditSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Bandit 1");
+    pointerRightClickMapCell(5, 3);
+    await user.click(await screen.findByRole("menuitem", { name: "Attack unit" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/select",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ instanceId: "enemy-2" }),
+        }),
+      );
+    });
+    expect(await screen.findByRole("button", { name: "Apply attack" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    pointerRightClickMapCell(5, 3);
+    await user.click(await screen.findByRole("menuitem", { name: "Heal unit" }));
+
+    expect(await screen.findByRole("button", { name: "Apply healing" })).toBeInTheDocument();
+  });
+
+  it("starts reposition for a context target and posts the selected target position", async () => {
+    const user = userEvent.setup();
+    const bandit = buildEnemy({
+      instance_id: "enemy-2",
+      template_id: "bandit",
+      name: "Bandit 1",
+      image_url: "/images/bandit.png",
+      grid_x: 5,
+      grid_y: 3,
+    });
+    const selectedBanditSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      order: ["enemy-1", "enemy-2"],
+      enemies: [buildEnemy(), bandit],
+    });
+    const repositionedSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      order: ["enemy-1", "enemy-2"],
+      enemies: [buildEnemy(), { ...bandit, grid_x: 0, grid_y: 0 }],
+      combatLog: ["Repositioned Bandit 1 to (1, 1)"],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        order: ["enemy-1", "enemy-2"],
+        enemies: [buildEnemy(), bandit],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+            return jsonResponse(selectedBanditSnapshot);
+          }
+          if (url === "/api/battle/sessions/sid-123/entities/enemy-2/position" && requestOptions?.method === "POST") {
+            return jsonResponse(repositionedSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Bandit 1");
+    pointerRightClickMapCell(5, 3);
+    await user.click(await screen.findByRole("menuitem", { name: "Reposition unit" }));
+
+    await waitFor(() => {
+      expect(getMapViewport().dataset.mapMode).toBe("reposition");
+    });
+    pointerClickMapCell(0, 0);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/enemy-2/position",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ x: 0, y: 0 }),
+        }),
+      );
+    });
+  });
+
+  it("rolls loot from a down enemy context menu and hides it after loot is rolled", async () => {
+    const user = userEvent.setup();
+    const downEnemy = buildEnemy({
+      instance_id: "enemy-2",
+      name: "Down Goblin",
+      hp_current: 0,
+      is_down: true,
+      grid_x: 0,
+      grid_y: 0,
+    });
+    const selectedDownSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      order: ["enemy-1", "enemy-2"],
+      enemies: [buildEnemy(), downEnemy],
+    });
+    const lootedSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      order: ["enemy-1", "enemy-2"],
+      enemies: [
+        buildEnemy(),
+        {
+          ...downEnemy,
+          loot_rolled: true,
+          rolled_loot: { currency: { gold: 3 }, resources: {}, other: [] },
+        },
+      ],
+      combatLog: ["Loot rolled for Down Goblin"],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        order: ["enemy-1", "enemy-2"],
+        enemies: [buildEnemy(), downEnemy],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+            return jsonResponse(selectedDownSnapshot);
+          }
+          if (url === "/api/battle/sessions/sid-123/loot" && requestOptions?.method === "POST") {
+            return jsonResponse(lootedSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Down Goblin");
+    pointerRightClickMapCell(0, 0);
+    await user.click(await screen.findByRole("menuitem", { name: "Roll loot" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/loot",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+
+    pointerRightClickMapCell(0, 0);
+    const menu = await screen.findByRole("menu", { name: "Unit actions for Down Goblin" });
+    expect(within(menu).queryByRole("menuitem", { name: "Roll loot" })).not.toBeInTheDocument();
+    expect(within(menu).getByRole("menuitem", { name: "Reposition unit" })).toBeInTheDocument();
+  });
+
+  it("double-clicks a non-active standing enemy to open attack", async () => {
+    const bandit = buildEnemy({
+      instance_id: "enemy-2",
+      template_id: "bandit",
+      name: "Bandit 1",
+      image_url: "/images/bandit.png",
+      grid_x: 5,
+      grid_y: 3,
+    });
+    const selectedBanditSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      activeTurnId: "enemy-1",
+      order: ["enemy-1", "enemy-2"],
+      enemies: [buildEnemy(), bandit],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        activeTurnId: "enemy-1",
+        order: ["enemy-1", "enemy-2"],
+        enemies: [buildEnemy(), bandit],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+            return jsonResponse(selectedBanditSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Bandit 1");
+    pointerDoubleClickMapCell(5, 3);
+
+    expect(await screen.findByRole("button", { name: "Apply attack" })).toBeInTheDocument();
+  });
+
+  it("does nothing special when double-clicking a player or down enemy", async () => {
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      hp_current: 0,
+      hp_max: 0,
+      armor_current: 0,
+      armor_max: 0,
+      magic_armor_current: 0,
+      magic_armor_max: 0,
+      guard_current: 0,
+      draws_base: 0,
+      effective_movement: 0,
+      grid_x: 5,
+      grid_y: 3,
+    });
+    const downEnemy = buildEnemy({
+      instance_id: "enemy-2",
+      name: "Down Goblin",
+      hp_current: 0,
+      is_down: true,
+      grid_x: 0,
+      grid_y: 0,
+    });
+    const entities = [buildEnemy(), player, downEnemy];
+
+    renderWithSnapshot(
+      buildSnapshot({
+        activeTurnId: "enemy-1",
+        order: ["enemy-1", "player-1", "enemy-2"],
+        enemies: entities,
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+            const { instanceId } = JSON.parse(requestOptions.body);
+            return jsonResponse(
+              buildSnapshot({
+                selectedId: instanceId,
+                activeTurnId: "enemy-1",
+                order: ["enemy-1", "player-1", "enemy-2"],
+                enemies: entities,
+              }),
+            );
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Player 1");
+    pointerDoubleClickMapCell(5, 3);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole("button", { name: "Apply attack" })).not.toBeInTheDocument();
+
+    pointerDoubleClickMapCell(0, 0);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole("button", { name: "Apply attack" })).not.toBeInTheDocument();
   });
 
   it("does not enter move mode when the selected unit is not active", async () => {
