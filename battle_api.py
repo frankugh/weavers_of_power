@@ -189,6 +189,10 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def end_turn(sid: str):
         return run_mutation(sid, lambda session: session.end_turn_selected())
 
+    @api_app.post("/api/battle/sessions/{sid}/encounter/start")
+    def start_encounter(sid: str):
+        return run_mutation(sid, lambda session: session.start_encounter())
+
     @api_app.post("/api/battle/sessions/{sid}/turn/next")
     def next_turn(sid: str):
         return run_mutation(sid, lambda session: session.next_turn())

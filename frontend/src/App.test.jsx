@@ -435,7 +435,7 @@ describe("App", () => {
     await findMapToken("Goblin 1");
 
     expect(screen.getByRole("button", { name: "Draw" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Next" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start encounter" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Move" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Attack enemy" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "More" })).toBeInTheDocument();
@@ -449,6 +449,76 @@ describe("App", () => {
     expect(screen.queryByRole("menuitem", { name: "Enemy turn (no draw)" })).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "End turn" })).not.toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Roll loot" })).toBeInTheDocument();
+  });
+
+  it("starts an encounter from the turn button when no unit is active", async () => {
+    const user = userEvent.setup();
+    const startedSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState(),
+      combatLog: ["Active turn: Goblin 1"],
+    });
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/encounter/start" && requestOptions?.method === "POST") {
+          return jsonResponse(startedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    expect(screen.queryByText(/Active Turn:/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Start encounter" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/encounter/start",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(await screen.findByText("Active Turn: Goblin 1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Draw" })).toBeEnabled();
+  });
+
+  it("keeps the turn button on Next when an active unit already exists", async () => {
+    const user = userEvent.setup();
+    const activeSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState(),
+    });
+
+    renderWithSnapshot(activeSnapshot, {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/turn/next" && requestOptions?.method === "POST") {
+          return jsonResponse(activeSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/turn/next",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+  });
+
+  it("disables Start encounter when every unit is down", async () => {
+    renderWithSnapshot(
+      buildSnapshot({
+        enemies: [buildEnemy({ hp_current: 0, is_down: true })],
+      }),
+    );
+
+    expect(await screen.findByRole("button", { name: "Start encounter" })).toBeDisabled();
   });
 
   it("keeps the attack modal open when the backdrop is clicked", async () => {
@@ -472,7 +542,7 @@ describe("App", () => {
       combatLog: ["Goblin 1 draws: Attack 3, Guard 2"],
     });
 
-    renderWithSnapshot(buildSnapshot(), {
+    renderWithSnapshot(buildSnapshot({ activeTurnId: "enemy-1", movementState: buildMovementState() }), {
       extraFetch: (url, requestOptions) => {
         if (url === "/api/battle/sessions/sid-123/turn/draw" && requestOptions?.method === "POST") {
           return jsonResponse(drawnSnapshot);
@@ -525,7 +595,7 @@ describe("App", () => {
       enemies: [buildEnemy({ current_draw_text: ["Attack 3"] })],
     });
 
-    renderWithSnapshot(buildSnapshot(), {
+    renderWithSnapshot(buildSnapshot({ activeTurnId: "enemy-1", movementState: buildMovementState() }), {
       extraFetch: (url, requestOptions) => {
         if (url === "/api/battle/sessions/sid-123/turn/draw" && requestOptions?.method === "POST") {
           return jsonResponse(drawnSnapshot);
@@ -1998,7 +2068,7 @@ describe("App", () => {
         return jsonResponse(metaPayload);
       }
       if (url === "/api/battle/sessions/sid-123") {
-        return jsonResponse(buildSnapshot());
+        return jsonResponse(buildSnapshot({ activeTurnId: "enemy-1", movementState: buildMovementState() }));
       }
       if (url === "/api/battle/sessions/sid-123/turn/draw" && requestOptions?.method === "POST") {
         return jsonResponse({ detail: "Another enemy has the active turn." }, { ok: false, status: 400, statusText: "Bad Request" });

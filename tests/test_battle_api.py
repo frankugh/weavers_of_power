@@ -92,6 +92,23 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(dashed.json()["movementState"]["movementUsed"], 7)
         self.assertTrue(dashed.json()["movementState"]["dashUsed"])
 
+    def test_start_encounter_endpoint_activates_highest_initiative_unit(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        first_enemy = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        first_id = first_enemy["selectedId"]
+        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"})
+
+        response = self.client.post(f"/api/battle/sessions/{sid}/encounter/start")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        active_enemy = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == first_id)
+        self.assertEqual(payload["activeTurnId"], first_id)
+        self.assertEqual(payload["selectedId"], first_id)
+        self.assertFalse(payload["turnInProgress"])
+        self.assertEqual(payload["movementState"]["entityId"], first_id)
+        self.assertEqual(active_enemy["current_draw_text"], [])
+
     def test_enemy_flow_and_manual_save_endpoints(self) -> None:
         snapshot = self.client.post("/api/battle/sessions").json()
         sid = snapshot["sid"]

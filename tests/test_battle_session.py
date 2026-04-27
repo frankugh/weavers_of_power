@@ -126,6 +126,53 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(session.movement_state["movement_used"], 4)
         self.assertEqual(session.movement_state["diagonal_steps_used"], 3)
 
+    def test_start_encounter_uses_first_non_down_in_order_and_resets_turn_state(self) -> None:
+        session = self.context.create_session("start-encounter")
+        session.add_enemy_from_template("goblin")
+        first_id = session.selected_id
+        session.add_enemy_from_template("bandit")
+        second_id = session.selected_id
+        first_enemy = session.state.enemies[first_id]
+        first_enemy.deck_state.hand = ["basic_a3"]
+        first_enemy.visible_draw = ["basic_a3"]
+
+        session.select(second_id)
+        session.start_encounter()
+
+        self.assertEqual(session.selected_id, first_id)
+        self.assertEqual(session.active_turn_id, first_id)
+        self.assertFalse(session.turn_in_progress)
+        self.assertEqual(session.movement_state["entity_id"], first_id)
+        self.assertEqual(session.movement_state["movement_used"], 0)
+        self.assertEqual(first_enemy.deck_state.hand, [])
+        self.assertEqual(first_enemy.deck_state.discard_pile, ["basic_a3"])
+        self.assertEqual(session.visible_draw_for(first_enemy), [])
+        self.assertIn(f"Active turn: {first_enemy.name}", session.combat_log)
+
+    def test_start_encounter_skips_down_units_and_rejects_invalid_starts(self) -> None:
+        session = self.context.create_session("start-encounter-skip-down")
+        session.add_enemy_from_template("goblin")
+        first_id = session.selected_id
+        session.add_enemy_from_template("bandit")
+        second_id = session.selected_id
+        session.state.enemies[first_id].hp_current = 0
+
+        session.start_encounter()
+
+        self.assertEqual(session.selected_id, second_id)
+        self.assertEqual(session.active_turn_id, second_id)
+        with self.assertRaisesRegex(ValueError, "already has an active turn"):
+            session.start_encounter()
+
+        all_down = self.context.create_session("start-encounter-all-down")
+        all_down.add_enemy_from_template("goblin")
+        all_down.state.enemies[all_down.selected_id].hp_current = 0
+
+        with self.assertRaisesRegex(ValueError, "No units can start encounter"):
+            all_down.start_encounter()
+        self.assertIsNone(all_down.active_turn_id)
+        self.assertFalse(all_down.turn_in_progress)
+
     def test_movement_pathing_blocks_living_units_but_not_down_units(self) -> None:
         session = self.context.create_session("movement-blockers")
         session.set_room_size(3, 3)

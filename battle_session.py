@@ -587,6 +587,29 @@ class BattleSession:
         self._add_log(f"Ended turn: {entity.name}")
         self.autosave()
 
+    def start_encounter(self) -> None:
+        if self.active_turn_id is not None:
+            raise BattleSessionError("Encounter already has an active turn.")
+
+        for instance_id in self.order:
+            entity = self.state.enemies.get(instance_id)
+            if not entity or not self._can_take_turn(entity):
+                continue
+
+            self.selected_id = entity.instance_id
+            self.active_turn_id = entity.instance_id
+            self.turn_in_progress = False
+            if not self.is_player(entity):
+                self._start_turn(entity)
+            else:
+                self._set_visible_draw(entity, [])
+            self._reset_movement_state(entity.instance_id)
+            self._add_log(f"Active turn: {entity.name}")
+            self.autosave()
+            return
+
+        raise BattleSessionError("No units can start encounter.")
+
     def next_turn(self) -> None:
         current_turn_id = self.active_turn_id if self.active_turn_id in self.order else self.selected_id
 

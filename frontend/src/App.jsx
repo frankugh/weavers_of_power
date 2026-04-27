@@ -380,6 +380,10 @@ function App() {
   const selectedIsDown = Boolean(selectedEntity?.is_down);
   const movementState = snapshot?.movementState || null;
   const selectedIsActive = Boolean(selectedEntity && snapshot?.activeTurnId === selectedEntity.instance_id);
+  const hasActiveTurn = Boolean(snapshot?.activeTurnId);
+  const hasStartableUnit = orderedEnemies.some((entity) => !entity.is_down);
+  const turnAdvanceLabel = hasActiveTurn ? "Next" : "Start encounter";
+  const canAdvanceTurn = Boolean(hasActiveTurn || hasStartableUnit);
   const selectedMovementBase =
     selectedIsActive && movementState?.entityId === selectedEntity?.instance_id
       ? Number(movementState.baseMovement)
@@ -390,7 +394,7 @@ function App() {
       : 0;
   const selectedMovementRemaining = Math.max(0, selectedMovementBase * 2 - selectedMovementUsed);
   const canUseMove = Boolean(
-      selectedEntity &&
+    selectedEntity &&
       selectedIsActive &&
       !selectedIsDown &&
       hasGridPosition(selectedEntity, room) &&
@@ -404,7 +408,7 @@ function App() {
       !isPlayerSelected &&
       !selectedIsDown &&
       !snapshot.turnInProgress &&
-      (!snapshot?.activeTurnId || snapshot.activeTurnId === selectedEntity.instance_id),
+      selectedIsActive,
   );
   const canRedraw = Boolean(
     selectedEntity &&
@@ -866,13 +870,24 @@ function App() {
     }
   }
 
-  async function handleNext() {
+  async function handleTurnAdvance() {
+    if (hasActiveTurn) {
+      await applySnapshotRequest(
+        `/api/battle/sessions/${snapshot.sid}/turn/next`,
+        {
+          method: "POST",
+        },
+        "Advanced round order",
+      );
+      return;
+    }
+
     await applySnapshotRequest(
-      `/api/battle/sessions/${snapshot.sid}/turn/next`,
+      `/api/battle/sessions/${snapshot.sid}/encounter/start`,
       {
         method: "POST",
       },
-      "Advanced round order",
+      "Encounter started",
     );
   }
 
@@ -1074,11 +1089,11 @@ function App() {
                   className="primary-button"
                   onClick={() => {
                     setActionMenuOpen(false);
-                    handleNext();
+                    handleTurnAdvance();
                   }}
-                  disabled={!snapshot.order.length || busy}
+                  disabled={!canAdvanceTurn || busy}
                 >
-                  Next
+                  {turnAdvanceLabel}
                 </button>
                 <button
                   className={`secondary-button ${mapMode === MAP_MODES.MOVE ? "move-button-active" : ""}`.trim()}
