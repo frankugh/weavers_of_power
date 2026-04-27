@@ -30,9 +30,15 @@ class BattleApiTests(unittest.TestCase):
         payload = response.json()
         self.assertIn("enemyTemplates", payload)
         self.assertIn("decks", payload)
+        templates_by_id = {item["id"]: item for item in payload["enemyTemplates"]}
+        self.assertTrue({"goblin", "bandit", "guard", "soldier"}.issubset(templates_by_id))
         goblin_template = next(item for item in payload["enemyTemplates"] if item["id"] == "goblin")
         self.assertEqual(goblin_template["name"], "Goblin")
-        self.assertEqual(goblin_template["imageUrl"], "/images/goblin.png")
+        self.assertEqual(goblin_template["imageUrl"], "/images/Greenskins/goblin.png")
+        self.assertEqual(templates_by_id["goblin"]["category"], "Greenskins")
+        self.assertEqual(templates_by_id["bandit"]["category"], "Outlaws")
+        self.assertEqual(templates_by_id["guard"]["category"], "Realms_and_order")
+        self.assertEqual(templates_by_id["soldier"]["category"], "Realms_and_order")
 
     def test_create_and_load_session(self) -> None:
         create_response = self.client.post("/api/battle/sessions")
@@ -140,6 +146,15 @@ class BattleApiTests(unittest.TestCase):
         )
         self.assertEqual(load_response.status_code, 200)
         self.assertEqual(len(load_response.json()["order"]), 1)
+
+    def test_new_taxonomy_templates_can_be_added(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+
+        for template_id in ("guard", "soldier"):
+            response = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": template_id})
+            self.assertEqual(response.status_code, 200)
+            selected = next(enemy for enemy in response.json()["enemies"] if enemy["instance_id"] == response.json()["selectedId"])
+            self.assertEqual(selected["template_id"], template_id)
 
     def test_next_clears_current_draw_until_a_new_draw_happens(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]

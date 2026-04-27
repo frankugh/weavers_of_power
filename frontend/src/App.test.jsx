@@ -18,7 +18,7 @@ function buildEnemy(overrides = {}) {
     instance_id: "enemy-1",
     template_id: "goblin",
     name: "Goblin 1",
-    image_url: "/images/goblin.png",
+    image_url: "/images/Greenskins/goblin.png",
     is_player: false,
     is_down: false,
     hp_current: 10,
@@ -78,9 +78,11 @@ function buildMovementState(overrides = {}) {
 
 const metaPayload = {
   enemyTemplates: [
-    { id: "goblin", name: "Goblin", imageUrl: "/images/goblin.png" },
-    { id: "bandit", name: "Bandit", imageUrl: "/images/bandit.png" },
-    { id: "wraith", name: "Wraith", imageUrl: "/images/anonymous.png" },
+    { id: "goblin", name: "Goblin", imageUrl: "/images/Greenskins/goblin.png", category: "Greenskins" },
+    { id: "bandit", name: "Bandit", imageUrl: "/images/Outlaws/bandit.png", category: "Outlaws" },
+    { id: "guard", name: "Guard", imageUrl: "/images/Realms_and_order/guard.png", category: "Realms_and_order" },
+    { id: "soldier", name: "Soldier", imageUrl: "/images/Realms_and_order/soldier.png", category: "Realms_and_order" },
+    { id: "wraith", name: "Wraith", imageUrl: "/images/anonymous.png", category: "Uncategorized" },
   ],
   decks: [{ id: "basic", name: "Basic Deck" }],
 };
@@ -248,7 +250,7 @@ describe("App", () => {
       instance_id: "enemy-2",
       template_id: "bandit",
       name: "Bandit 1",
-      image_url: "/images/bandit.png",
+      image_url: "/images/Outlaws/bandit.png",
       hp_current: 14,
       hp_max: 16,
       armor_current: 2,
@@ -693,7 +695,7 @@ describe("App", () => {
       instance_id: "enemy-2",
       template_id: "bandit",
       name: "Bandit 1",
-      image_url: "/images/bandit.png",
+      image_url: "/images/Outlaws/bandit.png",
       hp_current: 14,
       hp_max: 16,
       armor_current: 2,
@@ -732,10 +734,32 @@ describe("App", () => {
     expect(screen.getByText("Add Unit")).toBeInTheDocument();
     expect(screen.getByAltText("Goblin")).toBeInTheDocument();
     expect(screen.getByAltText("Bandit")).toBeInTheDocument();
-    expect(screen.queryByAltText("Wraith")).not.toBeInTheDocument();
+    expect(screen.getByAltText("Guard")).toBeInTheDocument();
+    expect(screen.getByAltText("Soldier")).toBeInTheDocument();
+    expect(screen.getByAltText("Wraith")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add player card" })).toBeInTheDocument();
     expect(screen.queryByText(/\bmin\b/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/\bmax\b/i)).not.toBeInTheDocument();
+  });
+
+  it("filters premade templates by search and category", async () => {
+    const user = userEvent.setup();
+    renderWithSnapshot(buildSnapshot());
+
+    await findMapToken("Goblin 1");
+    await openAddUnitModal(user);
+
+    await user.type(screen.getByLabelText("Search enemies"), "sold");
+    expect(screen.getByAltText("Soldier")).toBeInTheDocument();
+    expect(screen.queryByAltText("Goblin")).not.toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText("Search enemies"));
+    await user.click(screen.getByRole("tab", { name: "Realms And Order" }));
+
+    expect(screen.getByAltText("Guard")).toBeInTheDocument();
+    expect(screen.getByAltText("Soldier")).toBeInTheDocument();
+    expect(screen.queryByAltText("Goblin")).not.toBeInTheDocument();
+    expect(screen.queryByAltText("Bandit")).not.toBeInTheDocument();
   });
 
   it("posts the selected premade template to the enemy endpoint", async () => {
@@ -784,6 +808,49 @@ describe("App", () => {
       );
     });
     expect(await findMapToken("Goblin 2")).toBeInTheDocument();
+  });
+
+  it("posts newly categorized premade templates through the existing enemy endpoint", async () => {
+    const user = userEvent.setup();
+    const addedGuardSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      order: ["enemy-1", "enemy-2"],
+      enemies: [
+        buildEnemy(),
+        buildEnemy({
+          instance_id: "enemy-2",
+          template_id: "guard",
+          name: "Guard 1",
+          image_url: "/images/Realms_and_order/guard.png",
+          grid_x: 5,
+          grid_y: 3,
+        }),
+      ],
+    });
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/enemies" && requestOptions?.method === "POST") {
+          return jsonResponse(addedGuardSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await openAddUnitModal(user);
+    await user.click(screen.getByAltText("Guard").closest("button"));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/enemies",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ templateId: "guard" }),
+        }),
+      );
+    });
+    expect(await findMapToken("Guard 1")).toBeInTheDocument();
   });
 
   it("uses the player endpoint from the same add-unit modal", async () => {
@@ -912,7 +979,7 @@ describe("App", () => {
       instance_id: "enemy-2",
       template_id: "bandit",
       name: "Bandit 1",
-      image_url: "/images/bandit.png",
+      image_url: "/images/Outlaws/bandit.png",
       hp_current: 14,
       hp_max: 16,
       armor_current: 2,
@@ -1102,7 +1169,7 @@ describe("App", () => {
       instance_id: "enemy-2",
       template_id: "bandit",
       name: "Bandit 1",
-      image_url: "/images/bandit.png",
+      image_url: "/images/Outlaws/bandit.png",
       grid_x: 5,
       grid_y: 3,
     });
@@ -1238,7 +1305,7 @@ describe("App", () => {
       instance_id: "enemy-2",
       template_id: "bandit",
       name: "Bandit 1",
-      image_url: "/images/bandit.png",
+      image_url: "/images/Outlaws/bandit.png",
       grid_x: 5,
       grid_y: 3,
     });
@@ -1271,7 +1338,7 @@ describe("App", () => {
     const previewModal = previewImage.closest(".modal-shell");
     expect(within(previewModal).getByText("Bandit 1")).toBeInTheDocument();
     expect(within(previewModal).getByText("Bandit")).toBeInTheDocument();
-    expect(previewImage).toHaveAttribute("src", "/images/bandit.png");
+    expect(previewImage).toHaveAttribute("src", "/images/Outlaws/bandit.png");
 
     await user.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("img", { name: "Bandit 1 preview" })).not.toBeInTheDocument();
@@ -1283,7 +1350,7 @@ describe("App", () => {
       instance_id: "enemy-2",
       template_id: "bandit",
       name: "Bandit 1",
-      image_url: "/images/bandit.png",
+      image_url: "/images/Outlaws/bandit.png",
       grid_x: 5,
       grid_y: 3,
     });
@@ -1336,7 +1403,7 @@ describe("App", () => {
       instance_id: "enemy-2",
       template_id: "bandit",
       name: "Bandit 1",
-      image_url: "/images/bandit.png",
+      image_url: "/images/Outlaws/bandit.png",
       grid_x: 5,
       grid_y: 3,
     });
@@ -1459,7 +1526,7 @@ describe("App", () => {
       instance_id: "enemy-2",
       template_id: "bandit",
       name: "Bandit 1",
-      image_url: "/images/bandit.png",
+      image_url: "/images/Outlaws/bandit.png",
       grid_x: 5,
       grid_y: 3,
     });
@@ -1568,7 +1635,7 @@ describe("App", () => {
       instance_id: "enemy-2",
       template_id: "bandit",
       name: "Bandit 1",
-      image_url: "/images/bandit.png",
+      image_url: "/images/Outlaws/bandit.png",
       grid_x: 5,
       grid_y: 3,
       effective_movement: 6,
@@ -1895,7 +1962,7 @@ describe("App", () => {
       instance_id: "enemy-2",
       template_id: "bandit",
       name: "Bandit 1",
-      image_url: "/images/bandit.png",
+      image_url: "/images/Outlaws/bandit.png",
       hp_current: 14,
       hp_max: 16,
       grid_x: 6,

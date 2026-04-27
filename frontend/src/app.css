@@ -2163,6 +2163,38 @@ button.draw-card:hover {
   gap: 10px;
 }
 
+.template-library-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.template-search-field input {
+  width: 100%;
+}
+
+.template-category-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.template-category-tab {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(20, 14, 10, 0.72);
+  color: var(--muted);
+  padding: 7px 11px;
+  font-size: 0.78rem;
+}
+
+.template-category-tab:hover,
+.template-category-tab-active {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: rgba(221, 185, 121, 0.12);
+}
+
 .premade-card {
   display: grid;
   grid-template-columns: 84px minmax(0, 1fr);
@@ -2224,6 +2256,10 @@ button.draw-card:hover {
 .premade-card-meta {
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.premade-empty {
+  grid-column: 1 / -1;
 }
 
 .add-player-card {

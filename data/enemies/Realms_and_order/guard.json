@@ -1,0 +1,46 @@
+{
+  "id": "guard",
+  "name": "Guard",
+  "image": "Realms_and_order/guard.png",
+
+  "hp": { "min": 9, "max": 12 },
+  "baseGuard": { "min": 0, "max": 0 },
+  "armor": { "min": 2, "max": 2 },
+  "magicArmor": { "min": 0, "max": 0 },
+
+  "coreDeck": "defensive",
+  "movement": 5,
+  "draws": 1,
+
+  "specials": [
+    {
+      "id": "guard_s1",
+      "title": "Shield Bash",
+      "effects": [
+        { "type": "attack", "amount": 3, "modifiers": ["push 5ft"] },
+        { "type": "taunt" }
+      ]
+    },
+    {
+      "id": "guard_s2",
+      "title": "Hold the Line",
+      "effects": [
+        { "type": "attack", "amount": 3 },
+        { "type": "guard", "amount": 4 }
+      ]
+    },
+    {
+      "id": "guard_s3",
+      "title": "Intercept",
+      "effects": [
+        { "type": "guard", "amount": 3 },
+        { "type": "taunt" }
+      ]
+    }
+  ],
+
+  "loot": [
+    { "type": "currency", "kind": "cp", "min": 10, "max": 40 },
+    { "type": "currency", "kind": "sp", "min": 0, "max": 20 }
+  ]
+}

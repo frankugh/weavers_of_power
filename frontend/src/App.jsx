@@ -16,7 +16,6 @@ const ATTACK_STATUSES = [
   { key: "paralyze", label: "Paralyze" },
 ];
 
-const PREMADE_TEMPLATE_IDS = ["goblin", "bandit"];
 const DEFAULT_ROOM = { columns: 10, rows: 7 };
 const MAP_MODES = {
   IDLE: "idle",
@@ -138,10 +137,21 @@ function orderEntities(orderIds, entities) {
   return [...ordered, ...unordered];
 }
 
-function getPremadeTemplates(templates) {
-  const byId = new Map(templates.map((template) => [template.id, template]));
-  const preferred = PREMADE_TEMPLATE_IDS.map((templateId) => byId.get(templateId)).filter(Boolean);
-  return preferred.length ? preferred : templates;
+function normalizeSearch(value) {
+  return value.trim().toLowerCase();
+}
+
+function getTemplateCategory(template) {
+  return template?.category || "Uncategorized";
+}
+
+function filterTemplates(templates, search, category) {
+  const normalizedSearch = normalizeSearch(search);
+  return templates.filter((template) => {
+    const matchesCategory = category === "All" || getTemplateCategory(template) === category;
+    const haystack = `${template.name} ${template.id}`.toLowerCase();
+    return matchesCategory && (!normalizedSearch || haystack.includes(normalizedSearch));
+  });
 }
 
 function getDrawRevealEntity(payload) {
@@ -184,6 +194,8 @@ function App() {
   const [notice, setNotice] = useState("");
   const [modal, setModal] = useState(null);
   const [customExpanded, setCustomExpanded] = useState(false);
+  const [templateSearch, setTemplateSearch] = useState("");
+  const [templateCategory, setTemplateCategory] = useState("All");
   const [mapMode, setMapMode] = useState(MAP_MODES.IDLE);
   const [roomForm, setRoomForm] = useState(DEFAULT_ROOM);
   const [pendingRoomResize, setPendingRoomResize] = useState(null);
@@ -330,6 +342,12 @@ function App() {
   }, [unitContextMenu]);
 
   useEffect(() => {
+    if (snapshot?.pendingNewRound) {
+      setModal("new-round");
+    }
+  }, [snapshot?.pendingNewRound]);
+
+  useEffect(() => {
     if (bootstrapped.current) {
       return;
     }
@@ -381,9 +399,10 @@ function App() {
   const movementState = snapshot?.movementState || null;
   const selectedIsActive = Boolean(selectedEntity && snapshot?.activeTurnId === selectedEntity.instance_id);
   const hasActiveTurn = Boolean(snapshot?.activeTurnId);
+  const pendingNewRound = Boolean(snapshot?.pendingNewRound);
   const hasStartableUnit = orderedEnemies.some((entity) => !entity.is_down);
-  const turnAdvanceLabel = hasActiveTurn ? "Next" : "Start encounter";
-  const canAdvanceTurn = Boolean(hasActiveTurn || hasStartableUnit);
+  const turnAdvanceLabel = hasActiveTurn ? "Next" : pendingNewRound ? "Start Round" : "Start encounter";
+  const canAdvanceTurn = Boolean(hasActiveTurn || hasStartableUnit || pendingNewRound);
   const selectedMovementBase =
     selectedIsActive && movementState?.entityId === selectedEntity?.instance_id
       ? Number(movementState.baseMovement)
@@ -401,7 +420,6 @@ function App() {
       selectedMovementRemaining > 0,
   );
   const canReposition = Boolean(selectedEntity);
-  const premadeTemplates = getPremadeTemplates(meta?.enemyTemplates || []);
 
   const canDraw = Boolean(
     selectedEntity &&
@@ -425,6 +443,15 @@ function App() {
   const selectedHasLoot = Boolean(selectedEntity?.loot_rolled);
   const canOpenActionMore = Boolean(canRedraw || canAttackOrHeal || canRollLoot || canReposition);
   const sessionHasHistory = Boolean(snapshot?.canUndo || snapshot?.canRedo || snapshot?.undoDepth || snapshot?.redoDepth);
+  const allTemplates = meta?.enemyTemplates || [];
+  const templateCategories = useMemo(
+    () => ["All", ...Array.from(new Set(allTemplates.map(getTemplateCategory))).sort((a, b) => a.localeCompare(b))],
+    [allTemplates],
+  );
+  const shownTemplates = useMemo(
+    () => filterTemplates(allTemplates, templateSearch, templateCategory),
+    [allTemplates, templateSearch, templateCategory],
+  );
   const selectedDrawPreviewHighlighted = Boolean(
     drawReveal?.phase === "settle" && selectedEntity?.instance_id === drawReveal.entityId,
   );
@@ -432,6 +459,8 @@ function App() {
   function closeModal() {
     setModal(null);
     setCustomExpanded(false);
+    setTemplateSearch("");
+    setTemplateCategory("All");
     setPendingRoomResize(null);
     setPendingDashMove(null);
     setDrawDetail(null);
@@ -544,6 +573,8 @@ function App() {
 
   function openAddUnitModal() {
     setCustomExpanded(false);
+    setTemplateSearch("");
+    setTemplateCategory("All");
     setModal("add");
   }
 
@@ -683,13 +714,8 @@ function App() {
     );
   }
 
-  function setMapModeAfterMovement(payload) {
-    const nextMovementState = payload?.movementState;
-    const canKeepMoving =
-      nextMovementState?.entityId === payload?.selectedId &&
-      payload?.activeTurnId === payload?.selectedId &&
-      Number(nextMovementState.baseMovement) * 2 - Number(nextMovementState.movementUsed) > 0;
-    setMapMode(canKeepMoving ? MAP_MODES.MOVE : MAP_MODES.IDLE);
+  function setMapModeAfterMovement() {
+    setMapMode(MAP_MODES.IDLE);
   }
 
   async function submitRestrictedMove(x, y, { dash = false } = {}) {
@@ -871,6 +897,15 @@ function App() {
   }
 
   async function handleTurnAdvance() {
+    if (pendingNewRound) {
+      await applySnapshotRequest(
+        `/api/battle/sessions/${snapshot.sid}/round/start`,
+        { method: "POST" },
+        "Started new round",
+      );
+      return;
+    }
+
     if (hasActiveTurn) {
       await applySnapshotRequest(
         `/api/battle/sessions/${snapshot.sid}/turn/next`,
@@ -888,6 +923,15 @@ function App() {
         method: "POST",
       },
       "Encounter started",
+    );
+  }
+
+  async function handleContinueNewRound() {
+    closeModal();
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/round/start`,
+      { method: "POST" },
+      "Started new round",
     );
   }
 
@@ -1761,8 +1805,33 @@ function App() {
         <div className="panel-body add-unit-body">
           <section className="add-unit-section">
             <div className="form-section-title">Premade Enemies</div>
+            <div className="template-library-controls">
+              <label className="field template-search-field">
+                <span>Search enemies</span>
+                <input
+                  type="search"
+                  value={templateSearch}
+                  onChange={(event) => setTemplateSearch(event.target.value)}
+                  placeholder="Name or id"
+                />
+              </label>
+              <div className="template-category-tabs" role="tablist" aria-label="Enemy categories">
+                {templateCategories.map((category) => (
+                  <button
+                    key={category}
+                    type="button"
+                    className={`template-category-tab ${templateCategory === category ? "template-category-tab-active" : ""}`.trim()}
+                    onClick={() => setTemplateCategory(category)}
+                    role="tab"
+                    aria-selected={templateCategory === category}
+                  >
+                    {category === "All" ? "All" : titleCaseFromSnake(category)}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="premade-grid">
-              {premadeTemplates.map((template) => (
+              {shownTemplates.map((template) => (
                 <button
                   key={template.id}
                   type="button"
@@ -1774,12 +1843,13 @@ function App() {
                     <img src={template.imageUrl} alt={template.name} />
                   </div>
                   <div className="premade-card-copy">
-                    <div className="premade-card-kicker">Premade enemy</div>
+                    <div className="premade-card-kicker">{titleCaseFromSnake(getTemplateCategory(template))}</div>
                     <div className="premade-card-name">{template.name}</div>
                     <div className="premade-card-meta">{titleCaseFromSnake(template.id)}</div>
                   </div>
                 </button>
               ))}
+              {!shownTemplates.length ? <div className="empty-copy premade-empty">No enemies match these filters.</div> : null}
             </div>
           </section>
 
@@ -2018,6 +2088,26 @@ function App() {
             </button>
             <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
               Cancel
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "new-round" && pendingNewRound}
+        title={`Round ${snapshot?.round || 1} complete`}
+        subtitle="Continue to the next round or make GM adjustments first."
+        onClose={closeModal}
+        closeOnOutsideClick={false}
+        showCloseButton={false}
+      >
+        <div className="panel-body modal-form">
+          <div className="modal-actions">
+            <button className="primary-button" type="button" onClick={handleContinueNewRound} disabled={busy}>
+              Continue
+            </button>
+            <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
+              GM Adjustments
             </button>
           </div>
         </div>

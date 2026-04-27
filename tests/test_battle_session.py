@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from battle_session import BattleSessionContext
+from engine.loader import load_decks, load_enemies
 from persistence import save_current
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +48,62 @@ class BattleSessionTests(unittest.TestCase):
         first, second = snapshot["enemies"]
         self.assertEqual((first["grid_x"], first["grid_y"]), (4, 3))
         self.assertEqual((second["grid_x"], second["grid_y"]), (5, 3))
+
+    def test_enemy_loader_validates_taxonomy_image_category(self) -> None:
+        root = Path(self.temp_dir.name) / "taxonomy"
+        decks_dir = root / "decks"
+        enemies_dir = root / "enemies"
+        images_dir = root / "images"
+        decks_dir.mkdir(parents=True)
+        (enemies_dir / "Greenskins").mkdir(parents=True)
+        (enemies_dir / "Outlaws").mkdir(parents=True)
+        (images_dir / "Greenskins").mkdir(parents=True)
+        (images_dir / "Outlaws").mkdir(parents=True)
+        (images_dir / "Greenskins" / "goblin.png").write_bytes(b"image")
+        (images_dir / "Outlaws" / "bandit.png").write_bytes(b"image")
+        (decks_dir / "basic.json").write_text(
+            """
+{
+  "id": "basic",
+  "name": "Basic",
+  "cards": [{ "id": "basic_a2", "title": "Attack 2", "effects": [{ "type": "attack", "amount": 2 }] }]
+}
+""".strip(),
+            encoding="utf-8",
+        )
+        enemy_json = """
+{
+  "id": "goblin",
+  "name": "Goblin",
+  "image": "Greenskins/goblin.png",
+  "hp": { "min": 5, "max": 5 },
+  "baseGuard": { "min": 0, "max": 0 },
+  "armor": { "min": 0, "max": 0 },
+  "magicArmor": { "min": 0, "max": 0 },
+  "coreDeck": "basic",
+  "movement": 5,
+  "draws": 1,
+  "specials": [
+    { "id": "goblin_s1", "title": "Attack 1", "effects": [{ "type": "attack", "amount": 1 }] },
+    { "id": "goblin_s2", "title": "Attack 2", "effects": [{ "type": "attack", "amount": 2 }] },
+    { "id": "goblin_s3", "title": "Attack 3", "effects": [{ "type": "attack", "amount": 3 }] }
+  ],
+  "loot": [{ "type": "currency", "kind": "cp", "min": 0, "max": 1 }]
+}
+""".strip()
+        (enemies_dir / "Greenskins" / "goblin.json").write_text(enemy_json, encoding="utf-8")
+        decks = load_decks(decks_dir)
+
+        loaded = load_enemies(enemies_dir, decks=decks, images_dir=images_dir)
+        self.assertEqual(loaded["goblin"].category, "Greenskins")
+
+        (enemies_dir / "Outlaws" / "bad.json").write_text(
+            enemy_json.replace('"id": "goblin"', '"id": "bad_goblin"'),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "does not match enemy category"):
+            load_enemies(enemies_dir, decks=decks, images_dir=images_dir)
 
     def test_set_entity_position_requires_free_in_bounds_cell(self) -> None:
         session = self.context.create_session("map-position")

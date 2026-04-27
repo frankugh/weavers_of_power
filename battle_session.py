@@ -96,7 +96,7 @@ def spawn_player(name: str) -> EnemyInstance:
         magic_armor_max=0,
         guard_current=0,
         draws_base=0,
-        movement=0,
+        movement=4,
         deck_state=DeckState(draw_pile=[], discard_pile=[], hand=[]),
         statuses={},
     )
@@ -154,7 +154,12 @@ class BattleSessionContext:
 
     def metadata(self) -> dict:
         templates = [
-            {"id": template_id, "name": template.name, "imageUrl": self.template_image_url(template)}
+            {
+                "id": template_id,
+                "name": template.name,
+                "imageUrl": self.template_image_url(template),
+                "category": getattr(template, "category", "Uncategorized"),
+            }
             for template_id, template in sorted(self.enemy_templates.items(), key=lambda item: item[1].name.lower())
         ]
         decks = [{"id": deck_id, "name": deck.name} for deck_id, deck in sorted(self.decks.items(), key=lambda item: item[1].name.lower())]
@@ -165,7 +170,7 @@ class BattleSessionContext:
         if image.startswith("images/"):
             image = image[len("images/"):]
         if image == "bandid.png":
-            image = "bandit.png"
+            image = "Outlaws/bandit.png"
         if not image or not (self.images_dir / image).exists():
             image = "anonymous.png"
         return f"/images/{image}"
@@ -201,6 +206,7 @@ class BattleSession:
     round: int = 1
     combat_log: list[str] = field(default_factory=list)
     movement_state: Optional[dict] = None
+    pending_new_round: bool = False
     undo_stack: list[dict] = field(default_factory=list)
     redo_stack: list[dict] = field(default_factory=list)
     _rng: random.Random = field(default_factory=random.Random, repr=False)
@@ -256,6 +262,8 @@ class BattleSession:
         self.round = max(1, int(loaded_round or 1))
         self.combat_log = list(loaded_log or [])[:LOG_LIMIT]
         self._load_movement_state(loaded_movement_state)
+        ui_payload = payload.get("ui", {}) or {}
+        self.pending_new_round = bool(ui_payload.get("pending_new_round", False))
         if load_undo_stack:
             self.undo_stack = [dict(entry) for entry in payload.get("undo_stack", [])][-UNDO_LIMIT:]
             self.redo_stack = [dict(entry) for entry in payload.get("redo_stack", [])][-UNDO_LIMIT:]
@@ -273,6 +281,7 @@ class BattleSession:
             selected_id=self.selected_id,
             active_turn_id=self.active_turn_id,
             turn_in_progress=self.turn_in_progress,
+            pending_new_round=self.pending_new_round,
             room={"columns": self.room_columns, "rows": self.room_rows},
             round=self.round,
             combat_log=self.combat_log,
@@ -301,6 +310,7 @@ class BattleSession:
         return {
             "sid": self.sid,
             "round": self.round,
+            "pendingNewRound": self.pending_new_round,
             "selectedId": self.selected_id,
             "activeTurnId": self.active_turn_id,
             "turnInProgress": self.turn_in_progress,
@@ -624,8 +634,10 @@ class BattleSession:
 
         wrapped = self._select_next_in_order(current_turn_id)
         if wrapped:
-            self.round += 1
-            self._add_log(f"Round {self.round} begins")
+            self.pending_new_round = True
+            self._add_log(f"End of round {self.round}")
+            self.autosave()
+            return
 
         if self.selected_id:
             entity = self.state.enemies[self.selected_id]
@@ -636,6 +648,23 @@ class BattleSession:
                     self._start_turn(entity)
                 self._reset_movement_state(entity.instance_id)
                 self._add_log(f"Active turn: {entity.name}")
+        self.autosave()
+
+    def start_new_round(self) -> None:
+        self.pending_new_round = False
+        self.round += 1
+        self._add_log(f"Round {self.round} begins")
+        for instance_id in self.order:
+            entity = self.state.enemies.get(instance_id)
+            if entity and self._can_take_turn(entity):
+                self.selected_id = entity.instance_id
+                self.active_turn_id = entity.instance_id
+                self.turn_in_progress = False
+                if not self.is_player(entity):
+                    self._start_turn(entity)
+                self._reset_movement_state(entity.instance_id)
+                self._add_log(f"Active turn: {entity.name}")
+                break
         self.autosave()
 
     def apply_attack_to_selected(
@@ -774,7 +803,7 @@ class BattleSession:
         if image.startswith("images/"):
             image = image[len("images/"):]
         if image == "bandid.png":
-            image = "bandit.png"
+            image = "Outlaws/bandit.png"
 
         if not image or not (self.context.images_dir / image).exists():
             template = self.context.enemy_templates.get(getattr(entity, "template_id", ""))

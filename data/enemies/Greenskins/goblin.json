@@ -1,16 +1,16 @@
 {
   "id": "goblin",
   "name": "Goblin",
-  "image": "goblin.png",
+  "image": "Greenskins/goblin.png",
 
   "hp": { "min": 5, "max": 8 },
   "baseGuard": { "min": 0, "max": 0 },
   "armor": { "min": 1, "max": 1 },
   "magicArmor": { "min": 0, "max": 0 },
 
-  "draws": 1,
+  "coreDeck": "control",
   "movement": 5,
-  "coreDeck": "basic",
+  "draws": 1,
 
   "specials": [
     {
@@ -25,10 +25,10 @@
     },
     {
       "id": "goblin_s3",
-      "title": "Stab & Guard",
+      "title": "Skittering Cut",
       "effects": [
-        { "type": "attack", "amount": 2, "modifiers": ["stab"] },
-        { "type": "guard", "amount": 3 }
+        { "type": "disengage", "amount": 3 },
+        { "type": "attack", "amount": 3, "modifiers": ["stab"] }
       ]
     }
   ],

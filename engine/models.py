@@ -5,8 +5,8 @@ from typing import Literal, Optional
 
 # --- Enums / literals ---
 
-Modifier = Literal["stab", "pierce", "magic_pierce", "sunder", "paralyse"]
-EffectType = Literal["attack", "guard"]
+Modifier = Literal["stab", "pierce", "magic_pierce", "sunder", "paralyse", "paralyze", "push 5ft"]
+EffectType = Literal["attack", "guard", "disengage", "draw", "dodge", "taunt", "hold"]
 
 LootType = Literal["currency", "resource", "other"]
 CurrencyKind = Literal["cp", "sp", "gp"]
@@ -37,8 +37,10 @@ class Effect:
 
     def validate(self, path: str) -> list[str]:
         errs: list[str] = []
-        if self.amount <= 0:
+        if self.type in {"attack", "guard", "disengage", "draw"} and self.amount <= 0:
             errs.append(f"{path}: effect amount must be > 0 (got {self.amount})")
+        elif self.amount < 0:
+            errs.append(f"{path}: effect amount cannot be negative (got {self.amount})")
         return errs
 
 
@@ -150,6 +152,7 @@ class EnemyTemplate:
     id: str
     name: str
     image: Optional[str]
+    category: str
 
     hp: RangeInt
     armor: RangeInt

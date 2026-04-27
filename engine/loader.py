@@ -20,7 +20,7 @@ def _parse_range(obj: dict, path: str) -> RangeInt:
 
 def _parse_effect(obj: dict) -> Effect:
     mods = tuple(obj.get("modifiers", []))
-    return Effect(type=obj["type"], amount=int(obj["amount"]), modifiers=mods)
+    return Effect(type=obj["type"], amount=int(obj.get("amount", 0)), modifiers=mods)
 
 
 def _parse_card(obj: dict) -> Card:
@@ -31,6 +31,33 @@ def _parse_card(obj: dict) -> Card:
         effects=effects,
         weight=int(obj.get("weight", 1)),
     )
+
+
+def _enemy_category(enemies_dir: Path, path: Path) -> str:
+    relative = path.relative_to(enemies_dir)
+    return relative.parts[0] if len(relative.parts) > 1 else "Uncategorized"
+
+
+def _normalized_image_path(image: str | None) -> str:
+    normalized = (image or "").replace("\\", "/").lstrip("/")
+    if normalized.startswith("images/"):
+        normalized = normalized[len("images/"):]
+    return normalized
+
+
+def _validate_enemy_image_category(enemy: EnemyTemplate, path: Path) -> list[str]:
+    if enemy.category == "Uncategorized":
+        return []
+    image = _normalized_image_path(enemy.image)
+    if image in {"", "anonymous.png"}:
+        return []
+    image_category = image.split("/", 1)[0] if "/" in image else ""
+    if image_category != enemy.category:
+        return [
+            f"Enemy({path.relative_to(path.parents[1])}).image category '{image_category or 'Uncategorized'}' "
+            f"does not match enemy category '{enemy.category}'"
+        ]
+    return []
 
 
 def _parse_loot(entries: list[dict]) -> tuple[LootEntry, ...]:
@@ -73,13 +100,15 @@ def load_enemies(enemies_dir: Path, decks: dict[str, Deck], images_dir: Path) ->
 
     images_dir_exists = images_dir.exists() and images_dir.is_dir()
 
-    for p in sorted(enemies_dir.glob("*.json")):
+    for p in sorted(enemies_dir.rglob("*.json")):
         raw = _read_json(p)
+        category = _enemy_category(enemies_dir, p)
 
         enemy = EnemyTemplate(
             id=raw["id"],
             name=raw.get("name", raw["id"]),
             image=raw.get("image"),
+            category=category,
 
             hp=_parse_range(raw["hp"], f"{p.name}.hp"),
             baseGuard=_parse_range(raw.get("baseGuard", {"min": 0, "max": 0}), f"{p.name}.baseGuard"),
@@ -97,10 +126,13 @@ def load_enemies(enemies_dir: Path, decks: dict[str, Deck], images_dir: Path) ->
         errs = enemy.validate(f"Enemy({p.name})", available_decks=available_decks)
         if errs:
             raise ValueError("Enemy validation failed:\n- " + "\n- ".join(errs))
+        image_category_errs = _validate_enemy_image_category(enemy, p)
+        if image_category_errs:
+            raise ValueError("Enemy validation failed:\n- " + "\n- ".join(image_category_errs))
 
         # filesystem check for image existence
         if images_dir_exists:
-            img_path = images_dir / (enemy.image or "")
+            img_path = images_dir / _normalized_image_path(enemy.image)
             if not img_path.exists():
                 raise ValueError(f"Enemy({p.name}).image file not found: {img_path}")
 

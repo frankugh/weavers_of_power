@@ -1,0 +1,14 @@
+{
+  "id": "control",
+  "name": "Control",
+  "cards": [
+    { "id": "ctrl_a2_stab", "title": "Attack 2 (Stab)", "effects": [{"type":"attack","amount":2,"modifiers":["stab"]}] },
+    { "id": "ctrl_a3", "title": "Attack 3", "effects": [{"type":"attack","amount":3}] },
+    { "id": "ctrl_a2g2", "title": "Attack 2 + Guard 2", "effects": [{"type":"attack","amount":2},{"type":"guard","amount":2}] },
+    { "id": "ctrl_a3_stab", "title": "Attack 3 (Stab)", "effects": [{"type":"attack","amount":3,"modifiers":["stab"]}] },
+    { "id": "ctrl_a2_dodge", "title": "Attack 2 + Dodge", "effects": [{"type":"attack","amount":2},{"type":"dodge"}] },
+    { "id": "ctrl_a3_pierce", "title": "Attack 3 (Pierce)", "effects": [{"type":"attack","amount":3,"modifiers":["pierce"]}] },
+    { "id": "ctrl_displace_slow", "title": "Displace 3 + Slow", "effects": [{"type":"displace","amount":3},{"type":"slow"}] },
+    { "id": "ctrl_dis5_draw", "title": "Disengage 5 + Draw", "effects": [{"type":"disengage","amount":5},{"type":"draw","amount":1}] }
+  ]
+}

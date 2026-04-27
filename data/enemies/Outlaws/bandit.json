@@ -1,16 +1,16 @@
 {
   "id": "bandit",
   "name": "Bandit",
-  "image": "bandit.png",
+  "image": "Outlaws/bandit.png",
 
   "hp": { "min": 7, "max": 9 },
   "baseGuard": { "min": 1, "max": 2 },
   "armor": { "min": 0, "max": 0 },
   "magicArmor": { "min": 0, "max": 0 },
 
-  "draws": 1,
+  "coreDeck": "aggro",
   "movement": 6,
-  "coreDeck": "basic",
+  "draws": 1,
 
   "specials": [
     {
@@ -20,8 +20,8 @@
     },
     {
       "id": "bandit_s2",
-      "title": "Dirty Stab",
-      "effects": [{ "type": "attack", "amount": 4, "modifiers": ["stab"] }]
+      "title": "Cheap Shot",
+      "effects": [{ "type": "attack", "amount": 3, "modifiers": ["paralyze"]  }]
     },
     {
       "id": "bandit_s3",

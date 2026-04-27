@@ -197,6 +197,10 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def next_turn(sid: str):
         return run_mutation(sid, lambda session: session.next_turn())
 
+    @api_app.post("/api/battle/sessions/{sid}/round/start")
+    def start_round(sid: str):
+        return run_mutation(sid, lambda session: session.start_new_round())
+
     @api_app.post("/api/battle/sessions/{sid}/undo")
     def undo(sid: str):
         return run_mutation(sid, lambda session: session.undo(), undoable=False)

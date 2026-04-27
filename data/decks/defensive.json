@@ -1,0 +1,13 @@
+{
+  "id": "defensive",
+  "name": "Defensive",
+  "cards": [
+    { "id": "def_a2", "title": "Attack 2", "effects": [{"type":"attack","amount":2}] },
+    { "id": "def_a3", "title": "Attack 3", "effects": [{"type":"attack","amount":3}] },
+    { "id": "def_a4", "title": "Attack 4", "effects": [{"type":"attack","amount":4}] },
+    { "id": "def_a3g1", "title": "Attack 3 + Guard 1", "effects": [{"type":"attack","amount":3},{"type":"guard","amount":1}] },
+    { "id": "def_a2g2", "title": "Attack 2 + Guard 2", "effects": [{"type":"attack","amount":2},{"type":"guard","amount":2}] },
+    { "id": "def_g3_taunt", "title": "Guard 3 + Taunt", "effects": [{"type":"guard","amount":3},{"type":"taunt"}] },
+    { "id": "def_g4_hold", "title": "Guard 4 + Hold", "effects": [{"type":"guard","amount":4},{"type":"hold"}] }
+  ]
+}

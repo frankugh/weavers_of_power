@@ -1,0 +1,44 @@
+{
+  "id": "soldier",
+  "name": "Soldier",
+  "image": "Realms_and_order/soldier.png",
+
+  "hp": { "min": 8, "max": 10 },
+  "baseGuard": { "min": 0, "max": 0 },
+  "armor": { "min": 1, "max": 1 },
+  "magicArmor": { "min": 0, "max": 0 },
+
+  "coreDeck": "basic",
+  "movement": 6,
+  "draws": 1,
+
+  "specials": [
+    {
+      "id": "soldier_s1",
+      "title": "Shield Strike",
+      "effects": [
+        { "type": "attack", "amount": 3 },
+        { "type": "guard", "amount": 1 }
+      ]
+    },
+    {
+      "id": "soldier_s2",
+      "title": "Press Forward",
+      "effects": [
+        { "type": "disengage", "amount": 2 },
+        { "type": "attack", "amount": 3 }
+      ]
+    },
+    {
+      "id": "soldier_s3",
+      "title": "Steady Blow",
+      "effects": [
+        { "type": "attack", "amount": 4 }
+      ]
+    }
+  ],
+
+  "loot": [
+    { "type": "currency", "kind": "cp", "min": 5, "max": 25 }
+  ]
+}
