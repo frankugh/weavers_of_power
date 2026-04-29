@@ -21,6 +21,7 @@ const MAP_MODES = {
   IDLE: "idle",
   MOVE: "move",
   REPOSITION: "reposition",
+  GM_REPOSITION: "gm-reposition",
 };
 const DRAW_REVEAL_TIMING = {
   enterMs: 80,
@@ -249,7 +250,11 @@ function App() {
 
   useEffect(() => {
     setMapMode(MAP_MODES.IDLE);
-  }, [snapshot?.selectedId, snapshot?.sid, snapshot?.activeTurnId]);
+  }, [snapshot?.sid]);
+
+  useEffect(() => {
+    setMapMode((current) => (current === MAP_MODES.GM_REPOSITION ? current : MAP_MODES.IDLE));
+  }, [snapshot?.selectedId, snapshot?.activeTurnId]);
 
   useEffect(() => {
     setActionMenuOpen(false);
@@ -438,6 +443,8 @@ function App() {
       selectedMovementRemaining > 0,
   );
   const canReposition = Boolean(selectedEntity);
+  const isGmRepositionMode = mapMode === MAP_MODES.GM_REPOSITION;
+  const canUseGmReposition = orderedEnemies.length > 0;
 
   const canDraw = Boolean(
     selectedEntity &&
@@ -603,13 +610,20 @@ function App() {
     setModal("add");
   }
 
-  async function handleSelect(instanceId) {
+  function toggleGmRepositionMode() {
+    setActionMenuOpen(false);
+    setUnitContextMenu(null);
+    setMapMode((current) => (current === MAP_MODES.GM_REPOSITION ? MAP_MODES.IDLE : MAP_MODES.GM_REPOSITION));
+  }
+
+  async function handleSelect(instanceId, options = {}) {
     if (busy) {
       return;
     }
     setUnitContextMenu(null);
+    const preserveMapMode = Boolean(options.preserveMapMode);
     if (snapshot?.selectedId === instanceId) {
-      if (snapshot?.activeTurnId === instanceId && canUseMove) {
+      if (!preserveMapMode && snapshot?.activeTurnId === instanceId && canUseMove) {
         setMapMode((current) => (current === MAP_MODES.MOVE ? MAP_MODES.IDLE : MAP_MODES.MOVE));
       }
       return;
@@ -619,7 +633,7 @@ function App() {
       body: JSON.stringify({ instanceId }),
     });
     if (payload) {
-      setMapMode(MAP_MODES.IDLE);
+      setMapMode(preserveMapMode ? MAP_MODES.GM_REPOSITION : MAP_MODES.IDLE);
     }
   }
 
@@ -775,12 +789,12 @@ function App() {
       `Repositioned ${selectedEntity.name}`,
     );
     if (payload) {
-      setMapMode(MAP_MODES.IDLE);
+      setMapMode((current) => (current === MAP_MODES.GM_REPOSITION ? current : MAP_MODES.IDLE));
     }
   }
 
   async function handleMoveSelectedToCell(x, y, target = {}) {
-    if (mapMode === MAP_MODES.REPOSITION) {
+    if (mapMode === MAP_MODES.REPOSITION || mapMode === MAP_MODES.GM_REPOSITION) {
       await submitReposition(x, y);
       return;
     }
@@ -1190,6 +1204,15 @@ function App() {
           </button>
           <button className="menu-button" onClick={openLoadModal} disabled={busy}>
             Load
+          </button>
+          <button
+            className={`menu-button gm-reposition-button ${isGmRepositionMode ? "gm-reposition-active" : ""}`.trim()}
+            type="button"
+            title="Click a unit, then click an empty map cell to reposition it."
+            onClick={toggleGmRepositionMode}
+            disabled={busy || !canUseGmReposition}
+          >
+            {isGmRepositionMode ? "Exit GM" : "GM Reposition"}
           </button>
           <a className="menu-button menu-link" href={snapshot.sid ? `/legacy?sid=${snapshot.sid}` : "/legacy"}>
             Legacy

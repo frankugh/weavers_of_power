@@ -1597,6 +1597,78 @@ describe("App", () => {
     });
   });
 
+  it("keeps GM reposition mode active while selecting and placing units", async () => {
+    const user = userEvent.setup();
+    const bandit = buildEnemy({
+      instance_id: "enemy-2",
+      template_id: "bandit",
+      name: "Bandit 1",
+      image_url: "/images/Outlaws/bandit.png",
+      grid_x: 5,
+      grid_y: 3,
+    });
+    const selectedBanditSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      order: ["enemy-1", "enemy-2"],
+      enemies: [buildEnemy(), bandit],
+    });
+    const repositionedSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      order: ["enemy-1", "enemy-2"],
+      enemies: [buildEnemy(), { ...bandit, grid_x: 0, grid_y: 0 }],
+      combatLog: ["Repositioned Bandit 1 to (1, 1)"],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        order: ["enemy-1", "enemy-2"],
+        enemies: [buildEnemy(), bandit],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+            return jsonResponse(selectedBanditSnapshot);
+          }
+          if (url === "/api/battle/sessions/sid-123/entities/enemy-2/position" && requestOptions?.method === "POST") {
+            return jsonResponse(repositionedSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Bandit 1");
+    await user.click(screen.getByRole("button", { name: "GM Reposition" }));
+    expect(getMapViewport().dataset.mapMode).toBe("gm-reposition");
+
+    pointerClickMapCell(5, 3);
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/select",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ instanceId: "enemy-2" }),
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(getMapViewport().dataset.mapMode).toBe("gm-reposition");
+    });
+
+    pointerClickMapCell(0, 0);
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/enemy-2/position",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ x: 0, y: 0 }),
+        }),
+      );
+    });
+    expect(screen.getByRole("button", { name: "Exit GM" })).toBeInTheDocument();
+    expect(getMapViewport().dataset.mapMode).toBe("gm-reposition");
+  });
+
   it("rolls loot from a down enemy context menu and hides it after loot is rolled", async () => {
     const user = userEvent.setup();
     const downEnemy = buildEnemy({

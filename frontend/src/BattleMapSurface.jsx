@@ -295,7 +295,8 @@ function drawMoveHighlights(graphics, room, cellSize, mapMode, selectedEntity, b
   }
 
   const contentSize = mapContentSize(room, cellSize);
-  if (mapMode === "reposition") {
+  const isRepositionMode = mapMode === "reposition" || mapMode === "gm-reposition";
+  if (isRepositionMode) {
     graphics
       .rect(10, 10, contentSize.width - 20, contentSize.height - 20)
       .fill({ color: 0x82d9df, alpha: 0.035 })
@@ -314,7 +315,7 @@ function drawMoveHighlights(graphics, room, cellSize, mapMode, selectedEntity, b
   const hoverKey = hoverCell ? positionKey(hoverCell.x, hoverCell.y) : "";
   const hoverInfo = reachableCells.get(hoverKey);
   const canHoverReposition =
-    mapMode === "reposition" && hoverCell && !blockingByPosition.has(positionKey(hoverCell.x, hoverCell.y));
+    isRepositionMode && hoverCell && !blockingByPosition.has(positionKey(hoverCell.x, hoverCell.y));
   if (hoverInfo || canHoverReposition) {
     const bounds = cellBounds(hoverCell.x, hoverCell.y, cellSize);
     const isDash = hoverInfo?.kind === "dash";
@@ -998,18 +999,23 @@ function BattleMapSurface({
             time: now,
           };
 
-      if (isDoubleClick && onUnitDoubleClick?.(occupant.instance_id)) {
+      if (mapMode !== "gm-reposition" && isDoubleClick && onUnitDoubleClick?.(occupant.instance_id)) {
         return;
       }
     } else {
       lastUnitClickRef.current = null;
     }
 
+    if (mapMode === "gm-reposition" && occupant) {
+      onSelect(occupant.instance_id, { preserveMapMode: true });
+      return;
+    }
+
     if (selectedOccupant) {
       onSelect(selectedOccupant.instance_id);
       return;
     }
-    if (mapMode === "reposition" && selectedEntity && !busy && !blockingOccupant) {
+    if ((mapMode === "reposition" || mapMode === "gm-reposition") && selectedEntity && !busy && !blockingOccupant) {
       onMoveToCell(clickCell.x, clickCell.y, { mode: "reposition" });
       return;
     }
