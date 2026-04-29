@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from battle_session import BattleSessionContext
+from engine.combat import WOUND_CARD_ID
 from engine.loader import load_decks, load_enemies
 from persistence import save_current
 
@@ -524,6 +525,68 @@ class BattleSessionTests(unittest.TestCase):
         restored = reloaded.state.enemies[reloaded.selected_id]
         self.assertIn("burn", restored.statuses)
         self.assertIn(f"Loaded save: {save_info['filename']}", reloaded.combat_log)
+
+    def test_stab_ignores_one_armor_before_guard_absorbs_damage(self) -> None:
+        session = self.context.create_session("stab-armor-before-guard")
+        session.add_enemy_from_template("goblin")
+        entity = session.state.enemies[session.selected_id]
+        entity.toughness_current = 10
+        entity.toughness_max = 10
+        entity.guard_current = 3
+        entity.armor_current = 2
+        entity.armor_max = 2
+
+        session.apply_attack_to_selected(
+            damage=2,
+            modifiers=["stab"],
+            add_burn=False,
+            add_poison=False,
+            add_slow=False,
+            add_paralyze=False,
+        )
+
+        self.assertEqual(entity.toughness_current, 10)
+        self.assertEqual(entity.armor_current, 2)
+        self.assertEqual(entity.guard_current, 2)
+
+    def test_attack_and_heal_can_target_player_cards(self) -> None:
+        session = self.context.create_session("player-attack-heal")
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0, power=1, movement=5)
+        player = session.state.enemies[session.selected_id]
+
+        session.apply_attack_to_selected(
+            damage=2,
+            modifiers=[],
+            add_burn=False,
+            add_poison=False,
+            add_slow=False,
+            add_paralyze=False,
+        )
+        self.assertEqual(player.toughness_current, 3)
+
+        session.apply_heal_to_selected(toughness=1, armor=0, magic_armor=0, guard=0)
+        self.assertEqual(player.toughness_current, 4)
+
+    def test_player_damage_adds_wounds_and_resets_toughness_for_overflow(self) -> None:
+        session = self.context.create_session("player-wounds")
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0, power=1, movement=5)
+        player = session.state.enemies[session.selected_id]
+        player.toughness_current = 3
+
+        result = session.apply_attack_to_selected(
+            damage=9,
+            modifiers=[],
+            add_burn=False,
+            add_poison=False,
+            add_slow=False,
+            add_paralyze=False,
+        )
+
+        self.assertEqual(player.toughness_current, 4)
+        self.assertEqual(player.deck_state.discard_pile, [WOUND_CARD_ID, WOUND_CARD_ID])
+        self.assertEqual(result["woundEvents"][0]["wounds"], 2)
+        self.assertEqual(result["woundEvents"][0]["toughnessAfter"], 4)
+        self.assertIn("2 wounds added", session.combat_log[0])
 
     def test_delete_manual_save_removes_file_and_backup(self) -> None:
         session = self.context.create_session("manual-delete")

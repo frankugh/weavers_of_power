@@ -209,6 +209,7 @@ function App() {
   const [previewEntityId, setPreviewEntityId] = useState(null);
   const [drawReveal, setDrawReveal] = useState(null);
   const [drawDetail, setDrawDetail] = useState(null);
+  const [woundNotice, setWoundNotice] = useState(null);
   const [customForm, setCustomForm] = useState({
     name: "Custom",
     toughness: 10,
@@ -452,7 +453,8 @@ function App() {
       snapshot.turnInProgress &&
       snapshot?.activeTurnId === selectedEntity.instance_id,
   );
-  const canAttackOrHeal = Boolean(selectedEntity && !isPlayerSelected);
+  const canAttackOrHeal = Boolean(selectedEntity && !selectedIsDown);
+  const selectedTargetNoun = isPlayerSelected ? "player" : "enemy";
   const canRollLoot = isTemplateLootable(selectedEntity);
   const canContextRollLoot = Boolean(contextMenuEntity?.is_down && !contextMenuEntity?.loot_rolled && isTemplateLootable(contextMenuEntity));
   const selectedStatuses = Object.entries(selectedEntity?.statuses || {});
@@ -487,6 +489,7 @@ function App() {
     setPendingDashMove(null);
     setDrawDetail(null);
     setPreviewEntityId(null);
+    setWoundNotice(null);
   }
 
   function showDrawReveal(payload, kind) {
@@ -1049,8 +1052,14 @@ function App() {
       "Attack applied",
     );
     if (payload) {
-      closeModal();
       setAttackForm(EMPTY_ATTACK_FORM);
+      const woundEvent = Array.isArray(payload.woundEvents) ? payload.woundEvents[0] : null;
+      if (woundEvent && Number(woundEvent.wounds) > 0) {
+        setWoundNotice(woundEvent);
+        setModal("wounds");
+      } else {
+        closeModal();
+      }
     }
   }
 
@@ -1260,7 +1269,7 @@ function App() {
                   }}
                   disabled={!canAttackOrHeal || busy}
                 >
-                  Attack enemy
+                  {`Attack ${selectedTargetNoun}`}
                 </button>
               </div>
 
@@ -1315,7 +1324,7 @@ function App() {
                       }}
                       disabled={!canAttackOrHeal || busy}
                     >
-                      Heal enemy
+                      {`Heal ${selectedTargetNoun}`}
                     </button>
                     <button
                       className="secondary-button action-more-item"
@@ -1716,7 +1725,7 @@ function App() {
           style={{ left: `${unitContextMenu.x}px`, top: `${unitContextMenu.y}px` }}
           onContextMenu={(event) => event.preventDefault()}
         >
-          {contextMenuEntity.is_player ? null : contextMenuEntity.is_down ? (
+          {contextMenuEntity.is_down ? (
             canContextRollLoot ? (
               <button
                 className="secondary-button unit-context-item"
@@ -1737,7 +1746,7 @@ function App() {
                 onClick={() => openAttackForEntity(contextMenuEntity.instance_id)}
                 disabled={busy}
               >
-                Attack unit
+                {contextMenuEntity.is_player ? "Attack player" : "Attack unit"}
               </button>
               <button
                 className="secondary-button unit-context-item"
@@ -1746,7 +1755,7 @@ function App() {
                 onClick={() => openHealForEntity(contextMenuEntity.instance_id)}
                 disabled={busy}
               >
-                Heal unit
+                {contextMenuEntity.is_player ? "Heal player" : "Heal unit"}
               </button>
             </>
           )}
@@ -1793,8 +1802,8 @@ function App() {
 
       <ModalShell
         open={modal === "attack"}
-        title="Attack enemy"
-        subtitle="Applies damage and optional status effects to the selected enemy card."
+        title={`Attack ${selectedTargetNoun}`}
+        subtitle={`Applies damage and optional status effects to the selected ${selectedTargetNoun} card.`}
         onClose={closeModal}
         closeOnOutsideClick={false}
       >
@@ -1860,8 +1869,8 @@ function App() {
 
       <ModalShell
         open={modal === "heal"}
-        title="Heal enemy"
-        subtitle="Restores the selected enemy card using the backend heal model."
+        title={`Heal ${selectedTargetNoun}`}
+        subtitle={`Restores the selected ${selectedTargetNoun} card using the backend heal model.`}
         onClose={closeModal}
       >
         <form className="modal-form" onSubmit={handleHealSubmit}>
@@ -1913,6 +1922,54 @@ function App() {
             </button>
           </div>
         </form>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "wounds" && Boolean(woundNotice)}
+        title="Player Wounds"
+        onClose={closeModal}
+        closeOnOutsideClick={false}
+        className="modal-shell-wound"
+      >
+        {woundNotice ? (
+          <div className="panel-body wound-modal-body">
+            <div className="wound-mark" aria-hidden="true">
+              <span className="wound-slash wound-slash-main" />
+              <span className="wound-slash wound-slash-cross" />
+            </div>
+            <div className="wound-modal-content">
+              <div className="wound-kicker">Wound taken</div>
+              <div className="wound-headline">
+                <strong>{woundNotice.name}</strong>
+                {` gains ${woundNotice.wounds} wound${Number(woundNotice.wounds) === 1 ? "" : "s"}.`}
+              </div>
+              <div className="wound-card-row">
+                <div className="wound-card-mini" aria-label={`${woundNotice.wounds} wound cards`}>
+                  <span>Wound</span>
+                  <strong>{`x${woundNotice.wounds}`}</strong>
+                </div>
+                <div
+                  className="wound-toughness-box"
+                  aria-label={`Toughness ${woundNotice.toughnessAfter}/${woundNotice.toughnessMax} after wounds`}
+                >
+                  <span>Toughness</span>
+                  <strong>{`${woundNotice.toughnessAfter}/${woundNotice.toughnessMax}`}</strong>
+                  <div className="wound-toughness-track" aria-hidden="true">
+                    <div
+                      className="wound-toughness-fill"
+                      style={{ width: `${percent(woundNotice.toughnessAfter, woundNotice.toughnessMax)}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button className="primary-button" type="button" onClick={closeModal}>
+                OK
+              </button>
+            </div>
+          </div>
+        ) : null}
       </ModalShell>
 
       <ModalShell
@@ -2731,6 +2788,7 @@ function ModalShell({
   size = "default",
   closeOnOutsideClick = true,
   showCloseButton = true,
+  className = "",
 }) {
   if (!open) {
     return null;
@@ -2739,7 +2797,7 @@ function ModalShell({
   return (
     <div className="modal-overlay" onClick={closeOnOutsideClick ? onClose : undefined}>
       <div
-        className={`modal-shell ${size === "wide" ? "modal-shell-wide" : ""}`.trim()}
+        className={`modal-shell ${size === "wide" ? "modal-shell-wide" : ""} ${className}`.trim()}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="modal-header">

@@ -103,7 +103,7 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
         session = load_session_or_400(sid)
         before_payload = session.undo_payload() if undoable else None
         try:
-            action(session)
+            mutation_result = action(session)
         except BattleSessionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if undoable:
@@ -111,7 +111,10 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
             if before_payload != after_payload:
                 session.remember_undo_state(before_payload)
                 session.autosave()
-        return session.snapshot()
+        payload = session.snapshot()
+        if isinstance(mutation_result, dict):
+            payload.update(mutation_result)
+        return payload
 
     @api_app.get("/api/battle/meta")
     def battle_meta():

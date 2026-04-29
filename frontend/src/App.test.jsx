@@ -513,6 +513,8 @@ describe("App", () => {
     expect(screen.queryByText(/Active Turn:/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Start encounter" }));
+    expect((await screen.findAllByText((text) => text.includes("Roll Initiative"))).length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: "Start Encounter" }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
@@ -573,6 +575,102 @@ describe("App", () => {
     await user.click(container.querySelector(".modal-overlay"));
 
     expect(screen.getByRole("button", { name: "Apply attack" })).toBeInTheDocument();
+  });
+
+  it("shows player attack and heal actions in the action bar", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      hp_current: 8,
+      hp_max: 10,
+      armor_current: 0,
+      armor_max: 0,
+      magic_armor_current: 0,
+      magic_armor_max: 0,
+      guard_current: 0,
+      draws_base: 0,
+      effective_movement: 6,
+    });
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "player-1",
+        order: ["player-1"],
+        enemies: [player],
+      }),
+    );
+
+    await findMapToken("Player 1");
+    await user.click(screen.getByRole("button", { name: "Attack player" }));
+    expect((await screen.findAllByText("Attack player")).length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("menuitem", { name: "Heal player" })).toBeInTheDocument();
+  });
+
+  it("shows a wound popup when player damage resets toughness", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      toughness_current: 5,
+      toughness_max: 5,
+      armor_current: 0,
+      armor_max: 0,
+      magic_armor_current: 0,
+      magic_armor_max: 0,
+      guard_current: 0,
+      power_base: 0,
+      effective_movement: 6,
+    });
+    const baseSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1"],
+      enemies: [player],
+    });
+    const woundedSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1"],
+      enemies: [{ ...player, toughness_current: 4 }],
+      woundEvents: [
+        {
+          instanceId: "player-1",
+          name: "Mira",
+          wounds: 2,
+          toughnessAfter: 4,
+          toughnessMax: 5,
+        },
+      ],
+    });
+
+    renderWithSnapshot(baseSnapshot, {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/attack" && requestOptions?.method === "POST") {
+          expect(JSON.parse(requestOptions.body).damage).toBe(11);
+          return jsonResponse(woundedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Mira");
+    await user.click(screen.getByRole("button", { name: "Attack player" }));
+    await user.clear(screen.getByLabelText("Damage"));
+    await user.type(screen.getByLabelText("Damage"), "11");
+    await user.click(screen.getByRole("button", { name: "Apply attack" }));
+
+    expect(await screen.findByText("Player Wounds")).toBeInTheDocument();
+    expect(screen.getByText("Wound taken")).toBeInTheDocument();
+    expect(screen.getByText((_, node) => node?.textContent === "Mira gains 2 wounds.")).toBeInTheDocument();
+    expect(screen.getByLabelText("2 wound cards")).toBeInTheDocument();
+    expect(screen.getByLabelText("Toughness 4/5 after wounds")).toBeInTheDocument();
   });
 
   it("shows a temporary draw card inspector and battle map pulse after a successful draw", async () => {
@@ -776,7 +874,7 @@ describe("App", () => {
     expect(screen.getByAltText("Guard")).toBeInTheDocument();
     expect(screen.getByAltText("Soldier")).toBeInTheDocument();
     expect(screen.getByAltText("Wraith")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Add player card" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Player Character" })).toBeInTheDocument();
     expect(screen.queryByText(/\bmin\b/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/\bmax\b/i)).not.toBeInTheDocument();
   });
@@ -932,7 +1030,8 @@ describe("App", () => {
 
     await findMapToken("Goblin 1");
     await openAddUnitModal(user);
-    await user.click(screen.getByRole("button", { name: "Add player card" }));
+    await user.click(screen.getByRole("tab", { name: "Player Character" }));
+    await user.click(screen.getByRole("button", { name: "Add player character" }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
@@ -982,11 +1081,11 @@ describe("App", () => {
 
     await findMapToken("Goblin 1");
     await openAddUnitModal(user);
-    await user.click(screen.getByRole("button", { name: "Show" }));
+    await user.click(screen.getByRole("tab", { name: "Custom Enemy" }));
     await user.clear(screen.getByLabelText("Name"));
     await user.type(screen.getByLabelText("Name"), "Shade");
-    await user.clear(screen.getByLabelText("HP"));
-    await user.type(screen.getByLabelText("HP"), "7");
+    await user.clear(screen.getByLabelText("Toughness"));
+    await user.type(screen.getByLabelText("Toughness"), "7");
     await user.click(screen.getByRole("button", { name: "Add custom enemy" }));
 
     await waitFor(() => {
@@ -997,10 +1096,10 @@ describe("App", () => {
           body: JSON.stringify({
             custom: {
               name: "Shade",
-              hp: 7,
+              toughness: 7,
               armor: 0,
               magicArmor: 0,
-              draws: 1,
+              power: 1,
               movement: 6,
               coreDeckId: "basic",
             },
@@ -1258,7 +1357,7 @@ describe("App", () => {
     ]);
   });
 
-  it("limits player and down enemy context actions", async () => {
+  it("shows player and down enemy context actions", async () => {
     const player = buildEnemy({
       instance_id: "player-1",
       template_id: "player",
@@ -1312,14 +1411,16 @@ describe("App", () => {
     pointerRightClickMapCell(5, 3);
 
     const playerMenu = await screen.findByRole("menu", { name: "Unit actions for Player 1" });
+    expect(within(playerMenu).getByRole("menuitem", { name: "Attack player" })).toBeInTheDocument();
+    expect(within(playerMenu).getByRole("menuitem", { name: "Heal player" })).toBeInTheDocument();
     expect(within(playerMenu).getByRole("menuitem", { name: "Reposition unit" })).toBeInTheDocument();
     expect(within(playerMenu).getByRole("menuitem", { name: "Show unit" })).toBeInTheDocument();
     expect(within(playerMenu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Attack player",
+      "Heal player",
       "Reposition unit",
       "Show unit",
     ]);
-    expect(within(playerMenu).queryByRole("menuitem", { name: "Attack unit" })).not.toBeInTheDocument();
-    expect(within(playerMenu).queryByRole("menuitem", { name: "Heal unit" })).not.toBeInTheDocument();
     expect(within(playerMenu).queryByRole("menuitem", { name: "Roll loot" })).not.toBeInTheDocument();
 
     fireEvent.mouseDown(document.body);

@@ -5,6 +5,7 @@ from typing import Iterable, Literal, Optional
 from engine.runtime_models import EnemyInstance
 
 AttackMod = Literal["stab", "pierce", "magic_pierce", "sunder", "paralyse"]
+WOUND_CARD_ID = "wound"
 
 
 @dataclass(frozen=True)
@@ -31,11 +32,46 @@ class CombatLog:
     ignored_magic: int = 0
     guarded_total: int = 0
     damage_to_hp: int = 0
+    wounds_added: int = 0
 
     applied_statuses: tuple[str, ...] = ()
 
 
-def apply_attack(enemy: EnemyInstance, damage: int, mods: Optional[Iterable[AttackMod]] = None) -> CombatLog:
+def _apply_toughness_damage_with_resets(enemy: EnemyInstance, damage_to_hp: int) -> int:
+    max_toughness = max(0, int(enemy.toughness_max))
+    if damage_to_hp <= 0 or max_toughness <= 0:
+        enemy.toughness_current = max(0, int(enemy.toughness_current) - damage_to_hp)
+        return 0
+
+    remaining = damage_to_hp
+    current = max(0, int(enemy.toughness_current))
+    wounds_added = 0
+
+    while remaining > 0:
+        if current <= 0:
+            wounds_added += 1
+            current = max_toughness
+            continue
+
+        if remaining < current:
+            current -= remaining
+            remaining = 0
+        else:
+            remaining -= current
+            wounds_added += 1
+            current = max_toughness
+
+    enemy.toughness_current = current
+    return wounds_added
+
+
+def apply_attack(
+    enemy: EnemyInstance,
+    damage: int,
+    mods: Optional[Iterable[AttackMod]] = None,
+    *,
+    reset_toughness_on_deplete: bool = False,
+) -> CombatLog:
     """
     Apply incoming damage to an enemy, taking guard/armor/magic armor into account.
 
@@ -43,10 +79,11 @@ def apply_attack(enemy: EnemyInstance, damage: int, mods: Optional[Iterable[Atta
       - armor and magic_armor are *persistent* flat reductions
       - guard is a *consumable pool* that resets each turn
       - sunder: destroys 1 regular armor (not guard)
-      - stab: ignore 1 regular reduction (guard first, then armor)
+      - stab: ignore 1 regular armor reduction
       - pierce: ignore all regular reduction (guard + armor)
       - magic_pierce: ignore all magic armor reduction
       - paralyse: marks a status
+      - reset_toughness_on_deplete: players gain wounds and reset Toughness instead of going down
     """
     if damage < 0:
         raise ValueError("damage must be >= 0")
@@ -74,22 +111,19 @@ def apply_attack(enemy: EnemyInstance, damage: int, mods: Optional[Iterable[Atta
     if "pierce" in mods_set:
         ignored_regular = guard_now + armor_now
     elif "stab" in mods_set:
-        ignored_regular = 1
+        ignored_regular = min(1, armor_now)
 
     if "magic_pierce" in mods_set:
         ignored_magic = magic_now
 
-    # Apply ignore prioritization: stab ignores guard first, then armor.
     guard_eff = guard_now
     armor_eff = armor_now
 
-    ignore = ignored_regular
-    ignored_from_guard = min(guard_eff, ignore)
-    guard_eff -= ignored_from_guard
-    ignore -= ignored_from_guard
-
-    ignored_from_armor = min(armor_eff, ignore)
-    armor_eff -= ignored_from_armor
+    if "pierce" in mods_set:
+        guard_eff = 0
+        armor_eff = 0
+    elif "stab" in mods_set:
+        armor_eff = max(0, armor_eff - 1)
 
     magic_eff = max(0, magic_now - ignored_magic)
 
@@ -98,11 +132,16 @@ def apply_attack(enemy: EnemyInstance, damage: int, mods: Optional[Iterable[Atta
     guard_used = min(guard_eff, damage_after_fixed)
     dmg_to_hp = damage_after_fixed - guard_used
 
-    toughness_after = max(0, toughness_b - dmg_to_hp)
     guard_after = max(0, guard_b - guard_used)
 
     # 4) apply
-    enemy.toughness_current = toughness_after
+    wounds_added = 0
+    if reset_toughness_on_deplete:
+        wounds_added = _apply_toughness_damage_with_resets(enemy, dmg_to_hp)
+        if wounds_added:
+            enemy.deck_state.discard_pile.extend([WOUND_CARD_ID] * wounds_added)
+    else:
+        enemy.toughness_current = max(0, toughness_b - dmg_to_hp)
     enemy.guard_current = guard_after
     enemy.armor_current = armor_now  # includes sunder effect
     # magic armor unchanged by attacks for now
@@ -134,6 +173,7 @@ def apply_attack(enemy: EnemyInstance, damage: int, mods: Optional[Iterable[Atta
         ignored_magic=ignored_magic,
         guarded_total=guarded_total,
         damage_to_hp=dmg_to_hp,
+        wounds_added=wounds_added,
 
         applied_statuses=tuple(applied_statuses),
     )

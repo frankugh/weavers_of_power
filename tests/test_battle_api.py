@@ -244,6 +244,27 @@ class BattleApiTests(unittest.TestCase):
         healed = next(enemy for enemy in heal_response.json()["enemies"] if enemy["instance_id"] == enemy_snapshot["selectedId"])
         self.assertGreaterEqual(healed["toughness_current"], attacked["toughness_current"])
 
+    def test_attack_endpoint_reports_player_wounds(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        player_snapshot = self.client.post(
+            f"/api/battle/sessions/{sid}/players",
+            json={"name": "Mira", "toughness": 5, "armor": 0, "magicArmor": 0, "power": 0, "movement": 6},
+        ).json()
+
+        attack_response = self.client.post(
+            f"/api/battle/sessions/{sid}/attack",
+            json={"damage": 11, "burn": False, "poison": False, "slow": False, "paralyze": False, "modifiers": []},
+        )
+
+        self.assertEqual(attack_response.status_code, 200)
+        payload = attack_response.json()
+        player = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == player_snapshot["selectedId"])
+        self.assertEqual(player["toughness_current"], 4)
+        self.assertFalse(player["is_down"])
+        self.assertEqual(payload["woundEvents"][0]["name"], "Mira")
+        self.assertEqual(payload["woundEvents"][0]["wounds"], 2)
+        self.assertEqual(payload["woundEvents"][0]["toughnessAfter"], 4)
+
     def test_undo_restores_previous_mutation_state(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         enemy_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()

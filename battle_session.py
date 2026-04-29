@@ -9,7 +9,7 @@ import random
 import uuid
 from typing import Optional
 
-from engine.combat import AttackMod, apply_attack, apply_heal
+from engine.combat import WOUND_CARD_ID, AttackMod, apply_attack, apply_heal
 from engine.loader import load_decks, load_enemies
 from engine.loot import roll_loot
 from engine.models import Card, Deck, EnemyTemplate
@@ -800,13 +800,18 @@ class BattleSession:
         add_poison: bool,
         add_slow: bool,
         add_paralyze: bool,
-    ) -> None:
-        entity = self._require_selected_enemy()
+    ) -> Optional[dict]:
+        entity = self._require_selected_entity()
         effective_mods = list(modifiers)
         if add_paralyze and "paralyse" not in effective_mods:
             effective_mods.append("paralyse")
 
-        log = apply_attack(entity, max(0, int(damage)), mods=effective_mods)
+        log = apply_attack(
+            entity,
+            max(0, int(damage)),
+            mods=effective_mods,
+            reset_toughness_on_deplete=self.is_player(entity),
+        )
         if add_burn:
             self._add_status_stack(entity, "burn", 1)
         if add_poison:
@@ -828,13 +833,28 @@ class BattleSession:
             f"Attack on {entity.name}: {log.input_damage} in, "
             f"{log.damage_to_hp} to Toughness, Toughness {log.toughness_before}->{log.toughness_after}"
         )
+        if log.wounds_added:
+            message += f", {log.wounds_added} wound{'s' if log.wounds_added != 1 else ''} added"
         if status_parts:
             message += f" [{', '.join(status_parts)}]"
         self._add_log(message)
         self.autosave()
+        if log.wounds_added:
+            return {
+                "woundEvents": [
+                    {
+                        "instanceId": entity.instance_id,
+                        "name": entity.name,
+                        "wounds": log.wounds_added,
+                        "toughnessAfter": entity.toughness_current,
+                        "toughnessMax": entity.toughness_max,
+                    }
+                ]
+            }
+        return None
 
     def apply_heal_to_selected(self, *, toughness: int, armor: int, magic_armor: int, guard: int) -> None:
-        entity = self._require_selected_enemy()
+        entity = self._require_selected_entity()
         log = apply_heal(
             entity,
             toughness=max(0, int(toughness)),
@@ -1085,6 +1105,8 @@ class BattleSession:
         return ", ".join(parts)
 
     def card_to_effect_text(self, card_id: str) -> str:
+        if card_id == WOUND_CARD_ID:
+            return "Wound"
         card = self.context.card_index.get(card_id)
         if not card:
             return card_id
@@ -1391,14 +1413,18 @@ class BattleSession:
         return max_found + 1
 
     def _require_selected_enemy(self) -> EnemyInstance:
+        entity = self._require_selected_entity()
+        if self.is_player(entity):
+            raise BattleSessionError("This action is not available for player cards")
+        return entity
+
+    def _require_selected_entity(self) -> EnemyInstance:
         self._ensure_selected()
         if not self.selected_id:
             raise BattleSessionError("No entity selected")
         entity = self.state.enemies.get(self.selected_id)
         if not entity:
             raise BattleSessionError("Selected entity no longer exists")
-        if self.is_player(entity):
-            raise BattleSessionError("This action is not available for player cards")
         return entity
 
     def _add_status_stack(self, entity: EnemyInstance, name: str, stacks: int = 1) -> None:
