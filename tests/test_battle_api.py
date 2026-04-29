@@ -265,6 +265,40 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(payload["woundEvents"][0]["wounds"], 2)
         self.assertEqual(payload["woundEvents"][0]["toughnessAfter"], 4)
 
+    def test_quick_attack_endpoint_uses_active_draw_and_supports_undo(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        attacker_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        attacker_id = attacker_snapshot["selectedId"]
+        target_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        target_id = target_snapshot["selectedId"]
+        session = self.context.load_session(sid)
+        attacker = session.state.enemies[attacker_id]
+        target = session.state.enemies[target_id]
+        target.toughness_current = 10
+        target.toughness_max = 10
+        target.guard_current = 0
+        target.armor_current = 0
+        target.armor_max = 0
+        attacker.deck_state.hand = ["bandit_s3"]
+        session.active_turn_id = attacker_id
+        session.turn_in_progress = True
+        session.select(target_id)
+        session.autosave()
+
+        quick_response = self.client.post(f"/api/battle/sessions/{sid}/turn/quick-attack")
+
+        self.assertEqual(quick_response.status_code, 200)
+        payload = quick_response.json()
+        attacked = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == target_id)
+        self.assertEqual(attacked["toughness_current"], 5)
+        self.assertTrue(payload["canUndo"])
+        self.assertEqual(payload["quickAttack"]["attackerId"], attacker_id)
+        self.assertIn("Quick Attack", payload["quickAttackNotice"])
+
+        undo_response = self.client.post(f"/api/battle/sessions/{sid}/undo")
+        restored = next(enemy for enemy in undo_response.json()["enemies"] if enemy["instance_id"] == target_id)
+        self.assertEqual(restored["toughness_current"], 10)
+
     def test_undo_restores_previous_mutation_state(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         enemy_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()

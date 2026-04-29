@@ -445,6 +445,16 @@ function App() {
   const canReposition = Boolean(selectedEntity);
   const isGmRepositionMode = mapMode === MAP_MODES.GM_REPOSITION;
   const canUseGmReposition = orderedEnemies.length > 0;
+  const activeDrawAttacks = activeEntity?.current_draw_attacks || [];
+  const canQuickAttack = Boolean(
+    activeEntity &&
+      selectedEntity &&
+      !activeEntity.is_player &&
+      snapshot.turnInProgress &&
+      activeEntity.instance_id !== selectedEntity.instance_id &&
+      !selectedIsDown &&
+      activeDrawAttacks.length > 0,
+  );
 
   const canDraw = Boolean(
     selectedEntity &&
@@ -464,6 +474,15 @@ function App() {
   const selectedTargetNoun = isPlayerSelected ? "player" : "enemy";
   const canRollLoot = isTemplateLootable(selectedEntity);
   const canContextRollLoot = Boolean(contextMenuEntity?.is_down && !contextMenuEntity?.loot_rolled && isTemplateLootable(contextMenuEntity));
+  const canContextQuickAttack = Boolean(
+    contextMenuEntity &&
+      activeEntity &&
+      !activeEntity.is_player &&
+      snapshot.turnInProgress &&
+      contextMenuEntity.instance_id !== activeEntity.instance_id &&
+      !contextMenuEntity.is_down &&
+      activeDrawAttacks.length > 0,
+  );
   const selectedStatuses = Object.entries(selectedEntity?.statuses || {});
   const selectedHasDraw = Boolean(selectedEntity?.current_draw_text?.length);
   const selectedHasLoot = Boolean(selectedEntity?.loot_rolled);
@@ -1077,6 +1096,29 @@ function App() {
     }
   }
 
+  async function handleQuickAttack() {
+    setActionMenuOpen(false);
+    setUnitContextMenu(null);
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/turn/quick-attack`,
+      {
+        method: "POST",
+      },
+      "Quick Attack applied",
+    );
+    if (!payload) {
+      return;
+    }
+    if (payload.quickAttackNotice) {
+      setNotice(payload.quickAttackNotice);
+    }
+    const woundEvent = Array.isArray(payload.woundEvents) ? payload.woundEvents[0] : null;
+    if (woundEvent && Number(woundEvent.wounds) > 0) {
+      setWoundNotice(woundEvent);
+      setModal("wounds");
+    }
+  }
+
   async function handleHealSubmit(event) {
     event.preventDefault();
     const payload = await applySnapshotRequest(
@@ -1283,6 +1325,15 @@ function App() {
                 >
                   {mapMode === MAP_MODES.MOVE ? "Cancel Move" : "Move"}
                 </button>
+                {canQuickAttack ? (
+                  <button
+                    className="primary-button"
+                    onClick={handleQuickAttack}
+                    disabled={busy}
+                  >
+                    Quick Attack
+                  </button>
+                ) : null}
                 <button
                   className="secondary-button"
                   onClick={() => {
@@ -1762,6 +1813,17 @@ function App() {
             ) : null
           ) : (
             <>
+              {canContextQuickAttack ? (
+                <button
+                  className="secondary-button unit-context-item"
+                  type="button"
+                  role="menuitem"
+                  onClick={handleQuickAttack}
+                  disabled={busy}
+                >
+                  Quick Attack
+                </button>
+              ) : null}
               <button
                 className="secondary-button unit-context-item"
                 type="button"

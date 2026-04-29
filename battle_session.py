@@ -31,6 +31,14 @@ ROOM_MIN_COLUMNS = 3
 ROOM_MIN_ROWS = 3
 ROOM_MAX_COLUMNS = 99
 ROOM_MAX_ROWS = 99
+SUPPORTED_QUICK_ATTACK_MODIFIERS: dict[str, AttackMod] = {
+    "stab": "stab",
+    "pierce": "pierce",
+    "magic_pierce": "magic_pierce",
+    "sunder": "sunder",
+    "paralyse": "paralyse",
+    "paralyze": "paralyse",
+}
 
 
 class BattleSessionError(ValueError):
@@ -122,6 +130,16 @@ def safe_filename(name: str) -> str:
 
 def now_stamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+@dataclass(frozen=True)
+class QuickAttackStep:
+    card_id: str
+    card_title: str
+    damage: int
+    modifiers: tuple[AttackMod, ...]
+    unsupported_modifiers: tuple[str, ...] = ()
+    manual_effects: tuple[str, ...] = ()
 
 
 @dataclass
@@ -853,6 +871,89 @@ class BattleSession:
             }
         return None
 
+    def apply_quick_attack_from_active_draw(self) -> dict:
+        if not self.active_turn_id:
+            raise BattleSessionError("No NPC has the active turn.")
+        attacker = self.state.enemies.get(self.active_turn_id)
+        if not attacker:
+            raise BattleSessionError("Active NPC no longer exists.")
+        if self.is_player(attacker):
+            raise BattleSessionError("Quick Attack is only available during NPC turns.")
+        if not self.turn_in_progress:
+            raise BattleSessionError("Press Draw before using Quick Attack.")
+        if not attacker.deck_state.hand:
+            raise BattleSessionError("Active NPC has no current draw.")
+
+        target = self._require_selected_entity()
+        if target.instance_id == attacker.instance_id:
+            raise BattleSessionError("Select a target other than the active NPC.")
+        if self.is_down(target):
+            raise BattleSessionError("Quick Attack target is down.")
+
+        steps = self._quick_attack_steps_for(attacker)
+        if not steps:
+            raise BattleSessionError("Current draw has no attack effects.")
+
+        wound_total = 0
+        first_toughness_before = target.toughness_current
+        damage_to_toughness = 0
+        labels: list[str] = []
+        unsupported: list[str] = []
+        manual_effects: list[str] = []
+
+        for step in steps:
+            log = apply_attack(
+                target,
+                max(0, int(step.damage)),
+                mods=list(step.modifiers),
+                reset_toughness_on_deplete=self.is_player(target),
+            )
+            wound_total += log.wounds_added
+            damage_to_toughness += log.damage_to_hp
+            labels.append(self._quick_attack_label(step))
+            unsupported.extend(step.unsupported_modifiers)
+            manual_effects.extend(step.manual_effects)
+
+        manual_items = self._unique_preserve_order([*unsupported, *manual_effects])
+        attacks_text = ", ".join(labels)
+        message = (
+            f"Quick Attack by {attacker.name} on {target.name}: {attacks_text}; "
+            f"{damage_to_toughness} to Toughness, Toughness {first_toughness_before}->{target.toughness_current}"
+        )
+        if wound_total:
+            message += f", {wound_total} wound{'s' if wound_total != 1 else ''} added"
+        if manual_items:
+            message += f"; handle manually: {', '.join(manual_items)}"
+        self._add_log(message)
+        self.autosave()
+
+        notice = f"Quick Attack: {attacker.name} attacks {target.name} with {attacks_text}."
+        if manual_items:
+            notice += f" Handle manually: {', '.join(manual_items)}."
+
+        result = {
+            "quickAttack": {
+                "attackerId": attacker.instance_id,
+                "attackerName": attacker.name,
+                "targetId": target.instance_id,
+                "targetName": target.name,
+                "attacks": [self._quick_attack_payload(step) for step in steps],
+                "manualItems": manual_items,
+            },
+            "quickAttackNotice": notice,
+        }
+        if wound_total:
+            result["woundEvents"] = [
+                {
+                    "instanceId": target.instance_id,
+                    "name": target.name,
+                    "wounds": wound_total,
+                    "toughnessAfter": target.toughness_current,
+                    "toughnessMax": target.toughness_max,
+                }
+            ]
+        return result
+
     def apply_heal_to_selected(self, *, toughness: int, armor: int, magic_armor: int, guard: int) -> None:
         entity = self._require_selected_entity()
         log = apply_heal(
@@ -1123,6 +1224,73 @@ class BattleSession:
                 parts.append(effect.type)
         return " + ".join(parts) if parts else (card.title or card_id)
 
+    def _quick_attack_steps_for(self, entity: EnemyInstance) -> list[QuickAttackStep]:
+        steps: list[QuickAttackStep] = []
+        for card_id in list(entity.deck_state.hand):
+            card = self.context.card_index.get(card_id)
+            if not card:
+                continue
+            manual_effects = tuple(
+                self._effect_label(effect)
+                for effect in card.effects
+                if effect.type not in {"attack", "guard"}
+            )
+            for effect in card.effects:
+                if effect.type != "attack":
+                    continue
+                modifiers: list[AttackMod] = []
+                unsupported: list[str] = []
+                for modifier in effect.modifiers:
+                    normalized = SUPPORTED_QUICK_ATTACK_MODIFIERS.get(str(modifier))
+                    if normalized:
+                        if normalized not in modifiers:
+                            modifiers.append(normalized)
+                    else:
+                        unsupported.append(str(modifier))
+                steps.append(
+                    QuickAttackStep(
+                        card_id=card_id,
+                        card_title=card.title or card_id,
+                        damage=int(effect.amount),
+                        modifiers=tuple(modifiers),
+                        unsupported_modifiers=tuple(unsupported),
+                        manual_effects=manual_effects,
+                    )
+                )
+        return steps
+
+    def _quick_attack_payload(self, step: QuickAttackStep) -> dict:
+        return {
+            "cardId": step.card_id,
+            "cardTitle": step.card_title,
+            "damage": step.damage,
+            "modifiers": list(step.modifiers),
+            "unsupportedModifiers": list(step.unsupported_modifiers),
+            "manualEffects": list(step.manual_effects),
+            "label": self._quick_attack_label(step),
+        }
+
+    def _quick_attack_label(self, step: QuickAttackStep) -> str:
+        if step.modifiers:
+            return f"Attack {step.damage} ({', '.join(step.modifiers)})"
+        return f"Attack {step.damage}"
+
+    @staticmethod
+    def _effect_label(effect) -> str:
+        amount = int(getattr(effect, "amount", 0) or 0)
+        return f"{effect.type} {amount}" if amount > 0 else str(effect.type)
+
+    @staticmethod
+    def _unique_preserve_order(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        unique: list[str] = []
+        for item in items:
+            if item in seen:
+                continue
+            seen.add(item)
+            unique.append(item)
+        return unique
+
     def draw_list_to_text(self, card_ids: list[str], *, max_items: int = 3) -> str:
         if not card_ids:
             return "—"
@@ -1307,6 +1475,10 @@ class BattleSession:
                 "effective_movement": self.effective_movement(entity),
                 "status_text": self.format_statuses(entity.statuses),
                 "current_draw_text": [self.card_to_effect_text(card_id) for card_id in self.visible_draw_for(entity)],
+                "current_draw_attacks": [
+                    self._quick_attack_payload(step)
+                    for step in self._quick_attack_steps_for(entity)
+                ],
             }
         )
         return payload

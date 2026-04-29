@@ -392,6 +392,150 @@ class BattleSessionTests(unittest.TestCase):
         self.assertGreaterEqual(len(session.snapshot()["enemies"][0]["current_draw_text"]), 1)
         self.assertIn("redraws", session.combat_log[0])
 
+    def test_quick_attack_applies_current_draw_to_selected_target(self) -> None:
+        session = self.context.create_session("quick-attack")
+        session.add_enemy_from_template("bandit")
+        attacker_id = session.selected_id
+        attacker = session.state.enemies[attacker_id]
+        session.add_enemy_from_template("goblin")
+        target_id = session.selected_id
+        target = session.state.enemies[target_id]
+        target.toughness_current = 10
+        target.toughness_max = 10
+        target.guard_current = 0
+        target.armor_current = 0
+        target.armor_max = 0
+        attacker.deck_state.hand = ["bandit_s2"]
+        session.active_turn_id = attacker_id
+        session.turn_in_progress = True
+        session.select(target_id)
+
+        result = session.apply_quick_attack_from_active_draw()
+
+        self.assertEqual(target.toughness_current, 6)
+        self.assertEqual(result["quickAttack"]["attackerId"], attacker_id)
+        self.assertEqual(result["quickAttack"]["targetId"], target_id)
+        self.assertEqual(result["quickAttack"]["attacks"][0]["label"], "Attack 4 (stab)")
+        self.assertIn("Quick Attack by", session.combat_log[0])
+        target_payload = next(enemy for enemy in session.snapshot()["enemies"] if enemy["instance_id"] == attacker_id)
+        self.assertEqual(target_payload["current_draw_attacks"][0]["damage"], 4)
+
+    def test_quick_attack_applies_multi_attack_sequentially(self) -> None:
+        session = self.context.create_session("quick-multi")
+        session.add_enemy_from_template("bandit")
+        attacker_id = session.selected_id
+        attacker = session.state.enemies[attacker_id]
+        session.add_enemy_from_template("goblin")
+        target_id = session.selected_id
+        target = session.state.enemies[target_id]
+        target.toughness_current = 10
+        target.toughness_max = 10
+        target.guard_current = 0
+        target.armor_current = 1
+        target.armor_max = 1
+        attacker.deck_state.hand = ["bandit_s3"]
+        session.active_turn_id = attacker_id
+        session.turn_in_progress = True
+        session.select(target_id)
+
+        session.apply_quick_attack_from_active_draw()
+
+        self.assertEqual(target.toughness_current, 7)
+
+    def test_quick_attack_adds_player_wounds(self) -> None:
+        session = self.context.create_session("quick-player-wound")
+        session.add_enemy_from_template("bandit")
+        attacker_id = session.selected_id
+        attacker = session.state.enemies[attacker_id]
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0, power=0, movement=6)
+        target_id = session.selected_id
+        target = session.state.enemies[target_id]
+        target.toughness_current = 3
+        attacker.deck_state.hand = ["basic_a5"]
+        session.active_turn_id = attacker_id
+        session.turn_in_progress = True
+        session.select(target_id)
+
+        result = session.apply_quick_attack_from_active_draw()
+
+        self.assertEqual(target.toughness_current, 3)
+        self.assertEqual(result["woundEvents"][0]["wounds"], 1)
+        self.assertEqual(target.deck_state.discard_pile, [WOUND_CARD_ID])
+
+    def test_quick_attack_reports_unsupported_modifiers_and_manual_effects(self) -> None:
+        session = self.context.create_session("quick-unsupported")
+        session.add_enemy_from_template("guard")
+        attacker_id = session.selected_id
+        attacker = session.state.enemies[attacker_id]
+        session.add_enemy_from_template("goblin")
+        target_id = session.selected_id
+        target = session.state.enemies[target_id]
+        target.toughness_current = 10
+        target.toughness_max = 10
+        target.guard_current = 0
+        target.armor_current = 0
+        target.armor_max = 0
+        attacker.deck_state.hand = ["guard_s1", "ctrl_a2_dodge"]
+        session.active_turn_id = attacker_id
+        session.turn_in_progress = True
+        session.select(target_id)
+
+        result = session.apply_quick_attack_from_active_draw()
+
+        self.assertEqual(target.toughness_current, 5)
+        self.assertIn("push 5ft", result["quickAttack"]["manualItems"])
+        self.assertIn("dodge", result["quickAttack"]["manualItems"])
+        self.assertIn("Handle manually", result["quickAttackNotice"])
+        self.assertIn("handle manually", session.combat_log[0])
+
+    def test_quick_attack_rejects_invalid_state(self) -> None:
+        no_active = self.context.create_session("quick-no-active")
+        no_active.add_enemy_from_template("bandit")
+        with self.assertRaisesRegex(ValueError, "No NPC"):
+            no_active.apply_quick_attack_from_active_draw()
+
+        no_draw = self.context.create_session("quick-no-draw")
+        no_draw.add_enemy_from_template("bandit")
+        attacker_id = no_draw.selected_id
+        no_draw.add_enemy_from_template("goblin")
+        no_draw.active_turn_id = attacker_id
+        with self.assertRaisesRegex(ValueError, "Press Draw"):
+            no_draw.apply_quick_attack_from_active_draw()
+
+        self_target = self.context.create_session("quick-self")
+        self_target.add_enemy_from_template("bandit")
+        attacker_id = self_target.selected_id
+        attacker = self_target.state.enemies[attacker_id]
+        attacker.deck_state.hand = ["basic_a2"]
+        self_target.active_turn_id = attacker_id
+        self_target.turn_in_progress = True
+        with self.assertRaisesRegex(ValueError, "other than the active NPC"):
+            self_target.apply_quick_attack_from_active_draw()
+
+        down_target = self.context.create_session("quick-down")
+        down_target.add_enemy_from_template("bandit")
+        attacker_id = down_target.selected_id
+        attacker = down_target.state.enemies[attacker_id]
+        down_target.add_enemy_from_template("goblin")
+        target_id = down_target.selected_id
+        down_target.state.enemies[target_id].toughness_current = 0
+        attacker.deck_state.hand = ["basic_a2"]
+        down_target.active_turn_id = attacker_id
+        down_target.turn_in_progress = True
+        with self.assertRaisesRegex(ValueError, "target is down"):
+            down_target.apply_quick_attack_from_active_draw()
+
+        no_attack = self.context.create_session("quick-no-attack")
+        no_attack.add_enemy_from_template("bandit")
+        attacker_id = no_attack.selected_id
+        attacker = no_attack.state.enemies[attacker_id]
+        no_attack.add_enemy_from_template("goblin")
+        attacker.deck_state.hand = ["basic_g4"]
+        no_attack.active_turn_id = attacker_id
+        no_attack.turn_in_progress = True
+        with self.assertRaisesRegex(ValueError, "no attack effects"):
+            no_attack.apply_quick_attack_from_active_draw()
+
     def test_current_draw_persists_until_that_same_unit_turn_starts_again(self) -> None:
         session = self.context.create_session("draw-persist")
         session.add_enemy_from_template("goblin")

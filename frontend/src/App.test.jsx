@@ -33,6 +33,7 @@ function buildEnemy(overrides = {}) {
     statuses: {},
     status_text: "-",
     current_draw_text: [],
+    current_draw_attacks: [],
     last_draw_text: [],
     loot_rolled: false,
     rolled_loot: {},
@@ -671,6 +672,81 @@ describe("App", () => {
     expect(screen.getByText((_, node) => node?.textContent === "Mira gains 2 wounds.")).toBeInTheDocument();
     expect(screen.getByLabelText("2 wound cards")).toBeInTheDocument();
     expect(screen.getByLabelText("Toughness 4/5 after wounds")).toBeInTheDocument();
+  });
+
+  it("posts quick attack from the action bar and shows player wounds", async () => {
+    const user = userEvent.setup();
+    const attacker = buildEnemy({
+      instance_id: "enemy-1",
+      name: "Goblin 1",
+      current_draw_text: ["Attack 5"],
+      current_draw_attacks: [{ damage: 5, modifiers: [], label: "Attack 5" }],
+    });
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      toughness_current: 3,
+      toughness_max: 5,
+      armor_current: 0,
+      armor_max: 0,
+      magic_armor_current: 0,
+      magic_armor_max: 0,
+      guard_current: 0,
+      power_base: 0,
+      effective_movement: 6,
+      grid_x: 5,
+      grid_y: 3,
+    });
+    const woundedSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "enemy-1",
+      turnInProgress: true,
+      order: ["enemy-1", "player-1"],
+      enemies: [attacker, { ...player, toughness_current: 3 }],
+      quickAttackNotice: "Quick Attack: Goblin 1 attacks Mira with Attack 5.",
+      woundEvents: [
+        {
+          instanceId: "player-1",
+          name: "Mira",
+          wounds: 1,
+          toughnessAfter: 3,
+          toughnessMax: 5,
+        },
+      ],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "player-1",
+        activeTurnId: "enemy-1",
+        turnInProgress: true,
+        order: ["enemy-1", "player-1"],
+        enemies: [attacker, player],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/turn/quick-attack" && requestOptions?.method === "POST") {
+            return jsonResponse(woundedSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Mira");
+    await user.click(screen.getByRole("button", { name: "Quick Attack" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/turn/quick-attack",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(await screen.findByText("Player Wounds")).toBeInTheDocument();
+    expect(screen.getByText((_, node) => node?.textContent === "Mira gains 1 wound.")).toBeInTheDocument();
   });
 
   it("shows a temporary draw card inspector and battle map pulse after a successful draw", async () => {
@@ -1595,6 +1671,74 @@ describe("App", () => {
         }),
       );
     });
+  });
+
+  it("shows quick attack in a valid target context menu and posts it", async () => {
+    const user = userEvent.setup();
+    const attacker = buildEnemy({
+      instance_id: "enemy-1",
+      name: "Goblin 1",
+      current_draw_text: ["Attack 3"],
+      current_draw_attacks: [{ damage: 3, modifiers: [], label: "Attack 3" }],
+    });
+    const bandit = buildEnemy({
+      instance_id: "enemy-2",
+      template_id: "bandit",
+      name: "Bandit 1",
+      image_url: "/images/Outlaws/bandit.png",
+      grid_x: 5,
+      grid_y: 3,
+    });
+    const selectedBanditSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      activeTurnId: "enemy-1",
+      turnInProgress: true,
+      order: ["enemy-1", "enemy-2"],
+      enemies: [attacker, bandit],
+    });
+    const attackedSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      activeTurnId: "enemy-1",
+      turnInProgress: true,
+      order: ["enemy-1", "enemy-2"],
+      enemies: [attacker, { ...bandit, toughness_current: 7 }],
+      quickAttackNotice: "Quick Attack: Goblin 1 attacks Bandit 1 with Attack 3.",
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "enemy-1",
+        activeTurnId: "enemy-1",
+        turnInProgress: true,
+        order: ["enemy-1", "enemy-2"],
+        enemies: [attacker, bandit],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+            return jsonResponse(selectedBanditSnapshot);
+          }
+          if (url === "/api/battle/sessions/sid-123/turn/quick-attack" && requestOptions?.method === "POST") {
+            return jsonResponse(attackedSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Bandit 1");
+    expect(screen.queryByRole("button", { name: "Quick Attack" })).not.toBeInTheDocument();
+    pointerRightClickMapCell(5, 3);
+    const menu = await screen.findByRole("menu", { name: "Unit actions for Bandit 1" });
+    await user.click(within(menu).getByRole("menuitem", { name: "Quick Attack" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/turn/quick-attack",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(await screen.findByText("Quick Attack: Goblin 1 attacks Bandit 1 with Attack 3.")).toBeInTheDocument();
   });
 
   it("keeps GM reposition mode active while selecting and placing units", async () => {
