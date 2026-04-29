@@ -11,6 +11,7 @@
   "coreDeck": "aggro",
   "movement": 6,
   "draws": 1,
+  "initiativeModifier": 3,
 
   "specials": [
     {

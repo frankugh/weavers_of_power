@@ -226,6 +226,8 @@ function App() {
     power: 0,
     movement: 6,
   });
+  const [initiativeModes, setInitiativeModes] = useState({});
+  const [initiativeOpenReason, setInitiativeOpenReason] = useState("manual");
 
   useEffect(() => {
     if (!meta || customForm.coreDeckId || meta.decks.length === 0) {
@@ -356,6 +358,13 @@ function App() {
   }, [snapshot?.pendingNewRound]);
 
   useEffect(() => {
+    const notice = snapshot?.turnSkipNotice;
+    if (notice && notice.length > 0) {
+      setNotice(`Surprised and skipped: ${notice.join(", ")}`);
+    }
+  }, [snapshot?.turnSkipNotice]);
+
+  useEffect(() => {
     if (bootstrapped.current) {
       return;
     }
@@ -451,6 +460,11 @@ function App() {
   const selectedHasLoot = Boolean(selectedEntity?.loot_rolled);
   const canOpenActionMore = Boolean(canRedraw || canAttackOrHeal || canRollLoot || canReposition);
   const sessionHasHistory = Boolean(snapshot?.canUndo || snapshot?.canRedo || snapshot?.undoDepth || snapshot?.redoDepth);
+  const canRollInitiative = Boolean(snapshot?.canRollInitiative) && orderIds.length > 0;
+  const initiativeTargetRound = snapshot?.initiativeTargetRound ?? null;
+  const initiativeRolledRound = snapshot?.initiativeRolledRound ?? null;
+  const initiativeRolledForTarget =
+    initiativeTargetRound !== null && initiativeRolledRound === initiativeTargetRound;
   const allTemplates = meta?.enemyTemplates || [];
   const templateCategories = useMemo(
     () => ["All", ...Array.from(new Set(allTemplates.map(getTemplateCategory))).sort((a, b) => a.localeCompare(b))],
@@ -911,6 +925,13 @@ function App() {
   }
 
   async function handleTurnAdvance() {
+    if (!hasActiveTurn && !pendingNewRound && hasStartableUnit && !initiativeRolledForTarget) {
+      setInitiativeOpenReason("start");
+      setInitiativeModes({});
+      setModal("initiative");
+      return;
+    }
+
     if (pendingNewRound) {
       await applySnapshotRequest(
         `/api/battle/sessions/${snapshot.sid}/round/start`,
@@ -947,6 +968,54 @@ function App() {
       { method: "POST" },
       "Started new round",
     );
+  }
+
+  async function handleRollInitiative() {
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/initiative/roll`,
+      { method: "POST", body: JSON.stringify({ modes: initiativeModes }) },
+      "Initiative rolled",
+    );
+  }
+
+  async function handleRollAndStart() {
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/initiative/roll`,
+      { method: "POST", body: JSON.stringify({ modes: initiativeModes }) },
+      "Initiative rolled",
+    );
+    if (!payload) return;
+    closeModal();
+    if (initiativeOpenReason === "start") {
+      await applySnapshotRequest(
+        `/api/battle/sessions/${snapshot.sid}/encounter/start`,
+        { method: "POST" },
+        "Encounter started",
+      );
+    } else {
+      await applySnapshotRequest(
+        `/api/battle/sessions/${snapshot.sid}/round/start`,
+        { method: "POST" },
+        "Round started",
+      );
+    }
+  }
+
+  async function handleStartCurrentOrder() {
+    closeModal();
+    if (!snapshot?.encounterStarted) {
+      await applySnapshotRequest(
+        `/api/battle/sessions/${snapshot.sid}/encounter/start`,
+        { method: "POST" },
+        "Encounter started",
+      );
+    } else {
+      await applySnapshotRequest(
+        `/api/battle/sessions/${snapshot.sid}/round/start`,
+        { method: "POST" },
+        "Round started",
+      );
+    }
   }
 
   async function handleRollLoot() {
@@ -1032,6 +1101,25 @@ function App() {
     );
     if (payload) {
       closeModal();
+    }
+  }
+
+  async function handleDeleteSave(filename) {
+    if (!snapshot?.sid || busy) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const payload = await requestJson(`/api/battle/sessions/${snapshot.sid}/saves/${encodeURIComponent(filename)}`, {
+        method: "DELETE",
+      });
+      setSaves(payload.saves || []);
+      setNotice("Manual save deleted");
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -1467,9 +1555,25 @@ function App() {
             <Panel
               title="Initiative"
               actions={
-                <button className="icon-button" type="button" aria-label="Add unit" onClick={openAddUnitModal} disabled={busy}>
-                  <PlusIcon />
-                </button>
+                <div className="panel-header-actions">
+                  {canRollInitiative && (
+                    <button
+                      className="secondary-button panel-header-button"
+                      type="button"
+                      onClick={() => {
+                        setInitiativeOpenReason("manual");
+                        setInitiativeModes({});
+                        setModal("initiative");
+                      }}
+                      disabled={busy}
+                    >
+                      Roll Initiative
+                    </button>
+                  )}
+                  <button className="icon-button" type="button" aria-label="Add unit" onClick={openAddUnitModal} disabled={busy}>
+                    <PlusIcon />
+                  </button>
+                </div>
               }
             >
             <div className="initiative-list initiative-list-compact">
@@ -1504,13 +1608,20 @@ function App() {
                           </span>
                         </div>
                       </div>
-                      {!entity.is_player ? (
-                        <span className="initiative-toughness">
-                          {entity.toughness_current}/{entity.toughness_max}
-                        </span>
-                      ) : (
-                        <span className="initiative-toughness">Player</span>
-                      )}
+                      <div className="initiative-right-col">
+                        {entity.initiative_total != null && (
+                          <span className="initiative-roll-badge" title={`Mod: +${entity.initiative_modifier}, Roll: ${entity.initiative_roll}`}>
+                            {entity.initiative_total}
+                          </span>
+                        )}
+                        {!entity.is_player ? (
+                          <span className="initiative-toughness">
+                            {entity.toughness_current}/{entity.toughness_max}
+                          </span>
+                        ) : (
+                          <span className="initiative-toughness">Player</span>
+                        )}
+                      </div>
                     </button>
 
                     <div className="initiative-order-tools">
@@ -2068,15 +2179,21 @@ function App() {
         <div className="save-list">
           {saves.length ? (
             saves.map((save) => (
-              <button
-                className="save-row"
-                key={save.filename}
-                onClick={() => handleLoadSubmit(save.filename)}
-                disabled={busy}
-              >
-                <span>{save.label}</span>
-                <span>{save.savedAt || save.filename}</span>
-              </button>
+              <div className="save-row" key={save.filename}>
+                <button className="save-load-button" onClick={() => handleLoadSubmit(save.filename)} disabled={busy}>
+                  <span>{save.label}</span>
+                  <span>{save.savedAt || save.filename}</span>
+                </button>
+                <button
+                  className="save-delete-button"
+                  type="button"
+                  aria-label={`Delete save ${save.label}`}
+                  onClick={() => handleDeleteSave(save.filename)}
+                  disabled={busy}
+                >
+                  <TrashIcon />
+                </button>
+              </div>
             ))
           ) : (
             <div className="subtle-copy">No manual saves found for this workspace.</div>
@@ -2160,6 +2277,113 @@ function App() {
             </button>
             <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
               Cancel
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "initiative"}
+        title={
+          !snapshot?.encounterStarted
+            ? "Roll Initiative — Before Encounter"
+            : snapshot?.pendingNewRound
+              ? `Roll Initiative — Round ${initiativeTargetRound ?? ""}`
+              : "Roll Initiative"
+        }
+        onClose={closeModal}
+        closeOnOutsideClick={false}
+        size="wide"
+      >
+        <div className="panel-body modal-form">
+          {[
+            { label: "All enemies:", filter: (e) => !e.is_player },
+            { label: "All players:", filter: (e) => e.is_player },
+          ].map(({ label, filter }) => (
+            <div className="initiative-modal-bulk" key={label}>
+              <span className="initiative-bulk-label">{label}</span>
+              {[
+                { mode: "normal", tip: null },
+                { mode: "advantage", tip: "Rolls d3 + 2× modifier" },
+                { mode: "disadvantage", tip: "Rolls d3 only, modifier ignored" },
+                { mode: "surprised", tip: "Skips first turn this round" },
+              ].map(({ mode, tip }) => (
+                <button
+                  key={mode}
+                  type="button"
+                  title={tip ?? undefined}
+                  className="secondary-button initiative-bulk-btn"
+                  onClick={() => {
+                    const updates = {};
+                    orderedEnemies.filter(filter).forEach((e) => { updates[e.instance_id] = mode; });
+                    setInitiativeModes((prev) => ({ ...prev, ...updates }));
+                  }}
+                >
+                  {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                </button>
+              ))}
+            </div>
+          ))}
+
+          <div className="initiative-modal-grid">
+            <div className="initiative-modal-header">
+              <span>Name</span>
+              <span>Side</span>
+              <span>Mod</span>
+              <span>Roll</span>
+              <span>Mode</span>
+            </div>
+            {orderedEnemies.map((entity) => (
+              <div className="initiative-modal-row" key={entity.instance_id}>
+                <span className="initiative-modal-name">{entity.name}</span>
+                <span>{entity.is_player ? "Player" : "Enemy"}</span>
+                <span>+{entity.initiative_modifier ?? 2}</span>
+                <span className="initiative-modal-total">
+                  {entity.initiative_total != null
+                    ? `${entity.initiative_total} (${entity.initiative_roll})`
+                    : "—"}
+                </span>
+                <div className="initiative-mode-pills">
+                  {[
+                    { mode: "normal", label: "Normal", tip: null },
+                    { mode: "advantage", label: "Advantage", tip: "Rolls d3 + 2× modifier — exceptionally fast or well-prepared" },
+                    { mode: "disadvantage", label: "Disadvantage", tip: "Rolls d3 only, modifier ignored — sluggish or caught off guard" },
+                    { mode: "surprised", label: "Surprised", tip: "Rolls d3 + modifier but skips their first turn this round" },
+                  ].map(({ mode, label, tip }) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      title={tip ?? undefined}
+                      className={`initiative-mode-btn${(initiativeModes[entity.instance_id] ?? "normal") === mode ? " active" : ""}`}
+                      onClick={() => setInitiativeModes((prev) => ({ ...prev, [entity.instance_id]: mode }))}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="modal-actions">
+            <button
+              className={initiativeRolledForTarget ? "secondary-button" : "primary-button"}
+              type="button"
+              onClick={handleRollInitiative}
+              disabled={busy}
+            >
+              {initiativeRolledForTarget ? "Reroll Initiative" : "Roll Initiative"}
+            </button>
+            <button
+              className={initiativeRolledForTarget ? "primary-button" : "secondary-button"}
+              type="button"
+              onClick={handleStartCurrentOrder}
+              disabled={busy}
+            >
+              {!snapshot?.encounterStarted ? "Start Encounter" : "Start Round"}
+            </button>
+            <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
+              Close
             </button>
           </div>
         </div>
@@ -2524,8 +2748,8 @@ function ModalShell({
             {subtitle ? <div className="panel-detail">{subtitle}</div> : null}
           </div>
           {showCloseButton ? (
-            <button className="small-button" onClick={onClose}>
-              Close
+            <button className="modal-close-x" onClick={onClose} aria-label="Close">
+              ×
             </button>
           ) : null}
         </div>

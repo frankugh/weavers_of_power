@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 import heapq
@@ -130,7 +131,7 @@ class BattleSessionContext:
     decks_dir: Optional[Path] = None
     enemies_dir: Optional[Path] = None
     images_dir: Optional[Path] = None
-    save_version: int = 2
+    save_version: int = 3
 
     def __post_init__(self) -> None:
         self.root = Path(self.root)
@@ -215,6 +216,9 @@ class BattleSession:
     combat_log: list[str] = field(default_factory=list)
     movement_state: Optional[dict] = None
     pending_new_round: bool = False
+    encounter_started: bool = False
+    initiative_rolled_round: Optional[int] = None
+    turn_skip_notice: list = field(default_factory=list)
     undo_stack: list[dict] = field(default_factory=list)
     redo_stack: list[dict] = field(default_factory=list)
     _rng: random.Random = field(default_factory=random.Random, repr=False)
@@ -253,6 +257,7 @@ class BattleSession:
         )
 
         for enemy in enemies:
+            self._migrate_template_deck_state(enemy)
             self.state.add_enemy(enemy)
 
         self.order = [instance_id for instance_id in loaded_order if instance_id in self.state.enemies]
@@ -272,6 +277,9 @@ class BattleSession:
         self._load_movement_state(loaded_movement_state)
         ui_payload = payload.get("ui", {}) or {}
         self.pending_new_round = bool(ui_payload.get("pending_new_round", False))
+        self.encounter_started = bool(ui_payload.get("encounter_started", False))
+        self.initiative_rolled_round = ui_payload.get("initiative_rolled_round", None)
+        self.turn_skip_notice = []
         if load_undo_stack:
             self.undo_stack = [dict(entry) for entry in payload.get("undo_stack", [])][-UNDO_LIMIT:]
             self.redo_stack = [dict(entry) for entry in payload.get("redo_stack", [])][-UNDO_LIMIT:]
@@ -290,6 +298,8 @@ class BattleSession:
             active_turn_id=self.active_turn_id,
             turn_in_progress=self.turn_in_progress,
             pending_new_round=self.pending_new_round,
+            encounter_started=self.encounter_started,
+            initiative_rolled_round=self.initiative_rolled_round,
             room={"columns": self.room_columns, "rows": self.room_rows},
             round=self.round,
             combat_log=self.combat_log,
@@ -315,10 +325,20 @@ class BattleSession:
 
     def snapshot(self) -> dict:
         self._ensure_selected()
+        initiative_target_round = (
+            self.round + 1 if self.pending_new_round
+            else 1 if not self.encounter_started
+            else None
+        )
         return {
             "sid": self.sid,
             "round": self.round,
             "pendingNewRound": self.pending_new_round,
+            "encounterStarted": self.encounter_started,
+            "initiativeRolledRound": self.initiative_rolled_round,
+            "initiativeTargetRound": initiative_target_round,
+            "canRollInitiative": not self.encounter_started or self.pending_new_round,
+            "turnSkipNotice": list(self.turn_skip_notice) if self.turn_skip_notice else None,
             "selectedId": self.selected_id,
             "activeTurnId": self.active_turn_id,
             "turnInProgress": self.turn_in_progress,
@@ -346,6 +366,15 @@ class BattleSession:
                 }
             )
         return entries
+
+    def delete_manual(self, filename: str) -> None:
+        path = self._manual_save_path(filename)
+        if not path.exists() or not path.is_file():
+            raise BattleSessionError("Save not found")
+        path.unlink()
+        backup = path.with_suffix(path.suffix + ".bak")
+        if backup.exists() and backup.is_file():
+            backup.unlink()
 
     def select(self, instance_id: str) -> None:
         if instance_id not in self.state.enemies:
@@ -622,15 +651,28 @@ class BattleSession:
         self._add_log(f"Ended turn: {entity.name}")
         self.autosave()
 
+    def _consume_surprised_skip(self, entity: EnemyInstance) -> bool:
+        surprised = entity.statuses.get("surprised")
+        if surprised and int(surprised.get("skipRound", 0)) == self.round:
+            entity.statuses.pop("surprised")
+            self._add_log(f"{entity.name} is surprised and skips round {self.round}.")
+            self.turn_skip_notice.append(entity.name)
+            return True
+        return False
+
     def start_encounter(self) -> None:
         if self.active_turn_id is not None:
             raise BattleSessionError("Encounter already has an active turn.")
 
+        self.turn_skip_notice = []
         for instance_id in self.order:
             entity = self.state.enemies.get(instance_id)
             if not entity or not self._can_take_turn(entity):
                 continue
+            if self._consume_surprised_skip(entity):
+                continue
 
+            self.encounter_started = True
             self.selected_id = entity.instance_id
             self.active_turn_id = entity.instance_id
             self.turn_in_progress = False
@@ -643,9 +685,12 @@ class BattleSession:
             self.autosave()
             return
 
+        self.encounter_started = True
+        self.autosave()
         raise BattleSessionError("No units can start encounter.")
 
     def next_turn(self) -> None:
+        self.turn_skip_notice = []
         current_turn_id = self.active_turn_id if self.active_turn_id in self.order else self.selected_id
 
         if self.active_turn_id is not None:
@@ -676,20 +721,74 @@ class BattleSession:
         self.autosave()
 
     def start_new_round(self) -> None:
+        self.turn_skip_notice = []
         self.pending_new_round = False
         self.round += 1
         self._add_log(f"Round {self.round} begins")
         for instance_id in self.order:
             entity = self.state.enemies.get(instance_id)
-            if entity and self._can_take_turn(entity):
-                self.selected_id = entity.instance_id
-                self.active_turn_id = entity.instance_id
-                self.turn_in_progress = False
-                if not self.is_player(entity):
-                    self._start_turn(entity)
-                self._reset_movement_state(entity.instance_id)
-                self._add_log(f"Active turn: {entity.name}")
-                break
+            if not entity or not self._can_take_turn(entity):
+                continue
+            if self._consume_surprised_skip(entity):
+                continue
+            self.selected_id = entity.instance_id
+            self.active_turn_id = entity.instance_id
+            self.turn_in_progress = False
+            if not self.is_player(entity):
+                self._start_turn(entity)
+            self._reset_movement_state(entity.instance_id)
+            self._add_log(f"Active turn: {entity.name}")
+            break
+        self.autosave()
+
+    def roll_initiative(self, modes: dict) -> None:
+        target_round = (
+            self.round + 1 if self.pending_new_round
+            else 1 if not self.encounter_started
+            else None
+        )
+        if target_round is None:
+            raise BattleSessionError("Cannot roll initiative during an active encounter round.")
+        if not self.order:
+            raise BattleSessionError("No units to roll initiative for.")
+
+        original_order = {iid: i for i, iid in enumerate(self.order)}
+        roll_results: list = []
+
+        for instance_id in self.order:
+            entity = self.state.enemies.get(instance_id)
+            if not entity:
+                continue
+            mode = modes.get(instance_id, "normal")
+            mod = entity.initiative_modifier
+            roll = self._rng.randint(1, 3)
+
+            if mode == "advantage":
+                total = roll + 2 * mod
+            elif mode == "disadvantage":
+                total = roll
+            else:
+                total = roll + mod
+
+            entity.initiative_roll = roll
+            entity.initiative_total = total
+            entity.initiative_mode = mode
+
+            if mode == "surprised":
+                entity.statuses["surprised"] = {"skipRound": target_round}
+            elif "surprised" in entity.statuses and entity.statuses["surprised"].get("skipRound") == target_round:
+                entity.statuses.pop("surprised")
+
+            roll_results.append((instance_id, total, mod))
+
+        self.order = [
+            iid for iid, _, _ in sorted(
+                roll_results,
+                key=lambda x: (-x[1], -x[2], original_order.get(x[0], 9999)),
+            )
+        ]
+        self.initiative_rolled_round = target_round
+        self._add_log(f"Initiative rolled for round {target_round}.")
         self.autosave()
 
     def apply_attack_to_selected(
@@ -808,16 +907,20 @@ class BattleSession:
         return {"filename": filename}
 
     def load_manual(self, filename: str) -> None:
-        path = (self.context.manual_dir / filename).resolve()
-        manual_root = self.context.manual_dir.resolve()
-        if not path.is_relative_to(manual_root):
-            raise BattleSessionError("Invalid save path")
+        path = self._manual_save_path(filename)
         payload = load_save_payload(path)
         if not payload:
             raise BattleSessionError("Could not load save")
         self.load_from_payload(payload, load_undo_stack=False)
         self._add_log(f"Loaded save: {path.name}")
         self.autosave()
+
+    def _manual_save_path(self, filename: str) -> Path:
+        path = (self.context.manual_dir / filename).resolve()
+        manual_root = self.context.manual_dir.resolve()
+        if not path.is_relative_to(manual_root) or path.parent != manual_root:
+            raise BattleSessionError("Invalid save path")
+        return path
 
     def image_url_for(self, entity: EnemyInstance) -> str:
         image = getattr(entity, "image", None) or ""
@@ -1193,6 +1296,58 @@ class BattleSession:
     def _set_visible_draw(entity: EnemyInstance, card_ids: list[str]) -> None:
         entity.visible_draw = list(card_ids)
 
+    def _migrate_template_deck_state(self, entity: EnemyInstance) -> None:
+        template = self.context.enemy_templates.get(getattr(entity, "template_id", ""))
+        if template is None:
+            return
+        core_deck = self.context.decks.get(template.coreDeck)
+        if core_deck is None:
+            return
+
+        expected_core_ids: list[str] = []
+        for card in core_deck.cards:
+            expected_core_ids.extend([card.id] * card.weight)
+        expected_special_counts = Counter()
+        for special in template.specials:
+            expected_special_counts.update({special.id: special.weight})
+
+        expected_ids = set(expected_core_ids) | set(expected_special_counts.keys())
+        deck_state = entity.deck_state
+        saved_cards = list(deck_state.draw_pile) + list(deck_state.discard_pile) + list(deck_state.hand)
+        if saved_cards and all(card_id in expected_ids for card_id in saved_cards):
+            return
+
+        core_pool = list(expected_core_ids)
+        self._rng.shuffle(core_pool)
+        special_remaining = Counter(expected_special_counts)
+
+        def migrate_zone(card_ids: list[str]) -> list[str]:
+            migrated: list[str] = []
+            for card_id in card_ids:
+                if special_remaining.get(card_id, 0) > 0:
+                    migrated.append(card_id)
+                    special_remaining[card_id] -= 1
+                    continue
+                if core_pool:
+                    migrated.append(core_pool.pop(0))
+            return migrated
+
+        new_hand = migrate_zone(list(deck_state.hand))
+        new_discard = migrate_zone(list(deck_state.discard_pile))
+        new_draw = migrate_zone(list(deck_state.draw_pile))
+
+        missing_cards = list(core_pool)
+        for card_id, count in special_remaining.items():
+            missing_cards.extend([card_id] * count)
+        self._rng.shuffle(missing_cards)
+        new_draw.extend(missing_cards)
+
+        deck_state.hand = new_hand
+        deck_state.discard_pile = new_discard
+        deck_state.draw_pile = new_draw
+        if getattr(entity, "visible_draw", []) or new_hand:
+            self._set_visible_draw(entity, new_hand)
+
     def _ensure_selected(self) -> None:
         if self.selected_id and self.selected_id not in self.state.enemies:
             self.selected_id = None
@@ -1218,6 +1373,8 @@ class BattleSession:
             instance_id = self.order[next_index]
             entity = self.state.enemies.get(instance_id)
             if entity and self._can_take_turn(entity):
+                if self._consume_surprised_skip(entity):
+                    continue
                 self.selected_id = instance_id
                 return next_index <= current_index
         self.selected_id = anchor_id if anchor_id in self.state.enemies else self.order[0]

@@ -117,6 +117,7 @@ def load_enemies(enemies_dir: Path, decks: dict[str, Deck], images_dir: Path) ->
 
             draws=int(raw.get("draws", 1)),
             movement=int(raw.get("movement", 0)),
+            initiative_modifier=int(raw.get("initiativeModifier", 2)),
             coreDeck=raw["coreDeck"],
             specials=tuple(_parse_card(c) for c in raw["specials"]),
 

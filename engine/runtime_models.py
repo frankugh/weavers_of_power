@@ -31,6 +31,11 @@ class EnemyInstance:
     power_base: int = 1
     movement: int = 0
 
+    initiative_modifier: int = 2
+    initiative_roll: Optional[int] = None
+    initiative_total: Optional[int] = None
+    initiative_mode: str = "normal"
+
     rolled_loot: dict = field(default_factory=dict)  # later typener; nu simpel
     loot_rolled: bool = False
 

@@ -165,6 +165,7 @@ class EnemyTemplate:
     specials: tuple[Card, ...]
 
     loot: tuple[LootEntry, ...]
+    initiative_modifier: int = 2
 
     def validate(self, path: str, available_decks: set[str]) -> list[str]:
         errs: list[str] = []
@@ -183,6 +184,9 @@ class EnemyTemplate:
 
         if self.movement <= 0:
             errs.append(f"{path}.movement must be > 0 (got {self.movement})")
+
+        if self.initiative_modifier < 0:
+            errs.append(f"{path}.initiative_modifier must be >= 0 (got {self.initiative_modifier})")
 
         if self.coreDeck not in available_decks:
             errs.append(f"{path}.coreDeck '{self.coreDeck}' not found among loaded decks")

@@ -11,6 +11,7 @@
   "coreDeck": "control",
   "movement": 5,
   "draws": 1,
+  "initiativeModifier": 3,
 
   "specials": [
     {

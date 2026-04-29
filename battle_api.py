@@ -64,6 +64,10 @@ class AddEnemyRequest(BaseModel):
     custom: Optional[CustomEnemyRequest] = None
 
 
+class RollInitiativeRequest(BaseModel):
+    modes: dict[str, str] = Field(default_factory=dict)
+
+
 class AttackRequest(BaseModel):
     damage: int = Field(default=0, ge=0)
     modifiers: list[AttackMod] = Field(default_factory=list)
@@ -220,6 +224,10 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def start_round(sid: str):
         return run_mutation(sid, lambda session: session.start_new_round())
 
+    @api_app.post("/api/battle/sessions/{sid}/initiative/roll")
+    def roll_initiative(sid: str, request: RollInitiativeRequest):
+        return run_mutation(sid, lambda session: session.roll_initiative(request.modes))
+
     @api_app.post("/api/battle/sessions/{sid}/undo")
     def undo(sid: str):
         return run_mutation(sid, lambda session: session.undo(), undoable=False)
@@ -266,6 +274,15 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.post("/api/battle/sessions/{sid}/saves")
     def create_manual_save(sid: str, request: SaveRequest):
         return run_mutation(sid, lambda session: session.save_manual(request.name), undoable=False)
+
+    @api_app.delete("/api/battle/sessions/{sid}/saves/{filename}")
+    def delete_manual_save(sid: str, filename: str):
+        session = load_session_or_400(sid)
+        try:
+            session.delete_manual(filename)
+        except BattleSessionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"saves": session.list_manual_saves()}
 
     @api_app.post("/api/battle/sessions/{sid}/load")
     def load_manual_save(sid: str, request: LoadRequest):

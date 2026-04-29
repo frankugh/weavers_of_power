@@ -253,6 +253,8 @@ button {
 .secondary-button,
 .small-button,
 .save-row,
+.save-load-button,
+.save-delete-button,
 .initiative-row,
 .roster-card {
   border: 1px solid transparent;
@@ -308,6 +310,29 @@ button {
   color: #f0b1a6;
 }
 
+.modal-close-x {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.modal-close-x:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
 .menu-button:hover,
 .menu-link:hover,
 .primary-button:hover,
@@ -321,8 +346,7 @@ button {
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.24);
 }
 
-button:disabled,
-.save-row:disabled {
+button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
   transform: none;
@@ -1637,10 +1661,67 @@ button.draw-card:hover {
 .save-row {
   width: 100%;
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 8px;
   text-align: left;
   color: var(--text);
+}
+
+.save-load-button {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.save-load-button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.save-load-button span:last-child {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.save-delete-button {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid rgba(209, 106, 87, 0.34);
+  background: rgba(14, 10, 7, 0.58);
+  color: #f0b1a6;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.save-delete-button svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.save-delete-button:hover:not(:disabled) {
+  border-color: rgba(209, 106, 87, 0.58);
+  color: #ffd1c9;
 }
 
 .action-bar {
@@ -2460,4 +2541,130 @@ button.draw-card:hover {
   .draw-reveal-panel-settle {
     transform: translateX(-50%);
   }
+}
+
+/* Initiative modal */
+.panel-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.panel-header-button {
+  font-size: 0.72rem;
+  padding: 2px 10px;
+  min-height: 24px;
+  line-height: 1;
+}
+
+.initiative-right-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.initiative-roll-badge {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent-bright);
+  background: rgba(240, 207, 133, 0.12);
+  border: 1px solid rgba(240, 207, 133, 0.22);
+  border-radius: 8px;
+  padding: 1px 6px;
+  line-height: 1.3;
+}
+
+.initiative-modal-bulk {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+
+.initiative-bulk-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+  min-width: 80px;
+}
+
+.initiative-bulk-btn {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  min-height: 22px;
+}
+
+.initiative-modal-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.initiative-modal-header {
+  display: grid;
+  grid-template-columns: 1fr 80px 50px 80px 1fr;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 0.68rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--line);
+}
+
+.initiative-modal-row {
+  display: grid;
+  grid-template-columns: 1fr 80px 50px 80px 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 0.82rem;
+  border-bottom: 1px solid rgba(221, 185, 121, 0.07);
+}
+
+.initiative-modal-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.initiative-modal-total {
+  color: var(--accent-bright);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.initiative-mode-pills {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.initiative-mode-btn {
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.68rem;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.initiative-mode-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.initiative-mode-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a0f00;
+  font-weight: 600;
 }

@@ -74,6 +74,7 @@ def spawn_enemy(
 
         power_base=template.draws,
         movement=template.movement,
+        initiative_modifier=template.initiative_modifier,
 
         deck_state=DeckState(draw_pile=card_ids, discard_pile=[], hand=[]),
         statuses={},

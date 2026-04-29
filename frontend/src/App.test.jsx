@@ -290,6 +290,45 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Redo" })).toBeDisabled();
   });
 
+  it("deletes manual saves from the load modal", async () => {
+    const user = userEvent.setup();
+    const save = {
+      filename: "old_load_20260101_162506.json",
+      label: "old_load_20260101_162506",
+      savedAt: "2026-01-01T16:25:06+00:00",
+    };
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/saves" && !requestOptions?.method) {
+          return jsonResponse({ saves: [save] });
+        }
+        if (
+          url === `/api/battle/sessions/sid-123/saves/${encodeURIComponent(save.filename)}`
+          && requestOptions?.method === "DELETE"
+        ) {
+          return jsonResponse({ saves: [] });
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Load" }));
+    expect(await screen.findByText(save.label)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: `Delete save ${save.label}` }));
+
+    await waitFor(() => {
+      expect(screen.getByText("No manual saves found for this workspace.")).toBeInTheDocument();
+    });
+    expect(await screen.findByText("Manual save deleted")).toBeInTheDocument();
+    expect(global.fetch).toHaveBeenCalledWith(
+      `/api/battle/sessions/sid-123/saves/${encodeURIComponent(save.filename)}`,
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
   it("starts a new session directly when the current session has no history", async () => {
     const user = userEvent.setup();
     const newSnapshot = buildSnapshot({

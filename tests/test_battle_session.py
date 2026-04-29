@@ -525,6 +525,72 @@ class BattleSessionTests(unittest.TestCase):
         self.assertIn("burn", restored.statuses)
         self.assertIn(f"Loaded save: {save_info['filename']}", reloaded.combat_log)
 
+    def test_delete_manual_save_removes_file_and_backup(self) -> None:
+        session = self.context.create_session("manual-delete")
+        save_info = session.save_manual("delete-me")
+        path = self.context.manual_dir / save_info["filename"]
+        backup = path.with_suffix(path.suffix + ".bak")
+        backup.write_text("{}", encoding="utf-8")
+
+        session.delete_manual(save_info["filename"])
+
+        self.assertFalse(path.exists())
+        self.assertFalse(backup.exists())
+        self.assertEqual(session.list_manual_saves(), [])
+
+    def test_loaded_template_enemy_deck_migrates_to_current_template_core_deck(self) -> None:
+        sid = "legacy-goblin-deck"
+        legacy_payload = {
+            "version": 3,
+            "app": "weavers_of_power_battle_sim",
+            "saved_at": "2026-01-01T00:00:00+00:00",
+            "sid": sid,
+            "ui": {
+                "selected_id": "goblin-1",
+                "active_turn_id": "goblin-1",
+                "turn_in_progress": True,
+            },
+            "order": ["goblin-1"],
+            "enemies": [
+                {
+                    "instance_id": "goblin-1",
+                    "template_id": "goblin",
+                    "name": "Goblin 1",
+                    "image": "goblin.png",
+                    "toughness_current": 5,
+                    "toughness_max": 5,
+                    "armor_current": 1,
+                    "armor_max": 1,
+                    "magic_armor_current": 0,
+                    "magic_armor_max": 0,
+                    "guard_base": 0,
+                    "guard_current": 0,
+                    "power_base": 1,
+                    "movement": 5,
+                    "deck_state": {
+                        "draw_pile": ["basic_a2", "goblin_s1", "basic_a3", "basic_a4g1"],
+                        "discard_pile": ["basic_a5"],
+                        "hand": ["basic_a4"],
+                    },
+                    "visible_draw": ["basic_a4"],
+                    "statuses": {},
+                }
+            ],
+        }
+        save_current(self.context.current_path(sid), legacy_payload)
+
+        session = self.context.load_session(sid)
+        entity = session.state.enemies["goblin-1"]
+        all_card_ids = entity.deck_state.draw_pile + entity.deck_state.discard_pile + entity.deck_state.hand
+        control_ids = {card.id for card in self.context.decks["control"].cards}
+        goblin_special_ids = {card.id for card in self.context.enemy_templates["goblin"].specials}
+
+        self.assertTrue(all(card_id in control_ids | goblin_special_ids for card_id in all_card_ids))
+        self.assertFalse(any(card_id.startswith("basic_") for card_id in all_card_ids))
+        self.assertEqual(len([card_id for card_id in all_card_ids if card_id in control_ids]), len(control_ids))
+        self.assertEqual(goblin_special_ids, {card_id for card_id in all_card_ids if card_id in goblin_special_ids})
+        self.assertEqual(entity.deck_state.hand, session.visible_draw_for(entity))
+
     def test_legacy_save_without_round_and_log_defaults_cleanly(self) -> None:
         sid = "legacy-payload"
         legacy_payload = {
@@ -624,6 +690,139 @@ class BattleSessionTests(unittest.TestCase):
         names = {p.name for p in players}
         self.assertEqual(len(names), 2)
         self.assertTrue(all("Player" in n for n in names))
+
+    def test_roll_initiative_sorts_order_by_total(self) -> None:
+        session = self.context.create_session("init-sort")
+        session.add_enemy_from_template("goblin")
+        low_id = session.selected_id
+        session.add_enemy_from_template("goblin")
+        high_id = session.selected_id
+
+        # Force deterministic rolls via seeded rng
+        session._rng.seed(42)
+        low_entity = session.state.enemies[low_id]
+        high_entity = session.state.enemies[high_id]
+
+        # Set modifiers so the outcome is predictable
+        low_entity.initiative_modifier = 0
+        high_entity.initiative_modifier = 10
+
+        session.roll_initiative({})
+        # high modifier should sort first
+        self.assertEqual(session.order[0], high_id)
+        self.assertEqual(session.initiative_rolled_round, 1)
+
+    def test_roll_initiative_formulas(self) -> None:
+        from battle_session import BattleSessionError
+
+        session = self.context.create_session("init-formulas")
+        session.add_enemy_from_template("goblin")
+        eid = session.selected_id
+        entity = session.state.enemies[eid]
+        entity.initiative_modifier = 3
+
+        # normal: roll + mod
+        session._rng.seed(0)
+        session.roll_initiative({eid: "normal"})
+        self.assertEqual(entity.initiative_total, entity.initiative_roll + 3)
+
+        # advantage: roll + 2*mod
+        session._rng.seed(0)
+        session.roll_initiative({eid: "advantage"})
+        self.assertEqual(entity.initiative_total, entity.initiative_roll + 6)
+
+        # disadvantage: roll only
+        session._rng.seed(0)
+        session.roll_initiative({eid: "disadvantage"})
+        self.assertEqual(entity.initiative_total, entity.initiative_roll)
+
+        # surprised: roll + mod AND status set
+        session._rng.seed(0)
+        session.roll_initiative({eid: "surprised"})
+        self.assertEqual(entity.initiative_total, entity.initiative_roll + 3)
+        self.assertIn("surprised", entity.statuses)
+        self.assertEqual(entity.statuses["surprised"]["skipRound"], 1)
+
+    def test_roll_initiative_blocked_during_active_encounter(self) -> None:
+        from battle_session import BattleSessionError
+
+        session = self.context.create_session("init-block")
+        session.add_enemy_from_template("goblin")
+        session.start_encounter()
+
+        # encounter is active and not pending_new_round — should raise
+        with self.assertRaises(BattleSessionError):
+            session.roll_initiative({})
+
+    def test_roll_initiative_allowed_before_encounter(self) -> None:
+        session = self.context.create_session("init-pre")
+        session.add_enemy_from_template("goblin")
+
+        session.roll_initiative({})
+
+        self.assertEqual(session.initiative_rolled_round, 1)
+
+    def test_roll_initiative_allowed_during_pending_new_round(self) -> None:
+        session = self.context.create_session("init-pending")
+        session.add_enemy_from_template("goblin")
+        first_id = session.selected_id
+        session.add_enemy_from_template("goblin")
+
+        session.select(first_id)
+        session.next_turn()
+        session.next_turn()
+        self.assertTrue(session.pending_new_round)
+
+        session.roll_initiative({})
+        self.assertEqual(session.initiative_rolled_round, 2)
+
+    def test_surprised_unit_skips_turn_and_status_removed(self) -> None:
+        session = self.context.create_session("init-surprised")
+        session.add_enemy_from_template("goblin")
+        surprised_id = session.selected_id
+        session.add_enemy_from_template("goblin")
+
+        entity = session.state.enemies[surprised_id]
+        session.roll_initiative({surprised_id: "surprised"})
+        self.assertIn("surprised", entity.statuses)
+
+        # Start encounter — if surprised_id is first, it should be skipped
+        # We ensure surprised_id is first in order
+        session.order = [surprised_id] + [iid for iid in session.order if iid != surprised_id]
+        session.start_encounter()
+
+        # surprised unit should have been skipped (status removed)
+        self.assertNotIn("surprised", entity.statuses)
+        self.assertNotEqual(session.active_turn_id, surprised_id)
+
+    def test_turn_skip_notice_is_transient(self) -> None:
+        session = self.context.create_session("init-transient")
+        session.add_enemy_from_template("goblin")
+        surprised_id = session.selected_id
+        session.add_enemy_from_template("goblin")
+
+        entity = session.state.enemies[surprised_id]
+        session.roll_initiative({surprised_id: "surprised"})
+        session.order = [surprised_id] + [iid for iid in session.order if iid != surprised_id]
+        session.start_encounter()
+
+        # notice populated in this session
+        self.assertGreater(len(session.turn_skip_notice), 0)
+
+        # after reload it's gone
+        reloaded = self.context.load_session("init-transient")
+        self.assertEqual(reloaded.turn_skip_notice, [])
+
+    def test_encounter_started_flag_set_on_start_encounter(self) -> None:
+        session = self.context.create_session("init-flag")
+        session.add_enemy_from_template("goblin")
+
+        self.assertFalse(session.encounter_started)
+        session.start_encounter()
+        self.assertTrue(session.encounter_started)
+
+        reloaded = self.context.load_session("init-flag")
+        self.assertTrue(reloaded.encounter_started)
 
 
 if __name__ == "__main__":

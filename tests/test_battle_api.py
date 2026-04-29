@@ -148,6 +148,21 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(load_response.status_code, 200)
         self.assertEqual(len(load_response.json()["order"]), 1)
 
+    def test_manual_save_delete_endpoint(self) -> None:
+        snapshot = self.client.post("/api/battle/sessions").json()
+        sid = snapshot["sid"]
+
+        save_response = self.client.post(f"/api/battle/sessions/{sid}/saves", json={"name": "old-load"})
+        self.assertEqual(save_response.status_code, 200)
+        saves = self.client.get(f"/api/battle/sessions/{sid}/saves").json()["saves"]
+        self.assertEqual(len(saves), 1)
+
+        delete_response = self.client.delete(f"/api/battle/sessions/{sid}/saves/{saves[0]['filename']}")
+
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertEqual(delete_response.json()["saves"], [])
+        self.assertEqual(self.client.get(f"/api/battle/sessions/{sid}/saves").json()["saves"], [])
+
     def test_new_taxonomy_templates_can_be_added(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
 
@@ -495,6 +510,31 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(default_response.status_code, 200)
         default_player = next(e for e in default_response.json()["enemies"] if "Player" in e["name"])
         self.assertIn("Player", default_player["name"])
+
+    def test_roll_initiative_endpoint(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"})
+        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"})
+
+        response = self.client.post(f"/api/battle/sessions/{sid}/initiative/roll", json={"modes": {}})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["initiativeRolledRound"], 1)
+
+        # All enemies should have initiative_total set
+        for enemy in payload["enemies"]:
+            self.assertIsNotNone(enemy["initiative_total"])
+            self.assertIsNotNone(enemy["initiative_roll"])
+
+    def test_roll_initiative_blocked_when_encounter_active(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"})
+        self.client.post(f"/api/battle/sessions/{sid}/encounter/start")
+
+        response = self.client.post(f"/api/battle/sessions/{sid}/initiative/roll", json={"modes": {}})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Cannot roll initiative", response.json()["detail"])
 
 
 if __name__ == "__main__":
