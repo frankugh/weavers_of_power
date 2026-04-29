@@ -13,8 +13,8 @@ class CombatLog:
     action: str
 
     # before/after snapshots (minimal but useful)
-    hp_before: int
-    hp_after: int
+    toughness_before: int
+    toughness_after: int
 
     guard_before: int
     guard_after: int
@@ -53,7 +53,7 @@ def apply_attack(enemy: EnemyInstance, damage: int, mods: Optional[Iterable[Atta
 
     mods_set = set(mods or [])
 
-    hp_b = enemy.hp_current
+    toughness_b = enemy.toughness_current
     guard_b = enemy.guard_current
     armor_b = enemy.armor_current
     magic_b = enemy.magic_armor_current
@@ -98,11 +98,11 @@ def apply_attack(enemy: EnemyInstance, damage: int, mods: Optional[Iterable[Atta
     guard_used = min(guard_eff, damage_after_fixed)
     dmg_to_hp = damage_after_fixed - guard_used
 
-    hp_after = max(0, hp_b - dmg_to_hp)
+    toughness_after = max(0, toughness_b - dmg_to_hp)
     guard_after = max(0, guard_b - guard_used)
 
     # 4) apply
-    enemy.hp_current = hp_after
+    enemy.toughness_current = toughness_after
     enemy.guard_current = guard_after
     enemy.armor_current = armor_now  # includes sunder effect
     # magic armor unchanged by attacks for now
@@ -117,8 +117,8 @@ def apply_attack(enemy: EnemyInstance, damage: int, mods: Optional[Iterable[Atta
     return CombatLog(
         instance_id=enemy.instance_id,
         action="attack",
-        hp_before=hp_b,
-        hp_after=enemy.hp_current,
+        toughness_before=toughness_b,
+        toughness_after=enemy.toughness_current,
 
         guard_before=guard_b,
         guard_after=enemy.guard_current,
@@ -142,23 +142,23 @@ def apply_attack(enemy: EnemyInstance, damage: int, mods: Optional[Iterable[Atta
 def apply_heal(
     enemy: EnemyInstance,
     *,
-    hp: int = 0,
+    toughness: int = 0,
     armor: int = 0,
     magic_armor: int = 0,
     guard: int = 0,
 ) -> CombatLog:
     """
-    Restore hp/armor/magic_armor/guard (clamped to max).
+    Restore toughness/armor/magic_armor/guard (clamped to max).
     """
-    if hp < 0 or armor < 0 or magic_armor < 0 or guard < 0:
+    if toughness < 0 or armor < 0 or magic_armor < 0 or guard < 0:
         raise ValueError("heal values must be >= 0")
 
-    hp_b = enemy.hp_current
+    toughness_b = enemy.toughness_current
     guard_b = enemy.guard_current
     armor_b = enemy.armor_current
     magic_b = enemy.magic_armor_current
 
-    enemy.hp_current = min(enemy.hp_max, enemy.hp_current + hp)
+    enemy.toughness_current = min(enemy.toughness_max, enemy.toughness_current + toughness)
     enemy.armor_current = min(enemy.armor_max, enemy.armor_current + armor)
     enemy.magic_armor_current = min(enemy.magic_armor_max, enemy.magic_armor_current + magic_armor)
     enemy.guard_current = min(9999, enemy.guard_current + guard)  # no max defined yet; UI can show it
@@ -166,8 +166,8 @@ def apply_heal(
     return CombatLog(
         instance_id=enemy.instance_id,
         action="heal",
-        hp_before=hp_b,
-        hp_after=enemy.hp_current,
+        toughness_before=toughness_b,
+        toughness_after=enemy.toughness_current,
 
         guard_before=guard_b,
         guard_after=enemy.guard_current,

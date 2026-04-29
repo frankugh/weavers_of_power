@@ -4,8 +4,8 @@
   "image": "Realms_and_order/guard.png",
 
   "hp": { "min": 9, "max": 12 },
-  "baseGuard": { "min": 0, "max": 0 },
-  "armor": { "min": 2, "max": 2 },
+  "baseGuard": { "min": 1, "max": 1 },
+  "armor": { "min": 1, "max": 1 },
   "magicArmor": { "min": 0, "max": 0 },
 
   "coreDeck": "defensive",
@@ -17,23 +17,22 @@
       "id": "guard_s1",
       "title": "Shield Bash",
       "effects": [
-        { "type": "attack", "amount": 3, "modifiers": ["push 5ft"] },
-        { "type": "taunt" }
+        { "type": "attack", "amount": 3, "modifiers": ["push 5ft"] }
       ]
     },
     {
       "id": "guard_s2",
       "title": "Hold the Line",
       "effects": [
-        { "type": "attack", "amount": 3 },
-        { "type": "guard", "amount": 4 }
+        { "type": "attack", "amount": 2 },
+        { "type": "guard", "amount": 3 }
       ]
     },
     {
       "id": "guard_s3",
       "title": "Intercept",
       "effects": [
-        { "type": "guard", "amount": 3 },
+        { "type": "attack", "amount": 3 },
         { "type": "taunt" }
       ]
     }

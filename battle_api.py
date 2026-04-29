@@ -42,20 +42,20 @@ class MoveRequest(PositionRequest):
 
 class CustomEnemyRequest(BaseModel):
     name: str = "Custom"
-    hp: int = Field(default=10, ge=1)
+    toughness: int = Field(default=10, ge=1)
     armor: int = Field(default=0, ge=0)
     magicArmor: int = Field(default=0, ge=0)
-    draws: int = Field(default=1, ge=0)
+    power: int = Field(default=1, ge=0)
     movement: int = Field(default=6, ge=0)
     coreDeckId: str
 
 
 class AddPlayerRequest(BaseModel):
     name: str = ""
-    hp: int = Field(default=0, ge=0)
+    toughness: int = Field(default=3, ge=0)
     armor: int = Field(default=0, ge=0)
     magicArmor: int = Field(default=0, ge=0)
-    draws: int = Field(default=0, ge=0)
+    power: int = Field(default=0, ge=0)
     movement: int = Field(default=6, ge=0)
 
 
@@ -74,7 +74,7 @@ class AttackRequest(BaseModel):
 
 
 class HealRequest(BaseModel):
-    hp: int = Field(default=0, ge=0)
+    toughness: int = Field(default=0, ge=0)
     armor: int = Field(default=0, ge=0)
     magicArmor: int = Field(default=0, ge=0)
     guard: int = Field(default=0, ge=0)
@@ -148,10 +148,10 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
             if request.custom is not None:
                 session.add_custom_enemy(
                     name=request.custom.name,
-                    hp=request.custom.hp,
+                    toughness=request.custom.toughness,
                     armor=request.custom.armor,
                     magic_armor=request.custom.magicArmor,
-                    draws=request.custom.draws,
+                    power=request.custom.power,
                     movement=request.custom.movement,
                     core_deck_id=request.custom.coreDeckId,
                 )
@@ -169,10 +169,10 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
             sid,
             lambda session: session.add_player(
                 name=request.name,
-                hp=request.hp,
+                toughness=request.toughness,
                 armor=request.armor,
                 magic_armor=request.magicArmor,
-                draws=request.draws,
+                power=request.power,
                 movement=request.movement,
             ),
         )
@@ -247,7 +247,7 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
         return run_mutation(
             sid,
             lambda session: session.apply_heal_to_selected(
-                hp=request.hp,
+                toughness=request.toughness,
                 armor=request.armor,
                 magic_armor=request.magicArmor,
                 guard=request.guard,

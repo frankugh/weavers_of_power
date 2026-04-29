@@ -15,8 +15,8 @@ class EnemyInstance:
     name: str
     image: Optional[str]
 
-    hp_current: int
-    hp_max: int
+    toughness_current: int
+    toughness_max: int
 
     armor_current: int
     armor_max: int
@@ -28,7 +28,7 @@ class EnemyInstance:
     guard_current: int = 0
 
 
-    draws_base: int = 1
+    power_base: int = 1
     movement: int = 0
 
     rolled_loot: dict = field(default_factory=dict)  # later typener; nu simpel

@@ -8,8 +8,8 @@ from engine.runtime_models import EnemyInstance
 class TurnHookLog:
     instance_id: str
     phase: str  # "start" | "end"
-    hp_before: int
-    hp_after: int
+    toughness_before: int
+    toughness_after: int
     guard_before: int
     guard_after: int
     removed_statuses: tuple[str, ...] = ()
@@ -25,7 +25,7 @@ def _get_stacks(statuses: dict, key: str) -> int:
 
 
 def on_turn_start(enemy: EnemyInstance) -> TurnHookLog:
-    hp_b = enemy.hp_current
+    toughness_b = enemy.toughness_current
     guard_b = enemy.guard_current
 
     # 1) reset guard
@@ -37,13 +37,13 @@ def on_turn_start(enemy: EnemyInstance) -> TurnHookLog:
     dot = max(0, burn) + max(0, poison)
 
     if dot > 0:
-        enemy.hp_current = max(0, enemy.hp_current - dot)
+        enemy.toughness_current = max(0, enemy.toughness_current - dot)
 
     return TurnHookLog(
         instance_id=enemy.instance_id,
         phase="start",
-        hp_before=hp_b,
-        hp_after=enemy.hp_current,
+        toughness_before=toughness_b,
+        toughness_after=enemy.toughness_current,
         guard_before=guard_b,
         guard_after=enemy.guard_current,
         dot_damage=dot,
@@ -51,7 +51,7 @@ def on_turn_start(enemy: EnemyInstance) -> TurnHookLog:
 
 
 def on_turn_end(enemy: EnemyInstance) -> TurnHookLog:
-    hp_b = enemy.hp_current
+    toughness_b = enemy.toughness_current
     guard_b = enemy.guard_current
 
     removed: list[str] = []
@@ -63,8 +63,8 @@ def on_turn_end(enemy: EnemyInstance) -> TurnHookLog:
     return TurnHookLog(
         instance_id=enemy.instance_id,
         phase="end",
-        hp_before=hp_b,
-        hp_after=enemy.hp_current,
+        toughness_before=toughness_b,
+        toughness_after=enemy.toughness_current,
         guard_before=guard_b,
         guard_after=enemy.guard_current,
         removed_statuses=tuple(removed),

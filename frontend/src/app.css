@@ -1422,8 +1422,8 @@ button.draw-card:hover {
   text-overflow: ellipsis;
 }
 
-.initiative-hp,
-.roster-hp {
+.initiative-toughness,
+.roster-toughness {
   color: var(--muted);
   font-size: 0.72rem;
 }
@@ -1496,7 +1496,7 @@ button.draw-card:hover {
   color: var(--text);
 }
 
-.unit-stat-hp strong {
+.unit-stat-toughness strong {
   color: var(--accent-bright);
 }
 
@@ -1561,7 +1561,7 @@ button.draw-card:hover {
   color: var(--text);
 }
 
-.selected-stat-hp strong {
+.selected-stat-toughness strong {
   color: var(--accent-bright);
 }
 

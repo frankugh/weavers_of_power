@@ -218,16 +218,16 @@ class BattleApiTests(unittest.TestCase):
         attacked = next(
             enemy for enemy in attack_response.json()["enemies"] if enemy["instance_id"] == attack_response.json()["selectedId"]
         )
-        self.assertLessEqual(attacked["hp_current"], before["hp_current"])
+        self.assertLessEqual(attacked["toughness_current"], before["toughness_current"])
         self.assertIn("burn", attacked["statuses"])
 
         heal_response = self.client.post(
             f"/api/battle/sessions/{sid}/heal",
-            json={"hp": 1, "armor": 0, "magicArmor": 0, "guard": 0},
+            json={"toughness": 1, "armor": 0, "magicArmor": 0, "guard": 0},
         )
         self.assertEqual(heal_response.status_code, 200)
         healed = next(enemy for enemy in heal_response.json()["enemies"] if enemy["instance_id"] == enemy_snapshot["selectedId"])
-        self.assertGreaterEqual(healed["hp_current"], attacked["hp_current"])
+        self.assertGreaterEqual(healed["toughness_current"], attacked["toughness_current"])
 
     def test_undo_restores_previous_mutation_state(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
@@ -246,7 +246,7 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(undo_response.status_code, 200)
         self.assertTrue(undo_response.json()["canRedo"])
         restored = next(enemy for enemy in undo_response.json()["enemies"] if enemy["instance_id"] == entity_id)
-        self.assertEqual(restored["hp_current"], before["hp_current"])
+        self.assertEqual(restored["toughness_current"], before["toughness_current"])
         self.assertNotIn("burn", restored["statuses"])
         self.assertEqual(undo_response.json()["combatLog"], enemy_snapshot["combatLog"])
 
@@ -254,7 +254,7 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(redo_response.status_code, 200)
         redone = next(enemy for enemy in redo_response.json()["enemies"] if enemy["instance_id"] == entity_id)
         attacked = next(enemy for enemy in attack_response.json()["enemies"] if enemy["instance_id"] == entity_id)
-        self.assertEqual(redone["hp_current"], attacked["hp_current"])
+        self.assertEqual(redone["toughness_current"], attacked["toughness_current"])
         self.assertIn("burn", redone["statuses"])
         self.assertEqual(redo_response.json()["combatLog"], attack_response.json()["combatLog"])
         self.assertFalse(redo_response.json()["canRedo"])
@@ -276,7 +276,7 @@ class BattleApiTests(unittest.TestCase):
         redo_response = self.client.post(f"/api/battle/sessions/{sid}/redo").json()
         redone = next(enemy for enemy in redo_response["enemies"] if enemy["instance_id"] == entity_id)
         attacked = next(enemy for enemy in attacked_response["enemies"] if enemy["instance_id"] == entity_id)
-        self.assertEqual(redone["hp_current"], attacked["hp_current"])
+        self.assertEqual(redone["toughness_current"], attacked["toughness_current"])
         self.assertEqual(redo_response["redoDepth"], 0)
 
         self.client.post(f"/api/battle/sessions/{sid}/undo")
@@ -294,7 +294,7 @@ class BattleApiTests(unittest.TestCase):
         ).json()
         healed_response = self.client.post(
             f"/api/battle/sessions/{sid}/heal",
-            json={"hp": 1, "armor": 0, "magicArmor": 0, "guard": 0},
+            json={"toughness": 1, "armor": 0, "magicArmor": 0, "guard": 0},
         ).json()
 
         self.assertEqual(healed_response["undoDepth"], 3)
@@ -305,13 +305,13 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(undo_heal["undoDepth"], 2)
         after_undo_heal = next(enemy for enemy in undo_heal["enemies"] if enemy["instance_id"] == entity_id)
         attacked_enemy = next(enemy for enemy in attacked_response["enemies"] if enemy["instance_id"] == entity_id)
-        self.assertEqual(after_undo_heal["hp_current"], attacked_enemy["hp_current"])
+        self.assertEqual(after_undo_heal["toughness_current"], attacked_enemy["toughness_current"])
 
         undo_attack = self.client.post(f"/api/battle/sessions/{sid}/undo").json()
         self.assertEqual(undo_attack["undoDepth"], 1)
         after_undo_attack = next(enemy for enemy in undo_attack["enemies"] if enemy["instance_id"] == entity_id)
         added_enemy = next(enemy for enemy in add_response["enemies"] if enemy["instance_id"] == entity_id)
-        self.assertEqual(after_undo_attack["hp_current"], added_enemy["hp_current"])
+        self.assertEqual(after_undo_attack["toughness_current"], added_enemy["toughness_current"])
         self.assertNotIn("burn", after_undo_attack["statuses"])
 
     def test_select_is_not_undoable_and_empty_undo_reports_error(self) -> None:
@@ -372,12 +372,12 @@ class BattleApiTests(unittest.TestCase):
 
         player_response = self.client.post(
             f"/api/battle/sessions/{sid}/players",
-            json={"name": "Aldric", "hp": 20, "armor": 2, "magicArmor": 0, "draws": 1, "movement": 5},
+            json={"name": "Aldric", "toughness": 20, "armor": 2, "magicArmor": 0, "power": 1, "movement": 5},
         )
         self.assertEqual(player_response.status_code, 200)
         player = next(e for e in player_response.json()["enemies"] if e["template_id"] == "player")
         self.assertEqual(player["name"], "Aldric")
-        self.assertEqual(player["hp_max"], 20)
+        self.assertEqual(player["toughness_max"], 20)
         self.assertEqual(player["armor_max"], 2)
         self.assertEqual(player["movement"], 5)
 
@@ -386,10 +386,10 @@ class BattleApiTests(unittest.TestCase):
             json={
                 "custom": {
                     "name": "Shade",
-                    "hp": 7,
+                    "toughness": 7,
                     "armor": 1,
                     "magicArmor": 0,
-                    "draws": 2,
+                    "power": 2,
                     "movement": 4,
                     "coreDeckId": "basic",
                 }
@@ -480,12 +480,12 @@ class BattleApiTests(unittest.TestCase):
 
         response = self.client.post(
             f"/api/battle/sessions/{sid}/players",
-            json={"name": "Aldric", "hp": 15, "armor": 2, "magicArmor": 1, "draws": 0, "movement": 6},
+            json={"name": "Aldric", "toughness": 15, "armor": 2, "magicArmor": 1, "power": 0, "movement": 6},
         )
         self.assertEqual(response.status_code, 200)
         player = next(e for e in response.json()["enemies"] if e["template_id"] == "player")
         self.assertEqual(player["name"], "Aldric")
-        self.assertEqual(player["hp_max"], 15)
+        self.assertEqual(player["toughness_max"], 15)
         self.assertEqual(player["armor_max"], 2)
         self.assertEqual(player["magic_armor_max"], 1)
         self.assertEqual(player["movement"], 6)

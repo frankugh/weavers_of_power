@@ -119,7 +119,7 @@ class BattleSessionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "occupied"):
             session.set_entity_position(second_id, 0, 0)
-        session.state.enemies[first_id].hp_current = 0
+        session.state.enemies[first_id].toughness_current = 0
         session.set_entity_position(second_id, 0, 0)
         moved_second = session.state.enemies[second_id]
         self.assertEqual((moved_second.grid_x, moved_second.grid_y), (0, 0))
@@ -214,7 +214,7 @@ class BattleSessionTests(unittest.TestCase):
         first_id = session.selected_id
         session.add_enemy_from_template("bandit")
         second_id = session.selected_id
-        session.state.enemies[first_id].hp_current = 0
+        session.state.enemies[first_id].toughness_current = 0
 
         session.start_encounter()
 
@@ -225,7 +225,7 @@ class BattleSessionTests(unittest.TestCase):
 
         all_down = self.context.create_session("start-encounter-all-down")
         all_down.add_enemy_from_template("goblin")
-        all_down.state.enemies[all_down.selected_id].hp_current = 0
+        all_down.state.enemies[all_down.selected_id].toughness_current = 0
 
         with self.assertRaisesRegex(ValueError, "No units can start encounter"):
             all_down.start_encounter()
@@ -258,7 +258,7 @@ class BattleSessionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not reachable"):
             session.move_entity_with_movement(mover_id, 2, 1)
 
-        session.state.enemies[middle_blocker_id].hp_current = 0
+        session.state.enemies[middle_blocker_id].toughness_current = 0
         session.move_entity_with_movement(mover_id, 2, 1)
 
         moved = session.state.enemies[mover_id]
@@ -286,7 +286,7 @@ class BattleSessionTests(unittest.TestCase):
         session = self.context.create_session("map-down-passable")
         session.add_enemy_from_template("goblin")
         down_id = session.selected_id
-        session.state.enemies[down_id].hp_current = 0
+        session.state.enemies[down_id].toughness_current = 0
 
         session.add_player()
         player = session.state.enemies[session.selected_id]
@@ -428,13 +428,13 @@ class BattleSessionTests(unittest.TestCase):
         second_enemy = session.state.enemies[second_id]
         second_enemy.statuses["burn"] = {"stacks": 2}
         second_enemy.statuses["slowed"] = {}
-        hp_before = second_enemy.hp_current
+        hp_before = second_enemy.toughness_current
 
         session.select(first_id)
         session.next_turn()
 
         self.assertEqual(session.active_turn_id, second_id)
-        self.assertEqual(second_enemy.hp_current, max(0, hp_before - 2))
+        self.assertEqual(second_enemy.toughness_current, max(0, hp_before - 2))
         self.assertIn("slowed", second_enemy.statuses)
 
         session.next_turn()
@@ -451,7 +451,7 @@ class BattleSessionTests(unittest.TestCase):
         down_id = session.selected_id
         session.add_enemy_from_template("goblin")
         third_id = session.selected_id
-        session.state.enemies[down_id].hp_current = 0
+        session.state.enemies[down_id].toughness_current = 0
 
         session.select(first_id)
         session.next_turn()
@@ -466,8 +466,8 @@ class BattleSessionTests(unittest.TestCase):
         first_id = session.selected_id
         session.add_enemy_from_template("bandit")
         second_id = session.selected_id
-        session.state.enemies[first_id].hp_current = 0
-        session.state.enemies[second_id].hp_current = 0
+        session.state.enemies[first_id].toughness_current = 0
+        session.state.enemies[second_id].toughness_current = 0
 
         session.select(first_id)
         with self.assertRaisesRegex(ValueError, "Down units cannot take a turn"):
@@ -599,20 +599,20 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_add_player_with_stats_persists_correctly(self) -> None:
         session = self.context.create_session("player-stats")
-        session.add_player(name="Mira", hp=18, armor=1, magic_armor=0, draws=2, movement=5)
+        session.add_player(name="Mira", toughness=18, armor=1, magic_armor=0, power=2, movement=5)
 
         player = next(e for e in session.state.enemies.values() if session.is_player(e))
         self.assertEqual(player.name, "Mira")
-        self.assertEqual(player.hp_max, 18)
-        self.assertEqual(player.hp_current, 18)
+        self.assertEqual(player.toughness_max, 18)
+        self.assertEqual(player.toughness_current, 18)
         self.assertEqual(player.armor_max, 1)
         self.assertEqual(player.movement, 5)
-        self.assertEqual(player.draws_base, 2)
+        self.assertEqual(player.power_base, 2)
 
         reloaded = self.context.load_session("player-stats")
         restored = next(e for e in reloaded.state.enemies.values() if reloaded.is_player(e))
         self.assertEqual(restored.name, "Mira")
-        self.assertEqual(restored.hp_max, 18)
+        self.assertEqual(restored.toughness_max, 18)
         self.assertEqual(restored.movement, 5)
 
     def test_add_player_without_name_gets_auto_name(self) -> None:

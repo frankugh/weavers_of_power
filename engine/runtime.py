@@ -60,8 +60,8 @@ def spawn_enemy(
         name=template.name,
         image=template.image,
 
-        hp_current=hp_max,
-        hp_max=hp_max,
+        toughness_current=hp_max,
+        toughness_max=hp_max,
 
         armor_current=armor_max,
         armor_max=armor_max,
@@ -72,7 +72,7 @@ def spawn_enemy(
         guard_base=base_guard,
         guard_current=0,
 
-        draws_base=template.draws,
+        power_base=template.draws,
         movement=template.movement,
 
         deck_state=DeckState(draw_pile=card_ids, discard_pile=[], hand=[]),
@@ -171,7 +171,7 @@ def enemy_turn(enemy: EnemyInstance, *, rnd: Optional[random.Random] = None) -> 
     """
     start_turn(enemy)
 
-    if enemy.hp_current <= 0:
+    if enemy.toughness_current <= 0:
         # No draw when dead
         return DrawResult(
             instance_id=enemy.instance_id,
@@ -183,7 +183,7 @@ def enemy_turn(enemy: EnemyInstance, *, rnd: Optional[random.Random] = None) -> 
             hand_after=len(enemy.deck_state.hand),
         )
 
-    draws = enemy.draws_base
+    draws = enemy.power_base
     if "paralyzed" in enemy.statuses:
         draws -= 1
     if draws < 0:

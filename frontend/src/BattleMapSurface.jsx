@@ -329,7 +329,7 @@ function drawUnit(PIXI, layer, entity, entityState, cellSize, texture) {
   const center = cellToWorld(entity.grid_x, entity.grid_y, cellSize);
   const token = new PIXI.Container();
   const radius = Math.max(10, cellSize / 2 - 5);
-  const hpValue = entity.is_player ? 100 : percent(entity.hp_current, entity.hp_max);
+  const hpValue = entity.is_player ? 100 : percent(entity.toughness_current, entity.toughness_max);
   const statusKeys = Object.keys(entity.statuses || {});
 
   token.position.set(center.x, center.y);

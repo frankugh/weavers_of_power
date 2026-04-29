@@ -55,10 +55,10 @@ def build_core_deck_ids(deck: Deck, rnd: random.Random) -> list[str]:
 def spawn_custom_enemy(
     *,
     name: str,
-    hp: int,
+    toughness: int,
     armor: int,
     magic_armor: int,
-    draws: int,
+    power: int,
     movement: int,
     core_deck: Deck,
     rnd: random.Random,
@@ -68,14 +68,14 @@ def spawn_custom_enemy(
         template_id="custom",
         name=name,
         image=None,
-        hp_current=hp,
-        hp_max=hp,
+        toughness_current=toughness,
+        toughness_max=toughness,
         armor_current=armor,
         armor_max=armor,
         magic_armor_current=magic_armor,
         magic_armor_max=magic_armor,
         guard_current=0,
-        draws_base=draws,
+        power_base=power,
         movement=movement,
         deck_state=DeckState(draw_pile=build_core_deck_ids(core_deck, rnd=rnd), discard_pile=[], hand=[]),
         statuses={},
@@ -85,10 +85,10 @@ def spawn_custom_enemy(
 def spawn_player(
     name: str,
     *,
-    hp: int = 0,
+    toughness: int = 0,
     armor: int = 0,
     magic_armor: int = 0,
-    draws: int = 0,
+    power: int = 0,
     movement: int = 6,
 ) -> EnemyInstance:
     return EnemyInstance(
@@ -96,14 +96,14 @@ def spawn_player(
         template_id="player",
         name=name,
         image=None,
-        hp_current=hp,
-        hp_max=hp,
+        toughness_current=toughness,
+        toughness_max=toughness,
         armor_current=armor,
         armor_max=armor,
         magic_armor_current=magic_armor,
         magic_armor_max=magic_armor,
         guard_current=0,
-        draws_base=draws,
+        power_base=power,
         movement=movement,
         deck_state=DeckState(draw_pile=[], discard_pile=[], hand=[]),
         statuses={},
@@ -370,10 +370,10 @@ class BattleSession:
         self,
         *,
         name: str,
-        hp: int,
+        toughness: int,
         armor: int,
         magic_armor: int,
-        draws: int,
+        power: int,
         movement: int,
         core_deck_id: str,
     ) -> None:
@@ -381,10 +381,10 @@ class BattleSession:
             raise BattleSessionError(f"Unknown deck '{core_deck_id}'")
         instance = spawn_custom_enemy(
             name=(name.strip() or "Custom"),
-            hp=max(1, int(hp)),
+            toughness=max(1, int(toughness)),
             armor=max(0, int(armor)),
             magic_armor=max(0, int(magic_armor)),
-            draws=max(0, int(draws)),
+            power=max(0, int(power)),
             movement=max(0, int(movement)),
             core_deck=self.context.decks[core_deck_id],
             rnd=self._rng,
@@ -400,19 +400,19 @@ class BattleSession:
         self,
         *,
         name: str = "",
-        hp: int = 0,
+        toughness: int = 0,
         armor: int = 0,
         magic_armor: int = 0,
-        draws: int = 0,
+        power: int = 0,
         movement: int = 6,
     ) -> None:
         resolved_name = name.strip() or f"Player {self._next_suffix('Player')}"
         instance = spawn_player(
             resolved_name,
-            hp=max(0, int(hp)),
+            toughness=max(0, int(toughness)),
             armor=max(0, int(armor)),
             magic_armor=max(0, int(magic_armor)),
-            draws=max(0, int(draws)),
+            power=max(0, int(power)),
             movement=max(0, int(movement)),
         )
         self.state.add_enemy(instance)
@@ -727,24 +727,24 @@ class BattleSession:
 
         message = (
             f"Attack on {entity.name}: {log.input_damage} in, "
-            f"{log.damage_to_hp} to HP, HP {log.hp_before}->{log.hp_after}"
+            f"{log.damage_to_hp} to Toughness, Toughness {log.toughness_before}->{log.toughness_after}"
         )
         if status_parts:
             message += f" [{', '.join(status_parts)}]"
         self._add_log(message)
         self.autosave()
 
-    def apply_heal_to_selected(self, *, hp: int, armor: int, magic_armor: int, guard: int) -> None:
+    def apply_heal_to_selected(self, *, toughness: int, armor: int, magic_armor: int, guard: int) -> None:
         entity = self._require_selected_enemy()
         log = apply_heal(
             entity,
-            hp=max(0, int(hp)),
+            toughness=max(0, int(toughness)),
             armor=max(0, int(armor)),
             magic_armor=max(0, int(magic_armor)),
             guard=max(0, int(guard)),
         )
         self._add_log(
-            f"Heal on {entity.name}: HP {log.hp_before}->{log.hp_after}, "
+            f"Heal on {entity.name}: Toughness {log.toughness_before}->{log.toughness_after}, "
             f"Armor {log.armor_before}->{log.armor_after}, "
             f"Magic {log.magic_armor_before}->{log.magic_armor_after}, "
             f"Guard {log.guard_before}->{log.guard_after}"
@@ -1009,8 +1009,8 @@ class BattleSession:
         return list(getattr(entity, "visible_draw", []))
 
     def _draw_cards_for_turn(self, entity: EnemyInstance):
-        draws = entity.draws_base
-        if entity.hp_current <= 0:
+        draws = entity.power_base
+        if entity.toughness_current <= 0:
             draws = 0
         if "paralyzed" in entity.statuses:
             draws -= 1
@@ -1260,7 +1260,7 @@ class BattleSession:
 
     @staticmethod
     def is_down(entity: EnemyInstance) -> bool:
-        return (not BattleSession.is_player(entity)) and int(getattr(entity, "hp_current", 0)) <= 0
+        return (not BattleSession.is_player(entity)) and int(getattr(entity, "toughness_current", 0)) <= 0
 
     def _can_take_turn(self, entity: EnemyInstance) -> bool:
         return not self.is_down(entity)

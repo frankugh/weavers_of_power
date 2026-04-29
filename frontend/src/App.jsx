@@ -50,7 +50,7 @@ const EMPTY_ATTACK_FORM = {
 };
 
 const EMPTY_HEAL_FORM = {
-  hp: 0,
+  toughness: 0,
   armor: 0,
   magicArmor: 0,
   guard: 0,
@@ -211,19 +211,19 @@ function App() {
   const [drawDetail, setDrawDetail] = useState(null);
   const [customForm, setCustomForm] = useState({
     name: "Custom",
-    hp: 10,
+    toughness: 10,
     armor: 0,
     magicArmor: 0,
-    draws: 1,
+    power: 1,
     movement: 6,
     coreDeckId: "",
   });
   const [pcForm, setPcForm] = useState({
     name: "",
-    hp: 10,
+    toughness: 3,
     armor: 0,
     magicArmor: 0,
-    draws: 0,
+    power: 0,
     movement: 6,
   });
 
@@ -992,7 +992,7 @@ function App() {
       {
         method: "POST",
         body: JSON.stringify({
-          hp: Number(healForm.hp),
+          toughness: Number(healForm.toughness),
           armor: Number(healForm.armor),
           magicArmor: Number(healForm.magicArmor),
           guard: Number(healForm.guard),
@@ -1299,8 +1299,8 @@ function App() {
                           <span
                             className="roster-bar-fill"
                             style={{
-                              width: `${percent(entity.hp_current, entity.hp_max)}%`,
-                              background: barTone(percent(entity.hp_current, entity.hp_max)),
+                              width: `${percent(entity.toughness_current, entity.toughness_max)}%`,
+                              background: barTone(percent(entity.toughness_current, entity.toughness_max)),
                             }}
                           />
                         </div>
@@ -1407,34 +1407,34 @@ function App() {
                   ) : null}
 
                   <div className="unit-stat-strip">
-                    <span className="unit-stat-chip unit-stat-hp">
-                      <span>HP</span>
-                      <strong>{`${selectedEntity.hp_current}/${selectedEntity.hp_max}`}</strong>
+                    <span className="unit-stat-chip unit-stat-toughness" title="Amount of damage a unit can take before going down. Player characters gain a wound instead and reset Toughness.">
+                      <span>Toughness</span>
+                      <strong>{`${selectedEntity.toughness_current}/${selectedEntity.toughness_max}`}</strong>
                     </span>
-                    <span className="unit-stat-chip">
+                    <span className="unit-stat-chip" title="Reduces incoming damage from all attacks.">
                       <span>Armor</span>
                       <strong>{`${selectedEntity.armor_current}/${selectedEntity.armor_max}`}</strong>
                     </span>
-                    <span className="unit-stat-chip unit-stat-arcane">
+                    <span className="unit-stat-chip unit-stat-arcane" title="Reduces incoming damage like Armor, but cannot be ignored or reduced by normal effects.">
                       <span>M Armor</span>
                       <strong>{`${selectedEntity.magic_armor_current}/${selectedEntity.magic_armor_max}`}</strong>
                     </span>
-                    <span className="unit-stat-chip unit-stat-guard">
+                    <span className="unit-stat-chip unit-stat-guard" title="Temporary damage reduction that is consumed as it blocks damage.">
                       <span>Guard</span>
                       <strong>{selectedEntity.guard_current}</strong>
                     </span>
-                    <span className="unit-stat-chip">
-                      <span>Draw</span>
-                      <strong>{selectedEntity.is_player ? "-" : `${selectedEntity.draws_base}`}</strong>
+                    <span className="unit-stat-chip" title="Number of cards the unit draws at the start of its turn.">
+                      <span>Power</span>
+                      <strong>{selectedEntity.is_player ? "-" : `${selectedEntity.power_base}`}</strong>
                     </span>
-                    <span className="unit-stat-chip unit-stat-move">
+                    <span className="unit-stat-chip unit-stat-move" title="Maximum distance the unit can move in a turn. Doubled when using a Dash action.">
                       <span>Move</span>
                       <strong>{selectedEntity.effective_movement}</strong>
                     </span>
                   </div>
 
-                  {selectedEntity.hp_max > 0 ? (
-                    <ProgressBar label="Vitality" value={percent(selectedEntity.hp_current, selectedEntity.hp_max)} compact />
+                  {selectedEntity.toughness_max > 0 ? (
+                    <ProgressBar label="Vitality" value={percent(selectedEntity.toughness_current, selectedEntity.toughness_max)} compact />
                   ) : null}
                   {!selectedEntity.is_player && selectedStatuses.length ? (
                     <div className="selected-statuses">
@@ -1505,11 +1505,11 @@ function App() {
                         </div>
                       </div>
                       {!entity.is_player ? (
-                        <span className="initiative-hp">
-                          {entity.hp_current}/{entity.hp_max}
+                        <span className="initiative-toughness">
+                          {entity.toughness_current}/{entity.toughness_max}
                         </span>
                       ) : (
-                        <span className="initiative-hp">Player</span>
+                        <span className="initiative-toughness">Player</span>
                       )}
                     </button>
 
@@ -1756,12 +1756,12 @@ function App() {
         <form className="modal-form" onSubmit={handleHealSubmit}>
           <div className="field-grid">
             <label className="field">
-              <span>HP</span>
+              <span>Toughness</span>
               <input
                 type="number"
                 min="0"
-                value={healForm.hp}
-                onChange={(event) => setHealForm((current) => ({ ...current, hp: event.target.value }))}
+                value={healForm.toughness}
+                onChange={(event) => setHealForm((current) => ({ ...current, toughness: event.target.value }))}
               />
             </label>
             <label className="field">
@@ -1891,12 +1891,12 @@ function App() {
                     />
                   </label>
                   <label className="field">
-                    <span>HP</span>
+                    <span>Toughness</span>
                     <input
                       type="number"
                       min="0"
-                      value={pcForm.hp}
-                      onChange={(event) => setPcForm((current) => ({ ...current, hp: Number(event.target.value) }))}
+                      value={pcForm.toughness}
+                      onChange={(event) => setPcForm((current) => ({ ...current, toughness: Number(event.target.value) }))}
                     />
                   </label>
                   <label className="field">
@@ -1918,12 +1918,12 @@ function App() {
                     />
                   </label>
                   <label className="field">
-                    <span>Draws</span>
+                    <span>Power</span>
                     <input
                       type="number"
                       min="0"
-                      value={pcForm.draws}
-                      onChange={(event) => setPcForm((current) => ({ ...current, draws: Number(event.target.value) }))}
+                      value={pcForm.power}
+                      onChange={(event) => setPcForm((current) => ({ ...current, power: Number(event.target.value) }))}
                     />
                   </label>
                   <label className="field">
@@ -1961,12 +1961,12 @@ function App() {
                     />
                   </label>
                   <label className="field">
-                    <span>HP</span>
+                    <span>Toughness</span>
                     <input
                       type="number"
                       min="1"
-                      value={customForm.hp}
-                      onChange={(event) => setCustomForm((current) => ({ ...current, hp: Number(event.target.value) }))}
+                      value={customForm.toughness}
+                      onChange={(event) => setCustomForm((current) => ({ ...current, toughness: Number(event.target.value) }))}
                     />
                   </label>
                   <label className="field">
@@ -1990,12 +1990,12 @@ function App() {
                     />
                   </label>
                   <label className="field">
-                    <span>Draws</span>
+                    <span>Power</span>
                     <input
                       type="number"
                       min="0"
-                      value={customForm.draws}
-                      onChange={(event) => setCustomForm((current) => ({ ...current, draws: Number(event.target.value) }))}
+                      value={customForm.power}
+                      onChange={(event) => setCustomForm((current) => ({ ...current, power: Number(event.target.value) }))}
                     />
                   </label>
                   <label className="field">
