@@ -246,11 +246,11 @@ function drawDoorTile(graphics, bounds, tile, passageAxis, dimAlpha, { preview =
   }
 }
 
-function drawDungeonTiles(graphics, dungeon, room, cellSize, isGmMode) {
+function drawDungeonTiles(graphics, dungeon, room, cellSize, isGmMode, highlightedRoomId = null) {
   graphics.clear();
   if (!dungeon) return;
 
-  const revealedSet = new Set(dungeon.revealedRoomIds || []);
+  const revealedSet = new Set(dungeon.visibleRoomIds || []);
   const roomCellToRoom = new Map();
   for (const r of dungeon.rooms || []) {
     for (const cell of r.cells || []) {
@@ -258,16 +258,30 @@ function drawDungeonTiles(graphics, dungeon, room, cellSize, isGmMode) {
     }
   }
 
+  const linkedDoors = dungeon.linkedDoors || {};
+
   for (const [key, tile] of Object.entries(dungeon.tiles || {})) {
     const [x, y] = key.split(",").map(Number);
     const bounds = cellBounds(x, y, cellSize);
     const room_ = roomCellToRoom.get(key);
-    const revealed = !room_ || revealedSet.has(room_.room_id);
-    const showInNormalMode = revealed || isGmMode;
 
+    let revealed;
+    if (room_) {
+      // Floor tile: visible if its room is in visibleRoomIds
+      revealed = revealedSet.has(room_.room_id);
+    } else if (tile.tile_type === "door") {
+      // Door tile: visible if at least one linked room is visible
+      const link = linkedDoors[key];
+      revealed = Array.isArray(link) && link.some((rid) => revealedSet.has(rid));
+    } else {
+      // Unanalyzed tile with no room: always show
+      revealed = true;
+    }
+
+    const showInNormalMode = revealed || isGmMode;
     if (!showInNormalMode) continue;
 
-    const dimAlpha = !revealed && isGmMode ? 0.35 : 1;
+    const dimAlpha = !revealed && isGmMode ? 0.55 : 1;
 
     if (tile.tile_type === "floor") {
       graphics
@@ -278,13 +292,28 @@ function drawDungeonTiles(graphics, dungeon, room, cellSize, isGmMode) {
     }
   }
 
-  // In GM mode: dim overlay for unrevealed rooms
+  // In GM mode: grey overlay for hidden rooms (distinct from void)
   if (isGmMode) {
     for (const r of dungeon.rooms || []) {
       if (revealedSet.has(r.room_id)) continue;
       for (const cell of r.cells || []) {
+        const tileKey = `${cell[0]},${cell[1]}`;
+        if (!dungeon.tiles?.[tileKey]) continue;
         const bounds = cellBounds(cell[0], cell[1], cellSize);
-        graphics.rect(bounds.x, bounds.y, bounds.width, bounds.height).fill({ color: 0x000000, alpha: 0.45 });
+        graphics.rect(bounds.x, bounds.y, bounds.width, bounds.height).fill({ color: 0x9fb0b8, alpha: 0.28 });
+      }
+    }
+  }
+
+  // Highlighted room border
+  if (highlightedRoomId) {
+    for (const r of dungeon.rooms || []) {
+      if (r.room_id !== highlightedRoomId) continue;
+      for (const cell of r.cells || []) {
+        const bounds = cellBounds(cell[0], cell[1], cellSize);
+        graphics
+          .rect(bounds.x, bounds.y, bounds.width, bounds.height)
+          .stroke({ color: 0xd8b66a, alpha: 0.9, width: 2 });
       }
     }
   }
@@ -635,14 +664,14 @@ function renderPixi(renderer) {
   renderer.app.render();
 }
 
-function drawStaticMapLayer(renderer, room, dungeon, mapMode, cellSize) {
+function drawStaticMapLayer(renderer, room, dungeon, mapMode, cellSize, highlightedRoomId = null) {
   if (!renderer) {
     return;
   }
   const { layers } = renderer;
   const isGmDungeonMode = mapMode === "gm-dungeon";
   drawGrid(layers.terrain, room, cellSize);
-  drawDungeonTiles(layers.dungeonTiles, dungeon, room, cellSize, isGmDungeonMode);
+  drawDungeonTiles(layers.dungeonTiles, dungeon, room, cellSize, isGmDungeonMode, highlightedRoomId);
   drawDungeonIssues(layers.dungeonIssues, dungeon, cellSize);
   renderPixi(renderer);
 }
@@ -709,6 +738,7 @@ function BattleMapSurface({
   movementState = null,
   dungeon = null,
   gmDungeonPalette = "floor",
+  highlightedRoomId = null,
   drawPulse,
   busy,
   onSelect,
@@ -923,8 +953,8 @@ function BattleMapSurface({
   }, [pixiReady, camera.x, camera.y]);
 
   useEffect(() => {
-    drawStaticMapLayer(rendererRef.current, room, dungeon, mapMode, cellSize);
-  }, [pixiReady, room.columns, room.rows, dungeonRenderKey, mapMode, cellSize]);
+    drawStaticMapLayer(rendererRef.current, room, dungeon, mapMode, cellSize, highlightedRoomId);
+  }, [pixiReady, room.columns, room.rows, dungeonRenderKey, mapMode, cellSize, highlightedRoomId]);
 
   useEffect(() => {
     dungeonPreviewRef.current.clear();

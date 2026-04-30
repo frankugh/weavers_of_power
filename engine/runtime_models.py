@@ -13,7 +13,6 @@ class Tile:
 class DungeonRoom:
     room_id: str
     cells: list = field(default_factory=list)   # list of [x, y]
-    revealed: bool = False
 
 
 @dataclass
@@ -32,6 +31,7 @@ class DungeonState:
     revealed_room_ids: list = field(default_factory=list)           # str room_ids
     pending_encounter_room_ids: list = field(default_factory=list)  # str room_ids
     issues: list = field(default_factory=list)                      # list of DungeonIssue
+    fog_of_war_enabled: bool = True
     analysis_version: int = 0
     render_version: int = 0
     # linked_doors is derived by analysis and persisted to avoid re-analyzing on every request.

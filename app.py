@@ -9,7 +9,6 @@ from nicegui import run as nicegui_run
 
 from battle_api import register_battle_api
 from battle_session import BattleSessionContext
-from legacy_ui import register_legacy_page
 
 ROOT = Path(__file__).parent
 FRONTEND_DIST = ROOT / "frontend" / "dist"
@@ -35,7 +34,6 @@ if FRONTEND_ASSETS.exists():
     app.add_static_files("/assets", str(FRONTEND_ASSETS))
 
 register_battle_api(app, context)
-register_legacy_page(context)
 
 
 @app.get("/", include_in_schema=False)
@@ -50,7 +48,6 @@ def react_root():
           <body style="font-family: Georgia, serif; padding: 32px; background: #0d0b08; color: #e5d7b8;">
             <h1>Frontend build missing</h1>
             <p>Run <code>npm install</code> and <code>npm run build</code> in <code>frontend/</code>, then refresh.</p>
-            <p>The legacy UI is still available at <a href="/legacy" style="color: #f0c866;">/legacy</a>.</p>
           </body>
         </html>
         """

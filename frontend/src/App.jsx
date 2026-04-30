@@ -234,6 +234,7 @@ function App() {
   const [initiativeModes, setInitiativeModes] = useState({});
   const [initiativeOpenReason, setInitiativeOpenReason] = useState("manual");
   const [gmDungeonPalette, setGmDungeonPalette] = useState("floor");
+  const [highlightedRoomId, setHighlightedRoomId] = useState(null);
 
   useEffect(() => {
     if (!meta || customForm.coreDeckId || meta.decks.length === 0) {
@@ -257,7 +258,9 @@ function App() {
   }, [snapshot?.sid]);
 
   useEffect(() => {
-    setMapMode((current) => (current === MAP_MODES.GM_REPOSITION ? current : MAP_MODES.IDLE));
+    setMapMode((current) =>
+      current === MAP_MODES.GM_REPOSITION || current === MAP_MODES.GM_DUNGEON ? current : MAP_MODES.IDLE,
+    );
   }, [snapshot?.selectedId, snapshot?.activeTurnId]);
 
   useEffect(() => {
@@ -451,6 +454,16 @@ function App() {
   const isGmDungeonMode = mapMode === MAP_MODES.GM_DUNGEON;
   const canUseGmReposition = orderedEnemies.length > 0;
   const dungeon = snapshot?.dungeon || null;
+  const fogOfWarEnabled = dungeon?.fogOfWarEnabled ?? true;
+  const visibleRoomIds = new Set(dungeon?.visibleRoomIds || []);
+  const revealedRoomIdSet = new Set(dungeon?.revealedRoomIds || []);
+
+  function isEntityVisible(entity) {
+    return !dungeon || !fogOfWarEnabled || entity.is_player || visibleRoomIds.has(entity.room_id);
+  }
+
+  const visibleSelectedEntity = selectedEntity && isEntityVisible(selectedEntity) ? selectedEntity : null;
+
   const adjacentOpenableDoors = useMemo(() => {
     if (!dungeon || !selectedEntity || selectedEntity.grid_x == null || selectedEntity.grid_y == null) return [];
     const result = [];
@@ -491,9 +504,9 @@ function App() {
       snapshot.turnInProgress &&
       snapshot?.activeTurnId === selectedEntity.instance_id,
   );
-  const canAttackOrHeal = Boolean(selectedEntity && !selectedIsDown);
+  const canAttackOrHeal = Boolean(visibleSelectedEntity && !selectedIsDown);
   const selectedTargetNoun = isPlayerSelected ? "player" : "enemy";
-  const canRollLoot = isTemplateLootable(selectedEntity);
+  const canRollLoot = isTemplateLootable(visibleSelectedEntity);
   const canContextRollLoot = Boolean(contextMenuEntity?.is_down && !contextMenuEntity?.loot_rolled && isTemplateLootable(contextMenuEntity));
   const canContextQuickAttack = Boolean(
     contextMenuEntity &&
@@ -606,7 +619,7 @@ function App() {
       "Undid last action",
     );
     if (payload) {
-      setMapMode(MAP_MODES.IDLE);
+      setMapMode((current) => (current === MAP_MODES.GM_DUNGEON ? current : MAP_MODES.IDLE));
     }
   }
 
@@ -619,7 +632,7 @@ function App() {
       "Redid last action",
     );
     if (payload) {
-      setMapMode(MAP_MODES.IDLE);
+      setMapMode((current) => (current === MAP_MODES.GM_DUNGEON ? current : MAP_MODES.IDLE));
     }
   }
 
@@ -668,7 +681,14 @@ function App() {
   }
 
   async function exitGmDungeonMode() {
-    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/analyze`, { method: "POST" });
+    const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/analyze`, { method: "POST" });
+    if (!payload) return;
+    const fog = payload?.dungeon?.fogOfWarEnabled ?? true;
+    const hasVisible = (payload?.dungeon?.visibleRoomIds?.length ?? 0) > 0;
+    if (fog && !hasVisible) {
+      setModal("dungeon-exit-confirm");
+      return;
+    }
     setMapMode(MAP_MODES.IDLE);
   }
 
@@ -688,6 +708,20 @@ function App() {
     await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/doors/open`, {
       method: "POST",
       body: JSON.stringify({ x, y }),
+    });
+  }
+
+  async function submitFogToggle(enabled) {
+    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/settings`, {
+      method: "POST",
+      body: JSON.stringify({ fogOfWarEnabled: enabled }),
+    });
+  }
+
+  async function submitRoomRevealed(roomId, revealed) {
+    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/rooms/${roomId}/revealed`, {
+      method: "POST",
+      body: JSON.stringify({ revealed }),
     });
   }
 
@@ -1321,9 +1355,6 @@ function App() {
           >
             {isGmDungeonMode ? "Exit Dungeon GM" : "GM Dungeon"}
           </button>
-          <a className="menu-button menu-link" href={snapshot.sid ? `/legacy?sid=${snapshot.sid}` : "/legacy"}>
-            Legacy
-          </a>
         </div>
       </header>
 
@@ -1334,7 +1365,7 @@ function App() {
               room={room}
               roomForm={roomForm}
               setRoomForm={setRoomForm}
-              entities={orderedEnemies}
+              entities={isGmDungeonMode ? orderedEnemies : orderedEnemies.filter(isEntityVisible)}
               selectedEntity={selectedEntity}
               selectedId={snapshot.selectedId}
               activeTurnId={snapshot.activeTurnId}
@@ -1342,6 +1373,7 @@ function App() {
               movementState={movementState}
               dungeon={dungeon}
               gmDungeonPalette={gmDungeonPalette}
+              highlightedRoomId={isGmDungeonMode ? highlightedRoomId : null}
               drawPulse={drawReveal ? { entityId: drawReveal.entityId, key: drawReveal.key } : null}
               busy={busy}
               onRoomSubmit={handleRoomSubmit}
@@ -1351,51 +1383,91 @@ function App() {
               onUnitContextMenu={handleUnitContextMenu}
               onUnitDoubleClick={handleUnitDoubleClick}
             />
+            {isGmDungeonMode && dungeon && (
+              <div className="dungeon-room-panel">
+                <div className="dungeon-room-panel-header">
+                  <button
+                    type="button"
+                    className={`dungeon-fog-btn${fogOfWarEnabled ? " active" : ""}`}
+                    onClick={() => submitFogToggle(!fogOfWarEnabled)}
+                    disabled={busy}
+                  >
+                    Fog {fogOfWarEnabled ? "Aan" : "Uit"}
+                  </button>
+                </div>
+                {(dungeon.rooms || []).map((room, idx) => {
+                  const isRevealed = revealedRoomIdSet.has(room.room_id);
+                  const isPcVisible = visibleRoomIds.has(room.room_id) && !isRevealed;
+                  const isHighlighted = highlightedRoomId === room.room_id;
+                  return (
+                    <div
+                      key={room.room_id}
+                      className={`dungeon-room-entry${isHighlighted ? " dungeon-room-highlighted" : ""}`}
+                      onClick={() => setHighlightedRoomId(isHighlighted ? null : room.room_id)}
+                    >
+                      <span className="dungeon-room-label">
+                        Kamer {idx + 1}
+                        {isPcVisible ? " ◆" : ""}
+                      </span>
+                      <button
+                        type="button"
+                        className={`dungeon-room-toggle${isRevealed ? " dungeon-room-toggle-visible" : ""}`}
+                        onClick={(e) => { e.stopPropagation(); submitRoomRevealed(room.room_id, !isRevealed); }}
+                        disabled={busy}
+                      >
+                        {isRevealed ? "Zichtbaar" : "Verborgen"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </section>
 
-          {isGmDungeonMode && (
-            <section className="dungeon-toolbar">
-              <div className="dungeon-palette">
-                {GM_DUNGEON_PALETTES.map((p) => (
-                  <button
-                    key={p}
-                    className={`dungeon-palette-btn${gmDungeonPalette === p ? " active" : ""}`}
-                    onClick={() => setGmDungeonPalette(p)}
-                    type="button"
-                  >
-                    {p.charAt(0).toUpperCase() + p.slice(1)}
-                  </button>
-                ))}
-              </div>
-              <button
-                className="menu-button"
-                type="button"
-                onClick={submitAnalyzeDungeon}
-                disabled={busy}
-              >
-                Analyze
-              </button>
-              <button
-                className="menu-button gm-dungeon-active"
-                type="button"
-                onClick={exitGmDungeonMode}
-                disabled={busy}
-              >
-                Exit Dungeon GM
-              </button>
-            </section>
-          )}
-
           <section className="action-bar">
-            <div className="action-copy">
-              <div className="action-kicker">Action bar</div>
-              <div className="action-title">
-                {selectedEntity ? `${selectedEntity.name} is in focus` : "Select or add a combatant"}
+            {isGmDungeonMode ? (
+              <div className="dungeon-toolbar-content">
+                <div className="dungeon-palette">
+                  {GM_DUNGEON_PALETTES.map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      className={`dungeon-palette-btn${gmDungeonPalette === p ? " active" : ""}`}
+                      onClick={() => setGmDungeonPalette(p)}
+                    >
+                      {p.charAt(0).toUpperCase() + p.slice(1)}
+                    </button>
+                  ))}
+                </div>
+                <div className="dungeon-toolbar-sep" />
+                <button
+                  className="menu-button"
+                  type="button"
+                  onClick={submitAnalyzeDungeon}
+                  disabled={busy}
+                >
+                  Analyze
+                </button>
+                <button
+                  className="menu-button dungeon-exit-btn"
+                  type="button"
+                  onClick={exitGmDungeonMode}
+                  disabled={busy}
+                >
+                  Exit Dungeon GM
+                </button>
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="action-copy">
+                  <div className="action-kicker">Action bar</div>
+                  <div className="action-title">
+                    {selectedEntity ? `${selectedEntity.name} is in focus` : "Select or add a combatant"}
+                  </div>
+                </div>
 
-            <div className="action-controls">
-              <div className="action-buttons">
+                <div className="action-controls">
+                  <div className="action-buttons">
                 <button
                   className="primary-button"
                   onClick={() => {
@@ -1528,11 +1600,13 @@ function App() {
                 ) : null}
               </div>
             </div>
+            </>
+          )}
           </section>
 
           <section className="roster-strip">
             {orderedEnemies.length ? (
-              orderedEnemies.map((entity) => {
+              orderedEnemies.filter(isEntityVisible).map((entity) => {
                 const entityState = getEntityState(entity, snapshot.selectedId, snapshot.activeTurnId);
                 const rosterIndex = orderedEnemies.indexOf(entity);
                 const canMoveLeft = rosterIndex > 0;
@@ -1643,8 +1717,8 @@ function App() {
         <aside className="right-rail">
           <div className="unit-inspector">
             <Panel title="Unit Inspector">
-              {selectedEntity ? (
-                <div className={`selected-summary ${selectedEntity.is_player ? "selected-summary-player" : ""}`.trim()}>
+              {visibleSelectedEntity ? (
+                <div className={`selected-summary ${visibleSelectedEntity.is_player ? "selected-summary-player" : ""}`.trim()}>
                   <div className="selected-summary-top">
                     <div className="selected-kicker">
                       {selectedEntity.is_player ? "Player" : titleCaseFromSnake(selectedEntity.template_id)}
@@ -1772,7 +1846,7 @@ function App() {
               }
             >
             <div className="initiative-list initiative-list-compact">
-              {orderedEnemies.map((entity) => {
+              {orderedEnemies.filter(isEntityVisible).map((entity) => {
                 const entityState = getEntityState(entity, snapshot.selectedId, snapshot.activeTurnId);
                 const entityIndex = orderIds.indexOf(entity.instance_id);
                 const canMoveEntityUp = entityIndex > 0;
@@ -2456,6 +2530,26 @@ function App() {
       </ModalShell>
 
       <ModalShell
+        open={modal === "dungeon-exit-confirm"}
+        title="Geen zichtbare kamers"
+        onClose={closeModal}
+        closeOnOutsideClick={false}
+        showCloseButton={false}
+      >
+        <div className="panel-body modal-form">
+          <div className="subtle-copy">Fog of war staat aan maar er zijn geen zichtbare kamers. Spelers zien een lege kaart.</div>
+          <div className="modal-actions">
+            <button className="secondary-button" type="button" onClick={closeModal}>
+              Blijven
+            </button>
+            <button className="primary-button" type="button" onClick={() => { closeModal(); setMapMode(MAP_MODES.IDLE); }}>
+              Toch verlaten
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
         open={modal === "new-session-confirm"}
         title="Confirm New Session"
         onClose={closeModal}
@@ -2551,7 +2645,7 @@ function App() {
       >
         <div className="panel-body modal-form">
           {[
-            { label: "All enemies:", filter: (e) => !e.is_player },
+            { label: "All enemies:", filter: (e) => !e.is_player && isEntityVisible(e) },
             { label: "All players:", filter: (e) => e.is_player },
           ].map(({ label, filter }) => (
             <div className="initiative-modal-bulk" key={label}>
@@ -2587,7 +2681,7 @@ function App() {
               <span>Roll</span>
               <span>Mode</span>
             </div>
-            {orderedEnemies.map((entity) => (
+            {orderedEnemies.filter(isEntityVisible).map((entity) => (
               <div className="initiative-modal-row" key={entity.instance_id}>
                 <span className="initiative-modal-name">{entity.name}</span>
                 <span>{entity.is_player ? "Player" : "Enemy"}</span>
@@ -2678,6 +2772,7 @@ function BattleRoom({
   movementState,
   dungeon,
   gmDungeonPalette,
+  highlightedRoomId = null,
   drawPulse,
   busy,
   onRoomSubmit,
@@ -2757,6 +2852,7 @@ function BattleRoom({
         movementState={movementState}
         dungeon={dungeon}
         gmDungeonPalette={gmDungeonPalette}
+        highlightedRoomId={highlightedRoomId}
         drawPulse={drawPulse}
         busy={busy}
         onSelect={onSelect}

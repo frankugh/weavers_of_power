@@ -570,6 +570,7 @@ button:disabled {
   border-radius: 14px;
   padding: 8px;
   overflow: hidden;
+  position: relative;
   background:
     radial-gradient(circle at 85% 10%, rgba(216, 182, 106, 0.16), transparent 22%),
     radial-gradient(circle at 18% 18%, rgba(125, 185, 127, 0.1), transparent 26%),
@@ -2858,4 +2859,210 @@ button.draw-card:hover {
   border-color: var(--accent);
   color: #1a0f00;
   font-weight: 600;
+}
+
+/* ── Dungeon toolbar (inside action-bar, GM mode) ── */
+
+.dungeon-toolbar-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.dungeon-palette {
+  display: flex;
+  gap: 3px;
+}
+
+.dungeon-palette-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 13px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 244, 216, 0.04);
+  color: var(--muted);
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.dungeon-palette-btn:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.dungeon-palette-btn.active {
+  background: rgba(216, 182, 106, 0.13);
+  border-color: rgba(216, 182, 106, 0.45);
+  color: var(--accent);
+}
+
+.dungeon-toolbar-sep {
+  width: 1px;
+  height: 18px;
+  flex-shrink: 0;
+  background: var(--line);
+  margin: 0 2px;
+}
+
+.dungeon-exit-btn {
+  border-color: rgba(216, 182, 106, 0.3);
+  color: var(--accent);
+}
+
+.dungeon-exit-btn:hover {
+  border-color: rgba(216, 182, 106, 0.6);
+  background: rgba(216, 182, 106, 0.08);
+}
+
+/* ── Dungeon room panel (floating overlay, GM mode) ── */
+
+.dungeon-room-panel {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+  min-width: 176px;
+  max-width: 230px;
+  max-height: calc(100% - 16px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: rgba(20, 14, 10, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  backdrop-filter: blur(6px);
+}
+
+.dungeon-room-panel-header {
+  padding-bottom: 5px;
+  margin-bottom: 3px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dungeon-fog-btn {
+  display: block;
+  width: 100%;
+  min-height: 26px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.dungeon-fog-btn:hover:not(:disabled) {
+  border-color: rgba(216, 182, 106, 0.4);
+  color: var(--text);
+}
+
+.dungeon-fog-btn.active {
+  border-color: rgba(216, 182, 106, 0.4);
+  color: var(--accent);
+  background: rgba(216, 182, 106, 0.07);
+}
+
+.dungeon-fog-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.dungeon-room-panel::-webkit-scrollbar {
+  width: 3px;
+}
+
+.dungeon-room-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dungeon-room-panel::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 2px;
+}
+
+.dungeon-room-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.12s, border-color 0.12s;
+  user-select: none;
+}
+
+.dungeon-room-entry:hover {
+  background: rgba(216, 182, 106, 0.07);
+}
+
+.dungeon-room-entry.dungeon-room-highlighted {
+  border-color: rgba(216, 182, 106, 0.32);
+  background: rgba(216, 182, 106, 0.09);
+}
+
+.dungeon-room-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dungeon-room-entry.dungeon-room-highlighted .dungeon-room-label {
+  color: var(--accent);
+}
+
+.dungeon-room-toggle {
+  flex: 0 0 auto;
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.dungeon-room-toggle:hover:not(:disabled) {
+  border-color: rgba(216, 182, 106, 0.5);
+  color: var(--text);
+}
+
+.dungeon-room-toggle:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.dungeon-room-toggle.dungeon-room-toggle-visible {
+  border-color: rgba(216, 182, 106, 0.45);
+  color: var(--accent);
+  background: rgba(216, 182, 106, 0.08);
+}
+
+.dungeon-room-toggle.dungeon-room-toggle-visible:hover:not(:disabled) {
+  background: rgba(216, 182, 106, 0.15);
 }

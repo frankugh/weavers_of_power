@@ -549,7 +549,6 @@ class BattleSession:
             {
                 "room_id": r.room_id,
                 "cells": r.cells,
-                "revealed": r.revealed,
             }
             for r in ds.rooms
         ]
@@ -567,11 +566,37 @@ class BattleSession:
             key: list(rooms)
             for key, rooms in ds.linked_doors.items()
         }
+        cell_to_room_id = {
+            f"{c[0]},{c[1]}": r.room_id
+            for r in ds.rooms for c in r.cells
+        }
+        seen: set[str] = set()
+        pc_room_ids: list[str] = []
+        for r in ds.rooms:
+            for e in self.state.enemies.values():
+                if (
+                    self.is_player(e) and e.grid_x is not None and e.grid_y is not None
+                    and cell_to_room_id.get(f"{e.grid_x},{e.grid_y}") == r.room_id
+                    and r.room_id not in seen
+                ):
+                    seen.add(r.room_id)
+                    pc_room_ids.append(r.room_id)
+        revealed_set = set(ds.revealed_room_ids)
+        if ds.fog_of_war_enabled:
+            visible_ordered = [
+                r.room_id for r in ds.rooms
+                if r.room_id in revealed_set or r.room_id in seen
+            ]
+        else:
+            visible_ordered = [r.room_id for r in ds.rooms]
         return {
             "tiles": tiles_out,
             "rooms": rooms_out,
             "revealedRoomIds": list(ds.revealed_room_ids),
             "pendingEncounterRoomIds": list(ds.pending_encounter_room_ids),
+            "fogOfWarEnabled": ds.fog_of_war_enabled,
+            "currentPcRoomIds": pc_room_ids,
+            "visibleRoomIds": visible_ordered,
             "issues": issues_out,
             "analysisVersion": ds.analysis_version,
             "renderVersion": ds.render_version,
@@ -635,10 +660,6 @@ class BattleSession:
         # Reveal the room the unit is NOT already in
         unit_room = selected.room_id
         new_room_id = link[1] if link[0] == unit_room else link[0]
-        for room in self.dungeon.rooms:
-            if room.room_id == new_room_id:
-                room.revealed = True
-                break
         if new_room_id not in self.dungeon.revealed_room_ids:
             self.dungeon.revealed_room_ids.append(new_room_id)
 
@@ -672,6 +693,37 @@ class BattleSession:
                     added_ids.append(entity.instance_id)
         self.dungeon.pending_encounter_room_ids.clear()
         return added_ids
+
+    def set_fog_of_war(self, enabled: bool) -> None:
+        if self.dungeon is None:
+            raise BattleSessionError("No dungeon loaded")
+        self.dungeon.fog_of_war_enabled = enabled
+        self.dungeon.render_version += 1
+        self.autosave()
+
+    def set_room_revealed(self, room_id: str, revealed: bool) -> None:
+        if self.dungeon is None:
+            raise BattleSessionError("No dungeon loaded")
+        if room_id not in {r.room_id for r in self.dungeon.rooms}:
+            raise BattleSessionError(f"Room '{room_id}' not found")
+        if revealed:
+            if room_id not in self.dungeon.revealed_room_ids:
+                self.dungeon.revealed_room_ids.append(room_id)
+            if self.encounter_started:
+                enemies_there = [
+                    e for e in self.state.enemies.values()
+                    if e.room_id == room_id and not self.is_player(e) and not self.is_down(e)
+                    and e.instance_id not in self.order
+                ]
+                if enemies_there and room_id not in self.dungeon.pending_encounter_room_ids:
+                    self.dungeon.pending_encounter_room_ids.append(room_id)
+        else:
+            self.dungeon.revealed_room_ids = [r for r in self.dungeon.revealed_room_ids if r != room_id]
+            self.dungeon.pending_encounter_room_ids = [
+                r for r in self.dungeon.pending_encounter_room_ids if r != room_id
+            ]
+        self.dungeon.render_version += 1
+        self.autosave()
 
     def _dungeon_blocks_cell(self, x: int, y: int) -> bool:
         """Return True if the dungeon makes cell (x,y) impassable."""
@@ -783,6 +835,23 @@ class BattleSession:
         movement_state["dash_used"] = bool(movement_state["dash_used"] or needs_dash)
         dash_suffix = " using Dash" if needs_dash else ""
         self._add_log(f"Moved {entity.name} to ({x + 1}, {y + 1}) for {move_cost} movement{dash_suffix}")
+
+        if self.is_player(entity) and self.dungeon and self.encounter_started:
+            _cell_to_room = {
+                f"{c[0]},{c[1]}": r.room_id
+                for r in self.dungeon.rooms for c in r.cells
+            }
+            new_rid = _cell_to_room.get(f"{x},{y}")
+            entity.room_id = new_rid
+            if new_rid and new_rid not in self.dungeon.revealed_room_ids:
+                self.dungeon.revealed_room_ids.append(new_rid)
+                enemies_there = [
+                    e for e in self.state.enemies.values()
+                    if e.room_id == new_rid and not self.is_player(e) and not self.is_down(e)
+                ]
+                if enemies_there and new_rid not in self.dungeon.pending_encounter_room_ids:
+                    self.dungeon.pending_encounter_room_ids.append(new_rid)
+
         self.autosave()
 
     def draw_turn(self) -> None:
@@ -885,6 +954,25 @@ class BattleSession:
     def start_encounter(self) -> None:
         if self.active_turn_id is not None:
             raise BattleSessionError("Encounter already has an active turn.")
+
+        if self.dungeon and self.dungeon.fog_of_war_enabled:
+            _cell_to_room = {
+                f"{c[0]},{c[1]}": r.room_id
+                for r in self.dungeon.rooms for c in r.cells
+            }
+            for e in self.state.enemies.values():
+                if self.is_player(e) and e.grid_x is not None:
+                    rid = _cell_to_room.get(f"{e.grid_x},{e.grid_y}")
+                    if rid and rid not in self.dungeon.revealed_room_ids:
+                        self.dungeon.revealed_room_ids.append(rid)
+            _visible_ids = set(self.dungeon.revealed_room_ids)
+            self.order = [
+                iid for iid in self.order
+                if (ent := self.state.enemies.get(iid)) and (
+                    self.is_player(ent)
+                    or (ent.grid_x is not None and _cell_to_room.get(f"{ent.grid_x},{ent.grid_y}") in _visible_ids)
+                )
+            ]
 
         self.turn_skip_notice = []
         for instance_id in self.order:

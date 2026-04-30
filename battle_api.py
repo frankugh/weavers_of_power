@@ -102,6 +102,14 @@ class DungeonOpenDoorRequest(BaseModel):
     y: int
 
 
+class DungeonSettingsRequest(BaseModel):
+    fogOfWarEnabled: bool
+
+
+class DungeonRoomRevealedRequest(BaseModel):
+    revealed: bool
+
+
 def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def load_session_or_400(sid: str):
         try:
@@ -319,3 +327,11 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.post("/api/battle/sessions/{sid}/dungeon/doors/open")
     def open_door(sid: str, request: DungeonOpenDoorRequest):
         return run_mutation(sid, lambda session: session.open_door(request.x, request.y))
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/settings")
+    def dungeon_settings(sid: str, request: DungeonSettingsRequest):
+        return run_mutation(sid, lambda session: session.set_fog_of_war(request.fogOfWarEnabled))
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/rooms/{room_id}/revealed")
+    def room_revealed(sid: str, room_id: str, request: DungeonRoomRevealedRequest):
+        return run_mutation(sid, lambda session: session.set_room_revealed(room_id, request.revealed))

@@ -42,7 +42,7 @@ def dungeon_state_to_dict(ds: DungeonState) -> Dict[str, Any]:
     for key, tile in ds.tiles.items():
         tiles_out[key] = {"tile_type": tile.tile_type, "door_open": tile.door_open}
     rooms_out = [
-        {"room_id": r.room_id, "cells": r.cells, "revealed": r.revealed}
+        {"room_id": r.room_id, "cells": r.cells}
         for r in ds.rooms
     ]
     issues_out = [
@@ -60,6 +60,7 @@ def dungeon_state_to_dict(ds: DungeonState) -> Dict[str, Any]:
         "rooms": rooms_out,
         "revealed_room_ids": list(ds.revealed_room_ids),
         "pending_encounter_room_ids": list(ds.pending_encounter_room_ids),
+        "fog_of_war_enabled": ds.fog_of_war_enabled,
         "issues": issues_out,
         "analysis_version": ds.analysis_version,
         "render_version": ds.render_version,
@@ -75,7 +76,7 @@ def dungeon_state_from_dict(d: Dict[str, Any]) -> DungeonState:
     for key, tv in (d.get("tiles") or {}).items():
         tiles[key] = Tile(tile_type=tv["tile_type"], door_open=bool(tv.get("door_open", False)))
     rooms = [
-        DungeonRoom(room_id=r["room_id"], cells=list(r.get("cells", [])), revealed=bool(r.get("revealed", False)))
+        DungeonRoom(room_id=r["room_id"], cells=list(r.get("cells", [])))
         for r in (d.get("rooms") or [])
     ]
     issues = [
@@ -93,6 +94,7 @@ def dungeon_state_from_dict(d: Dict[str, Any]) -> DungeonState:
         rooms=rooms,
         revealed_room_ids=list(d.get("revealed_room_ids") or []),
         pending_encounter_room_ids=list(d.get("pending_encounter_room_ids") or []),
+        fog_of_war_enabled=bool(d.get("fog_of_war_enabled", True)),
         issues=issues,
         analysis_version=int(d.get("analysis_version", 0)),
         render_version=int(d.get("render_version", d.get("analysis_version", 0))),
