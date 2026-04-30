@@ -136,6 +136,203 @@ function drawGrid(graphics, room, cellSize) {
   graphics.stroke({ color: 0x513a23, alpha: 0.62, width: 1 });
 }
 
+function roomIdAt(roomCellToRoom, x, y) {
+  return roomCellToRoom.get(`${x},${y}`)?.room_id || null;
+}
+
+function isFloorTile(dungeon, x, y) {
+  return dungeon?.tiles?.[`${x},${y}`]?.tile_type === "floor";
+}
+
+function inferDoorPassageAxis(dungeon, roomCellToRoom, x, y) {
+  const northRoom = roomIdAt(roomCellToRoom, x, y - 1);
+  const southRoom = roomIdAt(roomCellToRoom, x, y + 1);
+  const westRoom = roomIdAt(roomCellToRoom, x - 1, y);
+  const eastRoom = roomIdAt(roomCellToRoom, x + 1, y);
+  const linksNorthSouth = Boolean(northRoom && southRoom && northRoom !== southRoom);
+  const linksEastWest = Boolean(westRoom && eastRoom && westRoom !== eastRoom);
+
+  if (linksNorthSouth !== linksEastWest) {
+    return linksNorthSouth ? "north-south" : "east-west";
+  }
+
+  const hasNorthSouthFloor = isFloorTile(dungeon, x, y - 1) && isFloorTile(dungeon, x, y + 1);
+  const hasEastWestFloor = isFloorTile(dungeon, x - 1, y) && isFloorTile(dungeon, x + 1, y);
+  if (hasNorthSouthFloor !== hasEastWestFloor) {
+    return hasNorthSouthFloor ? "north-south" : "east-west";
+  }
+
+  const northSouthCount = Number(isFloorTile(dungeon, x, y - 1)) + Number(isFloorTile(dungeon, x, y + 1));
+  const eastWestCount = Number(isFloorTile(dungeon, x - 1, y)) + Number(isFloorTile(dungeon, x + 1, y));
+  if (northSouthCount !== eastWestCount) {
+    return northSouthCount > eastWestCount ? "north-south" : "east-west";
+  }
+
+  return "unknown";
+}
+
+function drawDoorTile(graphics, bounds, tile, passageAxis, dimAlpha, { preview = false } = {}) {
+  const bx = bounds.x + 2;
+  const by = bounds.y + 2;
+  const bw = bounds.width - 4;
+  const bh = bounds.height - 4;
+  const plank = Math.max(4, Math.min(10, Math.round(Math.min(bw, bh) * 0.16)));
+  const inset = Math.max(4, Math.round(Math.min(bw, bh) * 0.12));
+  const floorColor = preview ? 0x4a311c : 0x2d1f12;
+  const doorColor = preview ? 0xf0cf85 : 0xd4a254;
+  const doorDark = preview ? 0x8a5b26 : 0x5a3a1a;
+
+  graphics
+    .rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2)
+    .fill({ color: floorColor, alpha: (tile.door_open ? 0.82 : 0.68) * dimAlpha });
+
+  if (tile.door_open) {
+    if (passageAxis === "north-south") {
+      graphics.rect(bx + 2, by + inset, plank, Math.max(plank, bh - inset * 2)).fill({
+        color: doorColor,
+        alpha: 0.88 * dimAlpha,
+      });
+      graphics.circle(bx + 2 + plank / 2, by + bh / 2, Math.max(1.5, plank * 0.28)).fill({
+        color: doorDark,
+        alpha: 0.9 * dimAlpha,
+      });
+    } else if (passageAxis === "east-west") {
+      graphics.rect(bx + inset, by + 2, Math.max(plank, bw - inset * 2), plank).fill({
+        color: doorColor,
+        alpha: 0.88 * dimAlpha,
+      });
+      graphics.circle(bx + bw / 2, by + 2 + plank / 2, Math.max(1.5, plank * 0.28)).fill({
+        color: doorDark,
+        alpha: 0.9 * dimAlpha,
+      });
+    } else {
+      graphics.rect(bx + 2, by + 2, plank, Math.max(plank, bh * 0.45)).fill({
+        color: doorColor,
+        alpha: 0.82 * dimAlpha,
+      });
+    }
+  } else if (passageAxis === "north-south") {
+    graphics.rect(bx + inset, by + bh / 2 - plank / 2, Math.max(plank, bw - inset * 2), plank).fill({
+      color: doorDark,
+      alpha: 0.96 * dimAlpha,
+    });
+    graphics.rect(bx + inset + 1, by + bh / 2 - plank / 2 + 1, Math.max(1, bw - inset * 2 - 2), Math.max(1, plank - 2)).fill({
+      color: doorColor,
+      alpha: 0.95 * dimAlpha,
+    });
+  } else if (passageAxis === "east-west") {
+    graphics.rect(bx + bw / 2 - plank / 2, by + inset, plank, Math.max(plank, bh - inset * 2)).fill({
+      color: doorDark,
+      alpha: 0.96 * dimAlpha,
+    });
+    graphics.rect(bx + bw / 2 - plank / 2 + 1, by + inset + 1, Math.max(1, plank - 2), Math.max(1, bh - inset * 2 - 2)).fill({
+      color: doorColor,
+      alpha: 0.95 * dimAlpha,
+    });
+  } else {
+    const mark = Math.max(plank + 2, Math.min(bw, bh) * 0.28);
+    graphics.rect(bx + bw / 2 - mark / 2, by + bh / 2 - mark / 2, mark, mark).fill({
+      color: doorColor,
+      alpha: 0.92 * dimAlpha,
+    });
+  }
+
+  if (preview) {
+    graphics.rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2).stroke({
+      color: doorColor,
+      alpha: 0.55 * dimAlpha,
+      width: 2,
+    });
+  }
+}
+
+function drawDungeonTiles(graphics, dungeon, room, cellSize, isGmMode) {
+  graphics.clear();
+  if (!dungeon) return;
+
+  const revealedSet = new Set(dungeon.revealedRoomIds || []);
+  const roomCellToRoom = new Map();
+  for (const r of dungeon.rooms || []) {
+    for (const cell of r.cells || []) {
+      roomCellToRoom.set(`${cell[0]},${cell[1]}`, r);
+    }
+  }
+
+  for (const [key, tile] of Object.entries(dungeon.tiles || {})) {
+    const [x, y] = key.split(",").map(Number);
+    const bounds = cellBounds(x, y, cellSize);
+    const room_ = roomCellToRoom.get(key);
+    const revealed = !room_ || revealedSet.has(room_.room_id);
+    const showInNormalMode = revealed || isGmMode;
+
+    if (!showInNormalMode) continue;
+
+    const dimAlpha = !revealed && isGmMode ? 0.35 : 1;
+
+    if (tile.tile_type === "floor") {
+      graphics
+        .rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2)
+        .fill({ color: 0x2d1f12, alpha: 0.82 * dimAlpha });
+    } else if (tile.tile_type === "door") {
+      drawDoorTile(graphics, bounds, tile, inferDoorPassageAxis(dungeon, roomCellToRoom, x, y), dimAlpha);
+    }
+  }
+
+  // In GM mode: dim overlay for unrevealed rooms
+  if (isGmMode) {
+    for (const r of dungeon.rooms || []) {
+      if (revealedSet.has(r.room_id)) continue;
+      for (const cell of r.cells || []) {
+        const bounds = cellBounds(cell[0], cell[1], cellSize);
+        graphics.rect(bounds.x, bounds.y, bounds.width, bounds.height).fill({ color: 0x000000, alpha: 0.45 });
+      }
+    }
+  }
+}
+
+function drawDungeonIssues(graphics, dungeon, cellSize) {
+  graphics.clear();
+  if (!dungeon) return;
+
+  for (const issue of dungeon.issues || []) {
+    if (issue.x == null || issue.y == null) continue;
+    const bounds = cellBounds(issue.x, issue.y, cellSize);
+    const issueDoorType = issue.issue_type === "unlinkedDoor" || issue.issue_type === "ambiguousDoor";
+    const color = issueDoorType ? 0xf0b040 : 0xf04040;
+    graphics
+      .rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2)
+      .stroke({ color, alpha: 0.85, width: 2 });
+  }
+}
+
+function drawDungeonPreview(graphics, previewCells, cellSize, dungeon) {
+  graphics.clear();
+  if (!previewCells?.size) return;
+
+  for (const cell of previewCells.values()) {
+    const bounds = cellBounds(cell.x, cell.y, cellSize);
+    if (cell.tileType === "void") {
+      graphics
+        .rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2)
+        .fill({ color: 0x0b0704, alpha: 0.94 })
+        .stroke({ color: 0x82d9df, alpha: 0.26, width: 1 });
+      continue;
+    }
+
+    if (cell.tileType === "door") {
+      drawDoorTile(graphics, bounds, { tile_type: "door", door_open: false }, inferDoorPassageAxis(dungeon, new Map(), cell.x, cell.y), 1, {
+        preview: true,
+      });
+      continue;
+    }
+
+    graphics
+      .rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2)
+      .fill({ color: 0x4a311c, alpha: 0.96 })
+      .stroke({ color: 0xd8b66a, alpha: 0.35, width: 1 });
+  }
+}
+
 function heapPush(heap, item) {
   heap.push(item);
   let index = heap.length - 1;
@@ -187,7 +384,16 @@ function movementStateNumber(movementState, key, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
 }
 
-function getReachableMovementCells(room, selectedEntity, movementState, blockingByPosition) {
+function dungeonBlocksCell(dungeon, x, y) {
+  if (!dungeon || !dungeon.tiles) return false;
+  const key = `${x},${y}`;
+  const tile = dungeon.tiles[key];
+  if (!tile) return true; // void/unknown
+  if (tile.tile_type === "door" && !tile.door_open) return true; // closed door
+  return false;
+}
+
+function getReachableMovementCells(room, selectedEntity, movementState, blockingByPosition, dungeon) {
   const reachable = new Map();
   if (!hasGridPosition(selectedEntity, room)) {
     return reachable;
@@ -234,6 +440,9 @@ function getReachableMovementCells(room, selectedEntity, movementState, blocking
         continue;
       }
       if (blockingByPosition.has(positionKey(nextX, nextY))) {
+        continue;
+      }
+      if (dungeonBlocksCell(dungeon, nextX, nextY)) {
         continue;
       }
 
@@ -419,31 +628,39 @@ function prefersReducedMotion() {
   return typeof window !== "undefined" && Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
 }
 
-function renderPixiScene(renderer, state) {
+function renderPixi(renderer) {
   if (!renderer) {
     return;
   }
+  renderer.app.render();
+}
 
-  const { PIXI, app, world, layers, textures } = renderer;
-  const {
-    room,
-    placedEntities,
-    selectedId,
-    activeTurnId,
-    mapMode,
-    selectedEntity,
-    busy,
-    hoverCell,
-    blockingByPosition,
-    reachableCells,
-    cellSize,
-    camera,
-  } = state;
-
-  world.position.set(camera.x, camera.y);
+function drawStaticMapLayer(renderer, room, dungeon, mapMode, cellSize) {
+  if (!renderer) {
+    return;
+  }
+  const { layers } = renderer;
+  const isGmDungeonMode = mapMode === "gm-dungeon";
   drawGrid(layers.terrain, room, cellSize);
+  drawDungeonTiles(layers.dungeonTiles, dungeon, room, cellSize, isGmDungeonMode);
+  drawDungeonIssues(layers.dungeonIssues, dungeon, cellSize);
+  renderPixi(renderer);
+}
+
+function drawDungeonPreviewLayer(renderer, previewCells, cellSize, dungeon) {
+  if (!renderer) {
+    return;
+  }
+  drawDungeonPreview(renderer.layers.dungeonPreview, previewCells, cellSize, dungeon);
+  renderPixi(renderer);
+}
+
+function drawHighlightsLayer(renderer, room, cellSize, mapMode, selectedEntity, busy, hoverCell, blockingByPosition, reachableCells) {
+  if (!renderer) {
+    return;
+  }
   drawMoveHighlights(
-    layers.highlights,
+    renderer.layers.highlights,
     room,
     cellSize,
     mapMode,
@@ -453,6 +670,14 @@ function renderPixiScene(renderer, state) {
     blockingByPosition,
     reachableCells,
   );
+  renderPixi(renderer);
+}
+
+function drawUnitsLayer(renderer, placedEntities, selectedId, activeTurnId, cellSize) {
+  if (!renderer) {
+    return;
+  }
+  const { PIXI, layers, textures } = renderer;
   clearLayer(layers.units);
 
   [...placedEntities]
@@ -471,7 +696,7 @@ function renderPixiScene(renderer, state) {
       );
     });
 
-  app.render();
+  renderPixi(renderer);
 }
 
 function BattleMapSurface({
@@ -482,10 +707,13 @@ function BattleMapSurface({
   selectedEntity,
   mapMode = "idle",
   movementState = null,
+  dungeon = null,
+  gmDungeonPalette = "floor",
   drawPulse,
   busy,
   onSelect,
   onMoveToCell,
+  onTileEdit,
   onUnitContextMenu,
   onUnitDoubleClick,
 }) {
@@ -495,6 +723,9 @@ function BattleMapSurface({
   const pinchRef = useRef(null);
   const pointersRef = useRef(new Map());
   const lastUnitClickRef = useRef(null);
+  const brushStrokeRef = useRef(null); // { palette, cells: Set<"x,y"> }
+  const dungeonPreviewRef = useRef(new Map());
+  const dungeonPreviewFrameRef = useRef(null);
   const cellSizeRef = useRef(MAP_ZOOM.defaultSize);
   const cameraRef = useRef({ x: 0, y: 0 });
   const viewportRef = useRef(VIEWPORT_FALLBACK);
@@ -528,10 +759,11 @@ function BattleMapSurface({
   const reachableCells = useMemo(
     () =>
       mapMode === "move"
-        ? getReachableMovementCells(room, selectedEntity, movementState, blockingByPosition)
+        ? getReachableMovementCells(room, selectedEntity, movementState, blockingByPosition, dungeon)
         : new Map(),
-    [room, selectedEntity, movementState, blockingByPosition, mapMode],
+    [room.columns, room.rows, selectedEntity, movementState, blockingByPosition, mapMode, dungeon],
   );
+  const dungeonRenderKey = dungeon ? `${dungeon.analysisVersion ?? 0}:${dungeon.renderVersion ?? 0}` : "none";
 
   useEffect(() => {
     cellSizeRef.current = cellSize;
@@ -563,7 +795,7 @@ function BattleMapSurface({
 
     window.addEventListener("resize", updateViewport);
     return () => window.removeEventListener("resize", updateViewport);
-  }, [room]);
+  }, [room.columns, room.rows]);
 
   useEffect(() => {
     setCamera((current) => clampCamera(current, viewportRef.current, room, cellSizeRef.current));
@@ -590,6 +822,7 @@ function BattleMapSurface({
           resizeTo: surface,
           backgroundAlpha: 0,
           antialias: true,
+          autoStart: false,
           autoDensity: true,
           resolution: Math.min(window.devicePixelRatio || 1, 2),
           preference: "webgl",
@@ -607,12 +840,23 @@ function BattleMapSurface({
         const world = new PIXI.Container();
         const layers = {
           terrain: new PIXI.Graphics(),
+          dungeonTiles: new PIXI.Graphics(),
+          dungeonIssues: new PIXI.Graphics(),
+          dungeonPreview: new PIXI.Graphics(),
           highlights: new PIXI.Graphics(),
           units: new PIXI.Container(),
           effects: new PIXI.Container(),
         };
 
-        world.addChild(layers.terrain, layers.highlights, layers.units, layers.effects);
+        world.addChild(
+          layers.terrain,
+          layers.dungeonTiles,
+          layers.dungeonIssues,
+          layers.dungeonPreview,
+          layers.highlights,
+          layers.units,
+          layers.effects,
+        );
         app.stage.addChild(world);
         rendererRef.current = { PIXI, app, world, layers, textures: new Map(), failedTextures: new Set() };
         setPixiReady(true);
@@ -670,36 +914,66 @@ function BattleMapSurface({
   }, [pixiReady, placedEntities]);
 
   useEffect(() => {
-    renderPixiScene(rendererRef.current, {
+    const renderer = rendererRef.current;
+    if (!renderer) {
+      return;
+    }
+    renderer.world.position.set(camera.x, camera.y);
+    renderPixi(renderer);
+  }, [pixiReady, camera.x, camera.y]);
+
+  useEffect(() => {
+    drawStaticMapLayer(rendererRef.current, room, dungeon, mapMode, cellSize);
+  }, [pixiReady, room.columns, room.rows, dungeonRenderKey, mapMode, cellSize]);
+
+  useEffect(() => {
+    dungeonPreviewRef.current.clear();
+    drawDungeonPreviewLayer(rendererRef.current, dungeonPreviewRef.current, cellSize, dungeon);
+  }, [pixiReady, dungeonRenderKey, mapMode]);
+
+  useEffect(() => {
+    drawDungeonPreviewLayer(rendererRef.current, dungeonPreviewRef.current, cellSize, dungeon);
+  }, [pixiReady, cellSize, dungeon]);
+
+  useEffect(
+    () => () => {
+      if (dungeonPreviewFrameRef.current != null) {
+        const cancelFrame = window.cancelAnimationFrame || window.clearTimeout;
+        cancelFrame(dungeonPreviewFrameRef.current);
+        dungeonPreviewFrameRef.current = null;
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    drawHighlightsLayer(
+      rendererRef.current,
       room,
-      placedEntities,
-      selectedId,
-      activeTurnId,
+      cellSize,
       mapMode,
       selectedEntity,
       busy,
       hoverCell,
       blockingByPosition,
       reachableCells,
-      cellSize,
-      camera,
-    });
+    );
   }, [
     pixiReady,
-    textureVersion,
-    room,
-    placedEntities,
-    selectedId,
-    activeTurnId,
+    room.columns,
+    room.rows,
+    cellSize,
     mapMode,
     selectedEntity,
     busy,
     hoverCell,
     blockingByPosition,
     reachableCells,
-    cellSize,
-    camera,
   ]);
+
+  useEffect(() => {
+    drawUnitsLayer(rendererRef.current, placedEntities, selectedId, activeTurnId, cellSize);
+  }, [pixiReady, textureVersion, placedEntities, selectedId, activeTurnId, cellSize]);
 
   useEffect(() => {
     const renderer = rendererRef.current;
@@ -716,6 +990,7 @@ function BattleMapSurface({
     const radius = Math.max(12, cellSize / 2 - 2);
     const ring = new renderer.PIXI.Graphics();
     let destroyed = false;
+    let frameId = null;
 
     ring.position.set(center.x, center.y);
     renderer.layers.effects.addChild(ring);
@@ -725,7 +1000,10 @@ function BattleMapSurface({
         return;
       }
       destroyed = true;
-      renderer.app.ticker.remove(tick);
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId);
+        frameId = null;
+      }
       ring.parent?.removeChild(ring);
       ring.destroy();
       renderer.app.render();
@@ -753,6 +1031,8 @@ function BattleMapSurface({
       renderer.app.render();
       if (progress >= 1) {
         destroyRing();
+      } else {
+        frameId = window.requestAnimationFrame(tick);
       }
     }
 
@@ -767,7 +1047,6 @@ function BattleMapSurface({
     }
 
     const startedAt = performance.now();
-    renderer.app.ticker.add(tick);
     tick();
 
     return destroyRing;
@@ -787,6 +1066,25 @@ function BattleMapSurface({
 
   function applyCamera(nextCamera) {
     setCamera(clampCamera(nextCamera, viewportRef.current, room, cellSizeRef.current));
+  }
+
+  function renderDungeonPreviewSoon() {
+    if (dungeonPreviewFrameRef.current != null) {
+      return;
+    }
+
+    const requestFrame = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 0));
+    dungeonPreviewFrameRef.current = requestFrame(() => {
+      dungeonPreviewFrameRef.current = null;
+      drawDungeonPreviewLayer(rendererRef.current, dungeonPreviewRef.current, cellSizeRef.current, dungeon);
+    });
+  }
+
+  function removeDungeonPreviewCells(keys) {
+    for (const key of keys) {
+      dungeonPreviewRef.current.delete(key);
+    }
+    renderDungeonPreviewSoon();
   }
 
   function handleWheel(event) {
@@ -852,6 +1150,31 @@ function BattleMapSurface({
     setIsPanning(true);
   }
 
+  function paintBrushCell(cell) {
+    if (!cell || !brushStrokeRef.current) return;
+    const key = `${cell.x},${cell.y}`;
+    if (brushStrokeRef.current.cells.has(key)) return;
+    brushStrokeRef.current.cells.add(key);
+    dungeonPreviewRef.current.set(key, { x: cell.x, y: cell.y, tileType: brushStrokeRef.current.palette });
+    renderDungeonPreviewSoon();
+  }
+
+  async function flushBrushStroke() {
+    const stroke = brushStrokeRef.current;
+    brushStrokeRef.current = null;
+    if (!stroke || stroke.cells.size === 0) return;
+    const keys = [...stroke.cells];
+    if (!onTileEdit) {
+      removeDungeonPreviewCells(keys);
+      return;
+    }
+    const cells = keys.map((key) => key.split(",").map(Number));
+    const payload = await onTileEdit(stroke.palette, cells);
+    if (!payload) {
+      removeDungeonPreviewCells(keys);
+    }
+  }
+
   function handlePointerDown(event) {
     const pointerType = pointerTypeOf(event);
     const pointerId = pointerIdOf(event);
@@ -868,9 +1191,19 @@ function BattleMapSurface({
     }
 
     const cell = cellFromPointer(event);
-    const blocking = cell ? blockingByPosition.has(positionKey(cell.x, cell.y)) : false;
-    const isMiddleMouse = pointerType !== "touch" && pointerButton === 1;
     const isLeftMouse = pointerType !== "touch" && pointerButton === 0;
+    const isMiddleMouse = pointerType !== "touch" && pointerButton === 1;
+
+    // In GM Dungeon mode, left click starts a brush stroke
+    if (mapMode === "gm-dungeon" && !busy && (isLeftMouse || pointerType === "touch") && cell) {
+      event.preventDefault();
+      brushStrokeRef.current = { palette: gmDungeonPalette, cells: new Set() };
+      paintBrushCell(cell);
+      surfaceRef.current?.setPointerCapture?.(pointerId);
+      return;
+    }
+
+    const blocking = cell ? blockingByPosition.has(positionKey(cell.x, cell.y)) : false;
     const canStartPan = isMiddleMouse || ((isLeftMouse || pointerType === "touch") && !blocking);
 
     if (!canStartPan) {
@@ -920,6 +1253,14 @@ function BattleMapSurface({
       return;
     }
 
+    // Brush drag in GM Dungeon mode
+    if (mapMode === "gm-dungeon" && brushStrokeRef.current) {
+      const cell = cellFromPointer(event);
+      paintBrushCell(cell);
+      updateHoverCell(event);
+      return;
+    }
+
     const pan = panRef.current;
     if (!pan || pan.pointerId !== pointerId) {
       updateHoverCell(event);
@@ -948,6 +1289,14 @@ function BattleMapSurface({
     const pointerType = pointerTypeOf(event);
     const pointerId = pointerIdOf(event);
     const pointerButton = pointerButtonOf(event);
+
+    // Flush brush stroke in GM Dungeon mode
+    if (mapMode === "gm-dungeon" && brushStrokeRef.current) {
+      flushBrushStroke();
+      surfaceRef.current?.releasePointerCapture?.(pointerId);
+      return;
+    }
+
     const pan = panRef.current;
     const wasDragging = pan?.pointerId === pointerId && pan.dragging;
     const wasPinching = Boolean(pinchRef.current);

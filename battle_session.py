@@ -10,11 +10,13 @@ import uuid
 from typing import Optional
 
 from engine.combat import WOUND_CARD_ID, AttackMod, apply_attack, apply_heal
+from engine.dungeon import analyze as dungeon_analyze
+from engine.dungeon import migrate_to_dungeon
 from engine.loader import load_decks, load_enemies
 from engine.loot import roll_loot
 from engine.models import Card, Deck, EnemyTemplate
-from engine.runtime import BattleState, draw_cards, end_turn, spawn_enemy, start_turn
-from engine.runtime_models import DeckState, EnemyInstance
+from engine.runtime import BattleState, draw_additional_cards, draw_cards, end_turn, spawn_enemy, start_turn
+from engine.runtime_models import DeckState, DungeonState, EnemyInstance, Tile
 from persistence import (
     enemy_to_dict,
     load_save_payload,
@@ -142,6 +144,13 @@ class QuickAttackStep:
     manual_effects: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class DrawResolution:
+    card_ids: tuple[str, ...]
+    guard_added: int = 0
+    extra_drawn: int = 0
+
+
 @dataclass
 class BattleSessionContext:
     root: Path
@@ -165,6 +174,7 @@ class BattleSessionContext:
         self.decks = load_decks(self.decks_dir)
         self.enemy_templates = load_enemies(self.enemies_dir, decks=self.decks, images_dir=self.images_dir)
         self.card_index = self._build_card_index()
+        self._sessions: dict[str, BattleSession] = {}
 
     def _build_card_index(self) -> dict[str, Card]:
         index: dict[str, Card] = {}
@@ -204,17 +214,26 @@ class BattleSessionContext:
 
     def create_session(self, sid: Optional[str] = None) -> "BattleSession":
         session = BattleSession(context=self, sid=sid or create_sid())
+        session.dungeon = migrate_to_dungeon(session.room_columns, session.room_rows, [])
+        self._sessions[session.sid] = session
         session.autosave()
         return session
 
     def load_session(self, sid: str, *, create_if_missing: bool = True) -> "BattleSession":
+        if sid in self._sessions:
+            session = self._sessions[sid]
+            session.turn_skip_notice = []
+            return session
         session = BattleSession(context=self, sid=sid)
         payload = load_save_payload(self.current_path(sid))
         if payload:
             session.load_from_payload(payload)
+            self._sessions[sid] = session
             return session
         if not create_if_missing:
             raise BattleSessionError(f"Session '{sid}' not found")
+        session.dungeon = migrate_to_dungeon(session.room_columns, session.room_rows, [])
+        self._sessions[sid] = session
         session.autosave()
         return session
 
@@ -236,6 +255,7 @@ class BattleSession:
     pending_new_round: bool = False
     encounter_started: bool = False
     initiative_rolled_round: Optional[int] = None
+    dungeon: Optional[DungeonState] = None
     turn_skip_notice: list = field(default_factory=list)
     undo_stack: list[dict] = field(default_factory=list)
     redo_stack: list[dict] = field(default_factory=list)
@@ -268,6 +288,7 @@ class BattleSession:
             enemies,
             loaded_round,
             loaded_log,
+            loaded_dungeon,
         ) = restore_state_from_payload(payload)
         self.room_columns, self.room_rows = self._normalized_room_size(
             loaded_room.get("columns", ROOM_DEFAULT_COLUMNS),
@@ -307,6 +328,14 @@ class BattleSession:
             self._auto_place_unplaced_entities()
         self._ensure_selected()
 
+        entities = list(self.state.enemies.values())
+        if loaded_dungeon is not None:
+            self.dungeon = loaded_dungeon
+            # Re-link doors (transient field not persisted)
+            dungeon_analyze(self.dungeon, entities)
+        else:
+            self.dungeon = migrate_to_dungeon(self.room_columns, self.room_rows, entities)
+
     def _build_payload(self, *, include_undo_stack: bool = True) -> dict:
         return make_save_payload(
             version=self.context.save_version,
@@ -323,6 +352,7 @@ class BattleSession:
             combat_log=self.combat_log,
             movement_state=self.movement_state,
             enemies=list(self.state.enemies.values()),
+            dungeon=self.dungeon,
             undo_stack=self.undo_stack if include_undo_stack else None,
             redo_stack=self.redo_stack if include_undo_stack else None,
         )
@@ -369,6 +399,7 @@ class BattleSession:
             "undoDepth": len(self.undo_stack),
             "canRedo": bool(self.redo_stack),
             "redoDepth": len(self.redo_stack),
+            "dungeon": self._dungeon_snapshot(),
         }
 
     def list_manual_saves(self) -> list[dict]:
@@ -502,6 +533,158 @@ class BattleSession:
         self._add_log(f"Moved {entity.name} {'up' if direction < 0 else 'down'} in round order")
         self.autosave()
 
+    # ------------------------------------------------------------------
+    # Dungeon management
+    # ------------------------------------------------------------------
+
+    def _dungeon_snapshot(self) -> Optional[dict]:
+        if self.dungeon is None:
+            return None
+        ds = self.dungeon
+        tiles_out = {
+            key: {"tile_type": t.tile_type, "door_open": t.door_open}
+            for key, t in ds.tiles.items()
+        }
+        rooms_out = [
+            {
+                "room_id": r.room_id,
+                "cells": r.cells,
+                "revealed": r.revealed,
+            }
+            for r in ds.rooms
+        ]
+        issues_out = [
+            {
+                "issue_type": i.issue_type,
+                "x": i.x,
+                "y": i.y,
+                "unit_id": i.unit_id,
+                "detail": i.detail,
+            }
+            for i in ds.issues
+        ]
+        linked_doors_out = {
+            key: list(rooms)
+            for key, rooms in ds.linked_doors.items()
+        }
+        return {
+            "tiles": tiles_out,
+            "rooms": rooms_out,
+            "revealedRoomIds": list(ds.revealed_room_ids),
+            "pendingEncounterRoomIds": list(ds.pending_encounter_room_ids),
+            "issues": issues_out,
+            "analysisVersion": ds.analysis_version,
+            "renderVersion": ds.render_version,
+            "linkedDoors": linked_doors_out,
+        }
+
+    def edit_dungeon_tiles(self, tile_type: str, cells: list[list[int]]) -> None:
+        if tile_type not in ("floor", "door", "void"):
+            raise BattleSessionError(f"Unknown tile type '{tile_type}'")
+        if self.dungeon is None:
+            self.dungeon = DungeonState()
+        for cell in cells:
+            x, y = int(cell[0]), int(cell[1])
+            key = f"{x},{y}"
+            if tile_type == "void":
+                if key in self.dungeon.tiles:
+                    del self.dungeon.tiles[key]
+                for entity in self.state.enemies.values():
+                    if entity.grid_x == x and entity.grid_y == y:
+                        self._set_position(entity, None, None)
+                        entity.room_id = None
+            else:
+                existing = self.dungeon.tiles.get(key)
+                door_open = existing.door_open if existing and tile_type == "door" else False
+                self.dungeon.tiles[key] = Tile(tile_type=tile_type, door_open=door_open)
+        self.dungeon.render_version += 1
+        self.autosave()
+
+    def analyze_dungeon(self) -> None:
+        if self.dungeon is None:
+            self.dungeon = migrate_to_dungeon(
+                self.room_columns, self.room_rows, list(self.state.enemies.values())
+            )
+            return
+        dungeon_analyze(self.dungeon, list(self.state.enemies.values()))
+        self.autosave()
+
+    def open_door(self, x: int, y: int) -> None:
+        if self.dungeon is None:
+            raise BattleSessionError("No dungeon loaded")
+        key = f"{x},{y}"
+        tile = self.dungeon.tiles.get(key)
+        if tile is None or tile.tile_type != "door":
+            raise BattleSessionError(f"No door at ({x}, {y})")
+        if tile.door_open:
+            raise BattleSessionError(f"Door at ({x}, {y}) is already open")
+        link = self.dungeon.linked_doors.get(key)
+        if not link or len(link) != 2:
+            raise BattleSessionError(f"Door at ({x}, {y}) is not linked to two rooms")
+
+        selected = self._require_selected_entity()
+        if selected.grid_x is None or selected.grid_y is None:
+            raise BattleSessionError("Selected unit is not on the map")
+        dist = max(abs(selected.grid_x - x), abs(selected.grid_y - y))
+        if dist > 1:
+            raise BattleSessionError("Selected unit is not adjacent to the door")
+
+        tile.door_open = True
+        self.dungeon.render_version += 1
+
+        # Reveal the room the unit is NOT already in
+        unit_room = selected.room_id
+        new_room_id = link[1] if link[0] == unit_room else link[0]
+        for room in self.dungeon.rooms:
+            if room.room_id == new_room_id:
+                room.revealed = True
+                break
+        if new_room_id not in self.dungeon.revealed_room_ids:
+            self.dungeon.revealed_room_ids.append(new_room_id)
+
+        # During active combat, newly visible enemies join on next round start
+        if self.encounter_started:
+            units_in_new_room = [
+                e for e in self.state.enemies.values()
+                if e.room_id == new_room_id and not self.is_player(e) and not self.is_down(e)
+            ]
+            if units_in_new_room:
+                if new_room_id not in self.dungeon.pending_encounter_room_ids:
+                    self.dungeon.pending_encounter_room_ids.append(new_room_id)
+
+        self._add_log(f"{selected.name} opened a door.")
+        self.autosave()
+
+    def flush_pending_encounter_rooms(self) -> list[str]:
+        """Move pending room units into the initiative order. Called at round start."""
+        if not self.dungeon or not self.dungeon.pending_encounter_room_ids:
+            return []
+        added_ids: list[str] = []
+        for room_id in list(self.dungeon.pending_encounter_room_ids):
+            for entity in self.state.enemies.values():
+                if (
+                    entity.room_id == room_id
+                    and not self.is_player(entity)
+                    and not self.is_down(entity)
+                    and entity.instance_id not in self.order
+                ):
+                    self.order.append(entity.instance_id)
+                    added_ids.append(entity.instance_id)
+        self.dungeon.pending_encounter_room_ids.clear()
+        return added_ids
+
+    def _dungeon_blocks_cell(self, x: int, y: int) -> bool:
+        """Return True if the dungeon makes cell (x,y) impassable."""
+        if self.dungeon is None or not self.dungeon.tiles:
+            return False
+        key = f"{x},{y}"
+        tile = self.dungeon.tiles.get(key)
+        if tile is None:
+            return True   # void / unknown
+        if tile.tile_type == "door" and not tile.door_open:
+            return True   # closed door
+        return False
+
     def set_room_size(self, columns: int, rows: int, *, auto_place_out_of_bounds: bool = False) -> None:
         next_columns, next_rows = self._normalized_room_size(columns, rows)
         out_of_bounds = [
@@ -521,6 +704,15 @@ class BattleSession:
             for entity in out_of_bounds:
                 self._set_position(entity, None, None)
             self._auto_place_unplaced_entities([entity.instance_id for entity in out_of_bounds])
+
+        # Extend dungeon tiles to cover any newly added cells (fill with floor)
+        if self.dungeon:
+            for x in range(next_columns):
+                for y in range(next_rows):
+                    key = f"{x},{y}"
+                    if key not in self.dungeon.tiles:
+                        self.dungeon.tiles[key] = Tile(tile_type="floor")
+            self.dungeon.render_version += 1
 
         self._add_log(f"Battle map resized to {self.room_columns}x{self.room_rows}")
         self.autosave()
@@ -609,12 +801,18 @@ class BattleSession:
 
         result = self._draw_cards_for_turn(entity)
         self.turn_in_progress = True
-        self._set_visible_draw(entity, list(result.drawn))
+        entity.quick_attack_used = False
+        draw_resolution = self._resolve_draw_effects(entity, result.drawn)
+        self._set_visible_draw(entity, list(draw_resolution.card_ids))
 
-        guard_added = self._apply_draw_guard(entity, result.drawn)
-        if result.drawn:
-            drawn_text = ", ".join(self.card_to_effect_text(card_id) for card_id in result.drawn)
-            suffix = f" (+{guard_added} guard)" if guard_added else ""
+        if draw_resolution.card_ids:
+            drawn_text = ", ".join(self.card_to_effect_text(card_id) for card_id in draw_resolution.card_ids)
+            suffix_parts: list[str] = []
+            if draw_resolution.guard_added:
+                suffix_parts.append(f"+{draw_resolution.guard_added} guard")
+            if draw_resolution.extra_drawn:
+                suffix_parts.append(f"+{draw_resolution.extra_drawn} draw")
+            suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
             self._add_log(f"{entity.name} draws: {drawn_text}{suffix}")
         else:
             self._add_log(f"{entity.name} draws no cards")
@@ -630,12 +828,18 @@ class BattleSession:
 
         self._discard_current_draw(entity)
         result = self._draw_cards_for_turn(entity)
-        self._set_visible_draw(entity, list(result.drawn))
+        entity.quick_attack_used = False
+        draw_resolution = self._resolve_draw_effects(entity, result.drawn)
+        self._set_visible_draw(entity, list(draw_resolution.card_ids))
 
-        guard_added = self._apply_draw_guard(entity, result.drawn)
-        if result.drawn:
-            drawn_text = ", ".join(self.card_to_effect_text(card_id) for card_id in result.drawn)
-            suffix = f" (+{guard_added} guard)" if guard_added else ""
+        if draw_resolution.card_ids:
+            drawn_text = ", ".join(self.card_to_effect_text(card_id) for card_id in draw_resolution.card_ids)
+            suffix_parts: list[str] = []
+            if draw_resolution.guard_added:
+                suffix_parts.append(f"+{draw_resolution.guard_added} guard")
+            if draw_resolution.extra_drawn:
+                suffix_parts.append(f"+{draw_resolution.extra_drawn} draw")
+            suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
             self._add_log(f"{entity.name} redraws: {drawn_text}{suffix}")
         else:
             self._add_log(f"{entity.name} redraws no cards")
@@ -743,6 +947,11 @@ class BattleSession:
         self.pending_new_round = False
         self.round += 1
         self._add_log(f"Round {self.round} begins")
+        added = self.flush_pending_encounter_rooms()
+        for iid in added:
+            e = self.state.enemies.get(iid)
+            if e:
+                self._add_log(f"{e.name} joins from a revealed room.")
         for instance_id in self.order:
             entity = self.state.enemies.get(instance_id)
             if not entity or not self._can_take_turn(entity):
@@ -779,7 +988,7 @@ class BattleSession:
                 continue
             mode = modes.get(instance_id, "normal")
             mod = entity.initiative_modifier
-            roll = self._rng.randint(1, 3)
+            roll = self._rng.randint(1, 6)
 
             if mode == "advantage":
                 total = roll + 2 * mod
@@ -883,6 +1092,8 @@ class BattleSession:
             raise BattleSessionError("Press Draw before using Quick Attack.")
         if not attacker.deck_state.hand:
             raise BattleSessionError("Active NPC has no current draw.")
+        if getattr(attacker, "quick_attack_used", False):
+            raise BattleSessionError("Quick Attack has already been used for this draw.")
 
         target = self._require_selected_entity()
         if target.instance_id == attacker.instance_id:
@@ -924,6 +1135,7 @@ class BattleSession:
             message += f", {wound_total} wound{'s' if wound_total != 1 else ''} added"
         if manual_items:
             message += f"; handle manually: {', '.join(manual_items)}"
+        attacker.quick_attack_used = True
         self._add_log(message)
         self.autosave()
 
@@ -962,6 +1174,7 @@ class BattleSession:
             armor=max(0, int(armor)),
             magic_armor=max(0, int(magic_armor)),
             guard=max(0, int(guard)),
+            toughness_cap=entity.toughness_max * 2 if self.is_player(entity) else entity.toughness_max,
         )
         self._add_log(
             f"Heal on {entity.name}: Toughness {log.toughness_before}->{log.toughness_after}, "
@@ -1164,6 +1377,8 @@ class BattleSession:
                     continue
                 if (next_x, next_y) in occupied:
                     continue
+                if self._dungeon_blocks_cell(next_x, next_y):
+                    continue
 
                 is_diagonal = dx != 0 and dy != 0
                 step_cost = 1
@@ -1220,6 +1435,10 @@ class BattleSession:
                     parts.append(f"Attack {effect.amount}")
             elif effect.type == "guard":
                 parts.append(f"Guard {effect.amount}")
+            elif effect.type == "draw":
+                parts.append(f"Draw {effect.amount}")
+            elif effect.type == "disengage":
+                parts.append(f"Disengage {effect.amount}")
             else:
                 parts.append(effect.type)
         return " + ".join(parts) if parts else (card.title or card_id)
@@ -1233,7 +1452,7 @@ class BattleSession:
             manual_effects = tuple(
                 self._effect_label(effect)
                 for effect in card.effects
-                if effect.type not in {"attack", "guard"}
+                if effect.type not in {"attack", "guard", "draw"}
             )
             for effect in card.effects:
                 if effect.type != "attack":
@@ -1311,9 +1530,13 @@ class BattleSession:
             draws = 0
         return draw_cards(entity, draws, rnd=self._rng)
 
-    def _apply_draw_guard(self, entity: EnemyInstance, card_ids: list[str]) -> int:
+    def _resolve_draw_effects(self, entity: EnemyInstance, card_ids: list[str]) -> DrawResolution:
+        resolved: list[str] = list(card_ids)
+        pending: list[str] = list(card_ids)
         guard_added = 0
-        for card_id in card_ids:
+        extra_drawn = 0
+        while pending:
+            card_id = pending.pop(0)
             card = self.context.card_index.get(card_id)
             if not card:
                 continue
@@ -1321,7 +1544,13 @@ class BattleSession:
                 if effect.type == "guard":
                     apply_heal(entity, guard=int(effect.amount))
                     guard_added += int(effect.amount)
-        return guard_added
+                elif effect.type == "draw":
+                    result = draw_additional_cards(entity, max(0, int(effect.amount)), rnd=self._rng)
+                    if result.drawn:
+                        resolved.extend(result.drawn)
+                        pending.extend(result.drawn)
+                        extra_drawn += len(result.drawn)
+        return DrawResolution(card_ids=tuple(resolved), guard_added=guard_added, extra_drawn=extra_drawn)
 
     def _guard_from_draw(self, card_ids: list[str]) -> int:
         guard_total = 0
@@ -1347,6 +1576,7 @@ class BattleSession:
     def _start_turn(self, entity: EnemyInstance) -> None:
         start_log = start_turn(entity)
         self._set_visible_draw(entity, [])
+        entity.quick_attack_used = False
         if start_log.dot_damage:
             self._add_log(f"{entity.name} takes {start_log.dot_damage} DOT")
 
@@ -1366,10 +1596,26 @@ class BattleSession:
     def _has_position(entity: EnemyInstance) -> bool:
         return getattr(entity, "grid_x", None) is not None and getattr(entity, "grid_y", None) is not None
 
-    @staticmethod
-    def _set_position(entity: EnemyInstance, x: Optional[int], y: Optional[int]) -> None:
+    def _set_position(self, entity: EnemyInstance, x: Optional[int], y: Optional[int]) -> None:
         entity.grid_x = int(x) if x is not None else None
         entity.grid_y = int(y) if y is not None else None
+        entity.room_id = self._room_id_for_position(entity.grid_x, entity.grid_y)
+
+    def _room_id_for_position(self, x: Optional[int], y: Optional[int]) -> Optional[str]:
+        if x is None or y is None or self.dungeon is None:
+            return None
+        tile = self.dungeon.tiles.get(f"{int(x)},{int(y)}")
+        if tile is None:
+            return None
+        for room in self.dungeon.rooms:
+            for cell in room.cells:
+                if len(cell) >= 2 and int(cell[0]) == int(x) and int(cell[1]) == int(y):
+                    return room.room_id
+        return None
+
+    def _sync_all_entity_rooms(self) -> None:
+        for entity in self.state.enemies.values():
+            entity.room_id = self._room_id_for_position(entity.grid_x, entity.grid_y)
 
     def _position_in_bounds(self, x: Optional[int], y: Optional[int]) -> bool:
         return self._position_in_bounds_for_room(x, y, self.room_columns, self.room_rows)
@@ -1472,6 +1718,7 @@ class BattleSession:
                 "image_url": self.image_url_for(entity),
                 "is_player": self.is_player(entity),
                 "is_down": self.is_down(entity),
+                "quick_attack_used": bool(getattr(entity, "quick_attack_used", False)),
                 "effective_movement": self.effective_movement(entity),
                 "status_text": self.format_statuses(entity.statuses),
                 "current_draw_text": [self.card_to_effect_text(card_id) for card_id in self.visible_draw_for(entity)],

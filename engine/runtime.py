@@ -109,21 +109,12 @@ def _reshuffle_if_needed(ds: DeckState, *, rnd: random.Random) -> bool:
     return True
 
 
-def draw_cards(enemy: EnemyInstance, n: int, *, rnd: Optional[random.Random] = None) -> DrawResult:
-    """
-    Draw up to n fresh cards into enemy.deck_state.hand.
-    Existing hand cleanup is a start-of-turn concern.
-    """
+def _draw_into_hand(enemy: EnemyInstance, n: int, *, rnd: random.Random) -> tuple[list[str], bool]:
     if n < 0:
         raise ValueError("n must be >= 0")
-    rnd = rnd or random.Random()
-
     ds = enemy.deck_state
     drawn_now: list[str] = []
     reshuffled_any = False
-
-    if ds.hand:
-        raise ValueError("hand must be cleared at start of turn before drawing")
 
     for _ in range(n):
         # ensure we have something to draw
@@ -133,6 +124,41 @@ def draw_cards(enemy: EnemyInstance, n: int, *, rnd: Optional[random.Random] = N
         card_id = ds.draw_pile.pop(0)
         ds.hand.append(card_id)
         drawn_now.append(card_id)
+
+    return drawn_now, reshuffled_any
+
+
+def draw_cards(enemy: EnemyInstance, n: int, *, rnd: Optional[random.Random] = None) -> DrawResult:
+    """
+    Draw up to n fresh cards into enemy.deck_state.hand.
+    Existing hand cleanup is a start-of-turn concern.
+    """
+    rnd = rnd or random.Random()
+
+    ds = enemy.deck_state
+    if ds.hand:
+        raise ValueError("hand must be cleared at start of turn before drawing")
+
+    drawn_now, reshuffled_any = _draw_into_hand(enemy, n, rnd=rnd)
+
+    return DrawResult(
+        instance_id=enemy.instance_id,
+        requested=n,
+        drawn=drawn_now,
+        reshuffled=reshuffled_any,
+        draw_pile_after=len(ds.draw_pile),
+        discard_pile_after=len(ds.discard_pile),
+        hand_after=len(ds.hand),
+    )
+
+
+def draw_additional_cards(enemy: EnemyInstance, n: int, *, rnd: Optional[random.Random] = None) -> DrawResult:
+    """
+    Draw extra cards into the current hand, used by resolved draw effects.
+    """
+    rnd = rnd or random.Random()
+    ds = enemy.deck_state
+    drawn_now, reshuffled_any = _draw_into_hand(enemy, n, rnd=rnd)
 
     return DrawResult(
         instance_id=enemy.instance_id,
@@ -153,6 +179,7 @@ def start_turn(enemy: EnemyInstance):
     if ds.hand:
         ds.discard_pile.extend(ds.hand)
         ds.hand.clear()
+    enemy.quick_attack_used = False
     return on_turn_start(enemy)
 
 

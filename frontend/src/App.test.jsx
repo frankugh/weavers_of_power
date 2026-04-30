@@ -34,6 +34,7 @@ function buildEnemy(overrides = {}) {
     status_text: "-",
     current_draw_text: [],
     current_draw_attacks: [],
+    quick_attack_used: false,
     last_draw_text: [],
     loot_rolled: false,
     rolled_loot: {},
@@ -747,6 +748,58 @@ describe("App", () => {
     });
     expect(await screen.findByText("Player Wounds")).toBeInTheDocument();
     expect(screen.getByText((_, node) => node?.textContent === "Mira gains 1 wound.")).toBeInTheDocument();
+  });
+
+  it("disables quick attack after it has been used for the current draw", async () => {
+    const user = userEvent.setup();
+    const attacker = buildEnemy({
+      instance_id: "enemy-1",
+      name: "Goblin 1",
+      current_draw_text: ["Attack 3"],
+      current_draw_attacks: [{ damage: 3, modifiers: [], label: "Attack 3" }],
+    });
+    const target = buildEnemy({
+      instance_id: "enemy-2",
+      template_id: "bandit",
+      name: "Bandit 1",
+      image_url: "/images/Outlaws/bandit.png",
+      grid_x: 5,
+      grid_y: 3,
+    });
+    const attackedSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      activeTurnId: "enemy-1",
+      turnInProgress: true,
+      order: ["enemy-1", "enemy-2"],
+      enemies: [{ ...attacker, quick_attack_used: true }, { ...target, toughness_current: 7 }],
+      quickAttackNotice: "Quick Attack: Goblin 1 attacks Bandit 1 with Attack 3.",
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "enemy-2",
+        activeTurnId: "enemy-1",
+        turnInProgress: true,
+        order: ["enemy-1", "enemy-2"],
+        enemies: [attacker, target],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/turn/quick-attack" && requestOptions?.method === "POST") {
+            return jsonResponse(attackedSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const quickAttackButton = await screen.findByRole("button", { name: "Quick Attack" });
+    expect(quickAttackButton).toBeEnabled();
+
+    await user.click(quickAttackButton);
+
+    expect(await screen.findByText("Quick Attack: Goblin 1 attacks Bandit 1 with Attack 3.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Quick Attack" })).toBeDisabled();
   });
 
   it("shows a temporary draw card inspector and battle map pulse after a successful draw", async () => {

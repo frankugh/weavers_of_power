@@ -92,6 +92,16 @@ class LoadRequest(BaseModel):
     filename: str
 
 
+class DungeonTilesRequest(BaseModel):
+    tileType: str
+    cells: list[list[int]]
+
+
+class DungeonOpenDoorRequest(BaseModel):
+    x: int
+    y: int
+
+
 def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def load_session_or_400(sid: str):
         try:
@@ -294,3 +304,18 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.post("/api/battle/sessions/{sid}/load")
     def load_manual_save(sid: str, request: LoadRequest):
         return run_mutation(sid, lambda session: session.load_manual(request.filename), undoable=False)
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/tiles")
+    def edit_dungeon_tiles(sid: str, request: DungeonTilesRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.edit_dungeon_tiles(request.tileType, request.cells),
+        )
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/analyze")
+    def analyze_dungeon(sid: str):
+        return run_mutation(sid, lambda session: session.analyze_dungeon())
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/doors/open")
+    def open_door(sid: str, request: DungeonOpenDoorRequest):
+        return run_mutation(sid, lambda session: session.open_door(request.x, request.y))

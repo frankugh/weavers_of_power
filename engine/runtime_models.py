@@ -2,6 +2,42 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+
+@dataclass
+class Tile:
+    tile_type: str          # "floor" | "door"
+    door_open: bool = False
+
+
+@dataclass
+class DungeonRoom:
+    room_id: str
+    cells: list = field(default_factory=list)   # list of [x, y]
+    revealed: bool = False
+
+
+@dataclass
+class DungeonIssue:
+    issue_type: str         # "unlinkedDoor" | "ambiguousDoor" | "unitOffGrid" | "roomIdentityConflict"
+    x: Optional[int] = None
+    y: Optional[int] = None
+    unit_id: Optional[str] = None
+    detail: str = ""
+
+
+@dataclass
+class DungeonState:
+    tiles: dict = field(default_factory=dict)                       # "x,y" → Tile
+    rooms: list = field(default_factory=list)                       # list of DungeonRoom
+    revealed_room_ids: list = field(default_factory=list)           # str room_ids
+    pending_encounter_room_ids: list = field(default_factory=list)  # str room_ids
+    issues: list = field(default_factory=list)                      # list of DungeonIssue
+    analysis_version: int = 0
+    render_version: int = 0
+    # linked_doors is derived by analysis and persisted to avoid re-analyzing on every request.
+    linked_doors: dict = field(default_factory=dict)                # "x,y" → [room_id_a, room_id_b]
+
+
 @dataclass
 class DeckState:
     draw_pile: list[str] = field(default_factory=list)     # card_ids in shuffle order
@@ -40,8 +76,10 @@ class EnemyInstance:
     loot_rolled: bool = False
 
     deck_state: DeckState = field(default_factory=DeckState)
+    quick_attack_used: bool = False
 
     statuses: dict[str, dict] = field(default_factory=dict)
 
     grid_x: Optional[int] = None
     grid_y: Optional[int] = None
+    room_id: Optional[str] = None

@@ -22,7 +22,10 @@ const MAP_MODES = {
   MOVE: "move",
   REPOSITION: "reposition",
   GM_REPOSITION: "gm-reposition",
+  GM_DUNGEON: "gm-dungeon",
 };
+
+const GM_DUNGEON_PALETTES = ["floor", "void", "door"];
 const DRAW_REVEAL_TIMING = {
   enterMs: 80,
   holdMs: 3200,
@@ -230,6 +233,7 @@ function App() {
   });
   const [initiativeModes, setInitiativeModes] = useState({});
   const [initiativeOpenReason, setInitiativeOpenReason] = useState("manual");
+  const [gmDungeonPalette, setGmDungeonPalette] = useState("floor");
 
   useEffect(() => {
     if (!meta || customForm.coreDeckId || meta.decks.length === 0) {
@@ -444,9 +448,25 @@ function App() {
   );
   const canReposition = Boolean(selectedEntity);
   const isGmRepositionMode = mapMode === MAP_MODES.GM_REPOSITION;
+  const isGmDungeonMode = mapMode === MAP_MODES.GM_DUNGEON;
   const canUseGmReposition = orderedEnemies.length > 0;
+  const dungeon = snapshot?.dungeon || null;
+  const adjacentOpenableDoors = useMemo(() => {
+    if (!dungeon || !selectedEntity || selectedEntity.grid_x == null || selectedEntity.grid_y == null) return [];
+    const result = [];
+    const { grid_x: sx, grid_y: sy } = selectedEntity;
+    for (const [key, tile] of Object.entries(dungeon.tiles || {})) {
+      if (tile.tile_type !== "door" || tile.door_open) continue;
+      const [dx, dy] = key.split(",").map(Number);
+      if (Math.max(Math.abs(sx - dx), Math.abs(sy - dy)) <= 1 && (dungeon.linkedDoors || {})[key]) {
+        result.push({ x: dx, y: dy, key });
+      }
+    }
+    return result;
+  }, [dungeon, selectedEntity?.grid_x, selectedEntity?.grid_y, selectedEntity?.instance_id]);
   const activeDrawAttacks = activeEntity?.current_draw_attacks || [];
-  const canQuickAttack = Boolean(
+  const quickAttackAlreadyUsed = Boolean(activeEntity?.quick_attack_used);
+  const hasQuickAttackTarget = Boolean(
     activeEntity &&
       selectedEntity &&
       !activeEntity.is_player &&
@@ -455,6 +475,7 @@ function App() {
       !selectedIsDown &&
       activeDrawAttacks.length > 0,
   );
+  const canQuickAttack = hasQuickAttackTarget && !quickAttackAlreadyUsed;
 
   const canDraw = Boolean(
     selectedEntity &&
@@ -481,6 +502,7 @@ function App() {
       snapshot.turnInProgress &&
       contextMenuEntity.instance_id !== activeEntity.instance_id &&
       !contextMenuEntity.is_down &&
+      !quickAttackAlreadyUsed &&
       activeDrawAttacks.length > 0,
   );
   const selectedStatuses = Object.entries(selectedEntity?.statuses || {});
@@ -633,6 +655,40 @@ function App() {
     setActionMenuOpen(false);
     setUnitContextMenu(null);
     setMapMode((current) => (current === MAP_MODES.GM_REPOSITION ? MAP_MODES.IDLE : MAP_MODES.GM_REPOSITION));
+  }
+
+  function toggleGmDungeonMode() {
+    setActionMenuOpen(false);
+    setUnitContextMenu(null);
+    if (isGmDungeonMode) {
+      exitGmDungeonMode();
+    } else {
+      setMapMode(MAP_MODES.GM_DUNGEON);
+    }
+  }
+
+  async function exitGmDungeonMode() {
+    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/analyze`, { method: "POST" });
+    setMapMode(MAP_MODES.IDLE);
+  }
+
+  async function submitTileEdit(tileType, cells) {
+    if (!snapshot?.sid || cells.length === 0) return null;
+    return applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/tiles`, {
+      method: "POST",
+      body: JSON.stringify({ tileType, cells }),
+    });
+  }
+
+  async function submitAnalyzeDungeon() {
+    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/analyze`, { method: "POST" });
+  }
+
+  async function handleOpenDoor(x, y) {
+    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/doors/open`, {
+      method: "POST",
+      body: JSON.stringify({ x, y }),
+    });
   }
 
   async function handleSelect(instanceId, options = {}) {
@@ -1256,6 +1312,15 @@ function App() {
           >
             {isGmRepositionMode ? "Exit GM" : "GM Reposition"}
           </button>
+          <button
+            className={`menu-button gm-dungeon-button ${isGmDungeonMode ? "gm-dungeon-active" : ""}`.trim()}
+            type="button"
+            title="Edit dungeon tiles. Paint floor, void, or door cells."
+            onClick={toggleGmDungeonMode}
+            disabled={busy}
+          >
+            {isGmDungeonMode ? "Exit Dungeon GM" : "GM Dungeon"}
+          </button>
           <a className="menu-button menu-link" href={snapshot.sid ? `/legacy?sid=${snapshot.sid}` : "/legacy"}>
             Legacy
           </a>
@@ -1275,15 +1340,51 @@ function App() {
               activeTurnId={snapshot.activeTurnId}
               mapMode={mapMode}
               movementState={movementState}
+              dungeon={dungeon}
+              gmDungeonPalette={gmDungeonPalette}
               drawPulse={drawReveal ? { entityId: drawReveal.entityId, key: drawReveal.key } : null}
               busy={busy}
               onRoomSubmit={handleRoomSubmit}
               onSelect={handleSelect}
               onMoveToCell={handleMoveSelectedToCell}
+              onTileEdit={submitTileEdit}
               onUnitContextMenu={handleUnitContextMenu}
               onUnitDoubleClick={handleUnitDoubleClick}
             />
           </section>
+
+          {isGmDungeonMode && (
+            <section className="dungeon-toolbar">
+              <div className="dungeon-palette">
+                {GM_DUNGEON_PALETTES.map((p) => (
+                  <button
+                    key={p}
+                    className={`dungeon-palette-btn${gmDungeonPalette === p ? " active" : ""}`}
+                    onClick={() => setGmDungeonPalette(p)}
+                    type="button"
+                  >
+                    {p.charAt(0).toUpperCase() + p.slice(1)}
+                  </button>
+                ))}
+              </div>
+              <button
+                className="menu-button"
+                type="button"
+                onClick={submitAnalyzeDungeon}
+                disabled={busy}
+              >
+                Analyze
+              </button>
+              <button
+                className="menu-button gm-dungeon-active"
+                type="button"
+                onClick={exitGmDungeonMode}
+                disabled={busy}
+              >
+                Exit Dungeon GM
+              </button>
+            </section>
+          )}
 
           <section className="action-bar">
             <div className="action-copy">
@@ -1325,15 +1426,26 @@ function App() {
                 >
                   {mapMode === MAP_MODES.MOVE ? "Cancel Move" : "Move"}
                 </button>
-                {canQuickAttack ? (
+                {hasQuickAttackTarget ? (
                   <button
                     className="primary-button"
                     onClick={handleQuickAttack}
-                    disabled={busy}
+                    disabled={!canQuickAttack || busy}
                   >
                     Quick Attack
                   </button>
                 ) : null}
+                {adjacentOpenableDoors.map((door) => (
+                  <button
+                    key={door.key}
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => handleOpenDoor(door.x, door.y)}
+                    disabled={busy}
+                  >
+                    Open Door
+                  </button>
+                ))}
                 <button
                   className="secondary-button"
                   onClick={() => {
@@ -2446,8 +2558,8 @@ function App() {
               <span className="initiative-bulk-label">{label}</span>
               {[
                 { mode: "normal", tip: null },
-                { mode: "advantage", tip: "Rolls d3 + 2× modifier" },
-                { mode: "disadvantage", tip: "Rolls d3 only, modifier ignored" },
+                { mode: "advantage", tip: "Rolls d6 + 2× modifier" },
+                { mode: "disadvantage", tip: "Rolls d6 only, modifier ignored" },
                 { mode: "surprised", tip: "Skips first turn this round" },
               ].map(({ mode, tip }) => (
                 <button
@@ -2488,9 +2600,9 @@ function App() {
                 <div className="initiative-mode-pills">
                   {[
                     { mode: "normal", label: "Normal", tip: null },
-                    { mode: "advantage", label: "Advantage", tip: "Rolls d3 + 2× modifier — exceptionally fast or well-prepared" },
-                    { mode: "disadvantage", label: "Disadvantage", tip: "Rolls d3 only, modifier ignored — sluggish or caught off guard" },
-                    { mode: "surprised", label: "Surprised", tip: "Rolls d3 + modifier but skips their first turn this round" },
+                    { mode: "advantage", label: "Advantage", tip: "Rolls d6 + 2× modifier — exceptionally fast or well-prepared" },
+                    { mode: "disadvantage", label: "Disadvantage", tip: "Rolls d6 only, modifier ignored — sluggish or caught off guard" },
+                    { mode: "surprised", label: "Surprised", tip: "Rolls d6 + modifier but skips their first turn this round" },
                   ].map(({ mode, label, tip }) => (
                     <button
                       key={mode}
@@ -2564,11 +2676,14 @@ function BattleRoom({
   activeTurnId,
   mapMode,
   movementState,
+  dungeon,
+  gmDungeonPalette,
   drawPulse,
   busy,
   onRoomSubmit,
   onSelect,
   onMoveToCell,
+  onTileEdit,
   onUnitContextMenu,
   onUnitDoubleClick,
 }) {
@@ -2640,10 +2755,13 @@ function BattleRoom({
         selectedEntity={selectedEntity}
         mapMode={mapMode}
         movementState={movementState}
+        dungeon={dungeon}
+        gmDungeonPalette={gmDungeonPalette}
         drawPulse={drawPulse}
         busy={busy}
         onSelect={onSelect}
         onMoveToCell={onMoveToCell}
+        onTileEdit={onTileEdit}
         onUnitContextMenu={onUnitContextMenu}
         onUnitDoubleClick={onUnitDoubleClick}
       />

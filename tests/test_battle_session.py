@@ -392,6 +392,24 @@ class BattleSessionTests(unittest.TestCase):
         self.assertGreaterEqual(len(session.snapshot()["enemies"][0]["current_draw_text"]), 1)
         self.assertIn("redraws", session.combat_log[0])
 
+    def test_draw_effect_immediately_draws_next_card(self) -> None:
+        session = self.context.create_session("draw-effect")
+        session.add_enemy_from_template("goblin")
+        enemy = session.state.enemies[session.selected_id]
+        enemy.power_base = 1
+        enemy.deck_state.draw_pile = ["ctrl_dis5_draw", "ctrl_a3"]
+        enemy.deck_state.discard_pile = []
+        enemy.deck_state.hand = []
+
+        session.draw_turn()
+
+        self.assertEqual(enemy.deck_state.hand, ["ctrl_dis5_draw", "ctrl_a3"])
+        self.assertEqual(session.visible_draw_for(enemy), ["ctrl_dis5_draw", "ctrl_a3"])
+        payload = session.snapshot()["enemies"][0]
+        self.assertEqual(payload["current_draw_text"], ["Disengage 5 + Draw 1", "Attack 3"])
+        self.assertEqual(payload["current_draw_attacks"][0]["damage"], 3)
+        self.assertIn("+1 draw", session.combat_log[0])
+
     def test_quick_attack_applies_current_draw_to_selected_target(self) -> None:
         session = self.context.create_session("quick-attack")
         session.add_enemy_from_template("bandit")
@@ -417,8 +435,12 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(result["quickAttack"]["targetId"], target_id)
         self.assertEqual(result["quickAttack"]["attacks"][0]["label"], "Attack 4 (stab)")
         self.assertIn("Quick Attack by", session.combat_log[0])
-        target_payload = next(enemy for enemy in session.snapshot()["enemies"] if enemy["instance_id"] == attacker_id)
-        self.assertEqual(target_payload["current_draw_attacks"][0]["damage"], 4)
+        attacker_payload = next(enemy for enemy in session.snapshot()["enemies"] if enemy["instance_id"] == attacker_id)
+        self.assertTrue(attacker.quick_attack_used)
+        self.assertTrue(attacker_payload["quick_attack_used"])
+        self.assertEqual(attacker_payload["current_draw_attacks"][0]["damage"], 4)
+        with self.assertRaisesRegex(ValueError, "already been used"):
+            session.apply_quick_attack_from_active_draw()
 
     def test_quick_attack_applies_multi_attack_sequentially(self) -> None:
         session = self.context.create_session("quick-multi")
@@ -711,6 +733,31 @@ class BattleSessionTests(unittest.TestCase):
         session.apply_heal_to_selected(toughness=1, armor=0, magic_armor=0, guard=0)
         self.assertEqual(player.toughness_current, 4)
 
+    def test_player_heal_can_overheal_to_twice_toughness_max(self) -> None:
+        session = self.context.create_session("player-overheal")
+        session.add_player(name="Mira", toughness=3, armor=0, magic_armor=0, power=1, movement=5)
+        player = session.state.enemies[session.selected_id]
+        player.toughness_current = 2
+
+        session.apply_heal_to_selected(toughness=3, armor=0, magic_armor=0, guard=0)
+
+        self.assertEqual(player.toughness_current, 5)
+
+        session.apply_heal_to_selected(toughness=3, armor=0, magic_armor=0, guard=0)
+
+        self.assertEqual(player.toughness_current, 6)
+
+    def test_enemy_heal_still_clamps_to_toughness_max(self) -> None:
+        session = self.context.create_session("enemy-heal-cap")
+        session.add_enemy_from_template("bandit")
+        enemy = session.state.enemies[session.selected_id]
+        enemy.toughness_current = 2
+        enemy.toughness_max = 3
+
+        session.apply_heal_to_selected(toughness=3, armor=0, magic_armor=0, guard=0)
+
+        self.assertEqual(enemy.toughness_current, 3)
+
     def test_player_damage_adds_wounds_and_resets_toughness_for_overflow(self) -> None:
         session = self.context.create_session("player-wounds")
         session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0, power=1, movement=5)
@@ -931,6 +978,7 @@ class BattleSessionTests(unittest.TestCase):
         # normal: roll + mod
         session._rng.seed(0)
         session.roll_initiative({eid: "normal"})
+        self.assertEqual(entity.initiative_roll, 4)
         self.assertEqual(entity.initiative_total, entity.initiative_roll + 3)
 
         # advantage: roll + 2*mod

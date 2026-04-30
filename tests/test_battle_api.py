@@ -265,6 +265,34 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(payload["woundEvents"][0]["wounds"], 2)
         self.assertEqual(payload["woundEvents"][0]["toughnessAfter"], 4)
 
+    def test_heal_endpoint_allows_player_overheal_to_twice_toughness_max(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        self.client.post(
+            f"/api/battle/sessions/{sid}/players",
+            json={"name": "Mira", "toughness": 3, "armor": 0, "magicArmor": 0, "power": 0, "movement": 6},
+        )
+        self.client.post(
+            f"/api/battle/sessions/{sid}/attack",
+            json={"damage": 1, "burn": False, "poison": False, "slow": False, "paralyze": False, "modifiers": []},
+        )
+
+        payload = self.client.post(
+            f"/api/battle/sessions/{sid}/heal",
+            json={"toughness": 3, "armor": 0, "magicArmor": 0, "guard": 0},
+        ).json()
+
+        player = next(enemy for enemy in payload["enemies"] if enemy["template_id"] == "player")
+        self.assertEqual(player["toughness_current"], 5)
+        self.assertEqual(player["toughness_max"], 3)
+
+        payload = self.client.post(
+            f"/api/battle/sessions/{sid}/heal",
+            json={"toughness": 3, "armor": 0, "magicArmor": 0, "guard": 0},
+        ).json()
+
+        player = next(enemy for enemy in payload["enemies"] if enemy["template_id"] == "player")
+        self.assertEqual(player["toughness_current"], 6)
+
     def test_quick_attack_endpoint_uses_active_draw_and_supports_undo(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         attacker_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
@@ -290,14 +318,22 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(quick_response.status_code, 200)
         payload = quick_response.json()
         attacked = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == target_id)
+        attacker_payload = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == attacker_id)
         self.assertEqual(attacked["toughness_current"], 5)
+        self.assertTrue(attacker_payload["quick_attack_used"])
         self.assertTrue(payload["canUndo"])
         self.assertEqual(payload["quickAttack"]["attackerId"], attacker_id)
         self.assertIn("Quick Attack", payload["quickAttackNotice"])
 
+        repeat_response = self.client.post(f"/api/battle/sessions/{sid}/turn/quick-attack")
+        self.assertEqual(repeat_response.status_code, 400)
+        self.assertIn("already been used", repeat_response.json()["detail"])
+
         undo_response = self.client.post(f"/api/battle/sessions/{sid}/undo")
         restored = next(enemy for enemy in undo_response.json()["enemies"] if enemy["instance_id"] == target_id)
+        restored_attacker = next(enemy for enemy in undo_response.json()["enemies"] if enemy["instance_id"] == attacker_id)
         self.assertEqual(restored["toughness_current"], 10)
+        self.assertFalse(restored_attacker["quick_attack_used"])
 
     def test_undo_restores_previous_mutation_state(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
