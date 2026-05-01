@@ -201,6 +201,23 @@ function getDrawRevealEntity(payload) {
   return payload.enemies.find((entity) => entity.instance_id === revealId) || null;
 }
 
+function drawGroupsForEntity(entity) {
+  const groups = Array.isArray(entity?.current_draw_groups)
+    ? entity.current_draw_groups
+        .map((group, index) => ({
+          label: group?.label || `Draw ${index + 1}`,
+          items: Array.isArray(group?.items) ? group.items : [],
+          summary: group?.summary || null,
+        }))
+        .filter((group) => group.items.length > 0)
+    : [];
+  if (groups.length > 0) {
+    return groups;
+  }
+  const items = Array.isArray(entity?.current_draw_text) ? entity.current_draw_text : [];
+  return items.length > 0 ? [{ label: "Draw 1", items, summary: entity?.current_draw_summary || null }] : [];
+}
+
 function getEntityInitial(entity) {
   return (entity?.name || "?").trim().charAt(0).toUpperCase() || "?";
 }
@@ -262,11 +279,13 @@ function App() {
   });
   const [pcForm, setPcForm] = useState({
     name: "",
-    toughness: 3,
-    armor: 0,
+    toughness: 4,
+    armor: 1,
     magicArmor: 0,
-    power: 0,
+    power: 4,
     movement: 6,
+    baseGuard: 1,
+    initiativeModifier: 2,
   });
   const [initiativeModes, setInitiativeModes] = useState({});
   const [initiativeOpenReason, setInitiativeOpenReason] = useState("manual");
@@ -324,6 +343,10 @@ function App() {
       return undefined;
     }
 
+    if (drawReveal.sticky && drawReveal.phase === "hold") {
+      return undefined;
+    }
+
     const nextPhase =
       drawReveal.phase === "enter" ? "hold" : drawReveal.phase === "hold" ? "settle" : null;
     const delay =
@@ -345,14 +368,17 @@ function App() {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [drawReveal?.key, drawReveal?.phase]);
+  }, [drawReveal?.key, drawReveal?.phase, drawReveal?.sticky]);
 
   useEffect(() => {
     if (!drawReveal || drawReveal.phase === "settle") {
       return undefined;
     }
 
-    function settleRevealOnPointerDown() {
+    function settleRevealOnPointerDown(event) {
+      if (event.target?.closest?.(".draw-reveal-panel")) {
+        return;
+      }
       setDrawReveal((current) =>
         current?.key === drawReveal.key && current.phase !== "settle" ? { ...current, phase: "settle" } : current,
       );
@@ -552,9 +578,8 @@ function App() {
 
   const canDraw = Boolean(
     selectedEntity &&
-      !isPlayerSelected &&
       !selectedIsDown &&
-      !snapshot.turnInProgress &&
+      (isPlayerSelected || !snapshot.turnInProgress) &&
       selectedIsActive,
   );
   const canRedraw = Boolean(
@@ -579,7 +604,8 @@ function App() {
       activeDrawAttacks.length > 0,
   );
   const selectedStatuses = Object.entries(selectedEntity?.statuses || {});
-  const selectedHasDraw = Boolean(selectedEntity?.current_draw_text?.length);
+  const selectedDrawGroups = [...drawGroupsForEntity(selectedEntity)].reverse();
+  const selectedHasDraw = selectedDrawGroups.length > 0;
   const selectedHasLoot = Boolean(selectedEntity?.loot_rolled);
   const canOpenActionMore = Boolean(canRedraw || canAttackOrHeal || canRollLoot || canReposition);
   const sessionHasHistory = Boolean(snapshot?.canUndo || snapshot?.canRedo || snapshot?.undoDepth || snapshot?.redoDepth);
@@ -615,7 +641,9 @@ function App() {
 
   function showDrawReveal(payload, kind) {
     const entity = getDrawRevealEntity(payload);
-    const items = entity?.current_draw_text || [];
+    const groups = drawGroupsForEntity(entity);
+    const latestGroup = groups[groups.length - 1] || null;
+    const items = entity?.is_player && latestGroup ? latestGroup.items : entity?.current_draw_text || [];
     if (!entity || !items.length) {
       return;
     }
@@ -625,6 +653,8 @@ function App() {
       entityId: entity.instance_id,
       entityName: entity.name,
       items,
+      groups: entity.is_player && latestGroup ? [latestGroup] : [],
+      sticky: Boolean(entity.is_player),
       kind,
       phase: "enter",
     });
@@ -1994,13 +2024,14 @@ function App() {
                       }`.trim()}
                     >
                       <div className="selected-draw-label">{selectedDrawIsStored ? "Previous draw" : "Current draw"}</div>
-                      <CardList
-                        items={selectedEntity.current_draw_text}
+                      <DrawGroupsList
+                        groups={selectedDrawGroups}
                         compact
                         onCardClick={() => {
                           setDrawDetail({
                             entityName: selectedEntity.name,
-                            items: selectedEntity.current_draw_text,
+                            items: selectedEntity.current_draw_text || selectedDrawGroups.flatMap((group) => group.items),
+                            groups: selectedDrawGroups,
                             kind: selectedDrawIsStored ? "previous draw" : "current draw",
                           });
                           setModal("draw-detail");
@@ -2028,7 +2059,7 @@ function App() {
                     </span>
                     <span className="unit-stat-chip" title="Number of cards the unit draws at the start of its turn.">
                       <span>Power</span>
-                      <strong>{selectedEntity.is_player ? "-" : `${selectedEntity.power_base}`}</strong>
+                      <strong>{selectedEntity.power_base}</strong>
                     </span>
                     <span className="unit-stat-chip unit-stat-move" title="Maximum distance the unit can move in a turn. Doubled when using a Dash action.">
                       <span>Move</span>
@@ -2603,6 +2634,15 @@ function App() {
                     />
                   </label>
                   <label className="field">
+                    <span>Base guard</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={pcForm.baseGuard}
+                      onChange={(event) => setPcForm((current) => ({ ...current, baseGuard: Number(event.target.value) }))}
+                    />
+                  </label>
+                  <label className="field">
                     <span>Power</span>
                     <input
                       type="number"
@@ -2618,6 +2658,15 @@ function App() {
                       min="0"
                       value={pcForm.movement}
                       onChange={(event) => setPcForm((current) => ({ ...current, movement: Number(event.target.value) }))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Initiative</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={pcForm.initiativeModifier}
+                      onChange={(event) => setPcForm((current) => ({ ...current, initiativeModifier: Number(event.target.value) }))}
                     />
                   </label>
                 </div>
@@ -2845,7 +2894,12 @@ function App() {
       >
         {drawDetail ? (
           <div className="panel-body draw-detail-body">
-            <DrawCardView entityName={drawDetail.entityName} items={drawDetail.items} kind={drawDetail.kind} />
+            <DrawCardView
+              entityName={drawDetail.entityName}
+              items={drawDetail.items}
+              groups={drawDetail.groups || []}
+              kind={drawDetail.kind}
+            />
           </div>
         ) : null}
       </ModalShell>
@@ -3151,13 +3205,15 @@ function DrawRevealPanel({ reveal }) {
       aria-live="polite"
       data-draw-reveal-phase={reveal.phase}
     >
-      <DrawCardView entityName={reveal.entityName} items={reveal.items} kind={reveal.kind} />
+      <DrawCardView entityName={reveal.entityName} items={reveal.items} groups={reveal.groups || []} kind={reveal.kind} />
     </aside>
   );
 }
 
-function DrawCardView({ entityName, items, kind = "draw" }) {
+function DrawCardView({ entityName, items, groups = [], kind = "draw" }) {
   const title = kind === "redraw" ? "Redraw" : kind === "previous draw" ? "Previous draw" : "Current draw";
+  const visibleGroups = groups.length ? groups : items?.length ? [{ label: "Draw 1", items }] : [];
+  const count = visibleGroups.reduce((total, group) => total + group.items.length, 0);
 
   return (
     <div className="draw-card-view">
@@ -3166,9 +3222,65 @@ function DrawCardView({ entityName, items, kind = "draw" }) {
           <div className="selected-draw-label">{title}</div>
           <div className="draw-card-view-title">{entityName}</div>
         </div>
-        <span className="draw-card-view-count">{items.length}</span>
+        <span className="draw-card-view-count">{count}</span>
       </div>
-      <CardList items={items} />
+      <DrawGroupsList groups={visibleGroups} />
+    </div>
+  );
+}
+
+function DrawSummary({ summary }) {
+  if (!summary) {
+    return null;
+  }
+  const outcomes = summary.outcomes || {};
+  const energies = summary.energies || {};
+  const outcomeItems = ["success", "fate", "fail"].map((key) => [key, Number(outcomes[key] || 0)]);
+  const energyItems = Object.entries(energies).filter(([, value]) => Number(value) > 0);
+  const hasOutcomes = outcomeItems.some(([, value]) => value > 0);
+  const hasEnergies = energyItems.length > 0;
+  if (!hasOutcomes && !hasEnergies) {
+    return null;
+  }
+
+  return (
+    <div className="draw-summary">
+      {hasOutcomes ? (
+        <div className="draw-summary-row draw-summary-outcomes">
+          {outcomeItems.map(([key, value]) => (
+            <span className={`draw-summary-chip draw-summary-${key}`} key={key}>
+              {key} {value}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {hasEnergies ? (
+        <div className="draw-summary-row draw-summary-energies">
+          {energyItems.map(([key, value]) => (
+            <span className="draw-summary-chip draw-summary-energy" key={key}>
+              {key} {value}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DrawGroupsList({ groups, compact = false, onCardClick = null }) {
+  return (
+    <div className={`draw-groups ${compact ? "draw-groups-compact" : ""}`.trim()}>
+      {groups.map((group, index) => (
+        <div className="draw-group" key={`${group.label}-${index}`}>
+          {groups.length > 1 || group.summary ? (
+            <div className="draw-group-header">
+              {groups.length > 1 ? <div className="draw-group-label">{group.label}</div> : null}
+              <DrawSummary summary={group.summary} />
+            </div>
+          ) : null}
+          <CardList items={group.items} compact={compact} onCardClick={onCardClick} />
+        </div>
+      ))}
     </div>
   );
 }

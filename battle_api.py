@@ -50,11 +50,13 @@ class CustomEnemyRequest(BaseModel):
 
 class AddPlayerRequest(BaseModel):
     name: str = ""
-    toughness: int = Field(default=3, ge=0)
-    armor: int = Field(default=0, ge=0)
+    toughness: int = Field(default=4, ge=0)
+    armor: int = Field(default=1, ge=0)
     magicArmor: int = Field(default=0, ge=0)
-    power: int = Field(default=0, ge=0)
+    power: int = Field(default=4, ge=0)
     movement: int = Field(default=6, ge=0)
+    baseGuard: int = Field(default=1, ge=0)
+    initiativeModifier: int = Field(default=2, ge=0)
 
 
 class AddEnemyRequest(BaseModel):
@@ -199,6 +201,8 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
                 magic_armor=request.magicArmor,
                 power=request.power,
                 movement=request.movement,
+                base_guard=request.baseGuard,
+                initiative_modifier=request.initiativeModifier,
             ),
         )
 

@@ -29,6 +29,16 @@ LOG_LIMIT = 30
 UNDO_LIMIT = 20
 ROOM_DEFAULT_COLUMNS = 10
 ROOM_DEFAULT_ROWS = 7
+PLAYER_DECK_ID = "human_fighter_lvl1"
+HUMAN_FIGHTER_DEFAULTS = {
+    "toughness": 4,
+    "armor": 1,
+    "magic_armor": 0,
+    "power": 4,
+    "movement": 6,
+    "base_guard": 1,
+    "initiative_modifier": 2,
+}
 SUPPORTED_QUICK_ATTACK_MODIFIERS: dict[str, AttackMod] = {
     "stab": "stab",
     "pierce": "pierce",
@@ -93,12 +103,23 @@ def spawn_custom_enemy(
 def spawn_player(
     name: str,
     *,
-    toughness: int = 0,
-    armor: int = 0,
+    toughness: int = HUMAN_FIGHTER_DEFAULTS["toughness"],
+    armor: int = HUMAN_FIGHTER_DEFAULTS["armor"],
     magic_armor: int = 0,
-    power: int = 0,
-    movement: int = 6,
+    power: int = HUMAN_FIGHTER_DEFAULTS["power"],
+    movement: int = HUMAN_FIGHTER_DEFAULTS["movement"],
+    base_guard: int = HUMAN_FIGHTER_DEFAULTS["base_guard"],
+    initiative_modifier: int = HUMAN_FIGHTER_DEFAULTS["initiative_modifier"],
+    player_deck: Optional[Deck] = None,
+    rnd: Optional[random.Random] = None,
 ) -> EnemyInstance:
+    deck_state = DeckState(draw_pile=[], discard_pile=[], hand=[])
+    if player_deck is not None:
+        deck_state = DeckState(
+            draw_pile=build_core_deck_ids(player_deck, rnd=rnd or random.Random()),
+            discard_pile=[],
+            hand=[],
+        )
     return EnemyInstance(
         instance_id=uuid_short(),
         template_id="player",
@@ -110,11 +131,13 @@ def spawn_player(
         armor_max=armor,
         magic_armor_current=magic_armor,
         magic_armor_max=magic_armor,
+        guard_base=base_guard,
         guard_current=0,
         power_base=power,
         movement=movement,
-        core_deck_id=None,
-        deck_state=DeckState(draw_pile=[], discard_pile=[], hand=[]),
+        core_deck_id=player_deck.id if player_deck is not None else None,
+        initiative_modifier=initiative_modifier,
+        deck_state=deck_state,
         statuses={},
     )
 
@@ -149,11 +172,20 @@ class DrawResolution:
     extra_drawn: int = 0
 
 
+@dataclass(frozen=True)
+class PlayerDrawResolution:
+    card_ids: tuple[str, ...]
+    extra_drawn: int = 0
+    instructions: tuple[str, ...] = ()
+    reshuffle_pending: bool = False
+
+
 @dataclass
 class BattleSessionContext:
     root: Path
     saves_dir: Optional[Path] = None
     decks_dir: Optional[Path] = None
+    player_decks_dir: Optional[Path] = None
     enemies_dir: Optional[Path] = None
     images_dir: Optional[Path] = None
     save_version: int = 3
@@ -161,6 +193,11 @@ class BattleSessionContext:
     def __post_init__(self) -> None:
         self.root = Path(self.root)
         self.decks_dir = Path(self.decks_dir) if self.decks_dir else (self.root / "data" / "decks")
+        self.player_decks_dir = (
+            Path(self.player_decks_dir)
+            if self.player_decks_dir
+            else (self.root / "data" / "player_decks")
+        )
         self.enemies_dir = Path(self.enemies_dir) if self.enemies_dir else (self.root / "data" / "enemies")
         self.images_dir = Path(self.images_dir) if self.images_dir else (self.root / "images")
         self.saves_dir = Path(self.saves_dir) if self.saves_dir else (self.root / "saves")
@@ -170,6 +207,7 @@ class BattleSessionContext:
         self.manual_dir.mkdir(parents=True, exist_ok=True)
 
         self.decks = load_decks(self.decks_dir)
+        self.player_decks = load_decks(self.player_decks_dir) if self.player_decks_dir.exists() else {}
         self.enemy_templates = load_enemies(self.enemies_dir, decks=self.decks, images_dir=self.images_dir)
         self.card_index = self._build_card_index()
         self._sessions: dict[str, BattleSession] = {}
@@ -177,6 +215,9 @@ class BattleSessionContext:
     def _build_card_index(self) -> dict[str, Card]:
         index: dict[str, Card] = {}
         for deck in self.decks.values():
+            for card in deck.cards:
+                index[card.id] = card
+        for deck in self.player_decks.values():
             for card in deck.cards:
                 index[card.id] = card
         for template in self.enemy_templates.values():
@@ -292,7 +333,10 @@ class BattleSession:
         self.room_rows = int(loaded_room.get("rows", ROOM_DEFAULT_ROWS) or ROOM_DEFAULT_ROWS)
 
         for enemy in enemies:
-            self._migrate_template_deck_state(enemy)
+            if self.is_player(enemy):
+                self._migrate_player_deck_state(enemy)
+            else:
+                self._migrate_template_deck_state(enemy)
             self.state.add_enemy(enemy)
 
         self.order = [instance_id for instance_id in loaded_order if instance_id in self.state.enemies]
@@ -472,12 +516,17 @@ class BattleSession:
         self,
         *,
         name: str = "",
-        toughness: int = 0,
-        armor: int = 0,
-        magic_armor: int = 0,
-        power: int = 0,
-        movement: int = 6,
+        toughness: int = HUMAN_FIGHTER_DEFAULTS["toughness"],
+        armor: int = HUMAN_FIGHTER_DEFAULTS["armor"],
+        magic_armor: int = HUMAN_FIGHTER_DEFAULTS["magic_armor"],
+        power: int = HUMAN_FIGHTER_DEFAULTS["power"],
+        movement: int = HUMAN_FIGHTER_DEFAULTS["movement"],
+        base_guard: int = HUMAN_FIGHTER_DEFAULTS["base_guard"],
+        initiative_modifier: int = HUMAN_FIGHTER_DEFAULTS["initiative_modifier"],
     ) -> None:
+        player_deck = self.context.player_decks.get(PLAYER_DECK_ID)
+        if player_deck is None:
+            raise BattleSessionError(f"Player deck '{PLAYER_DECK_ID}' is not loaded")
         resolved_name = name.strip() or f"Player {self._next_suffix('Player')}"
         instance = spawn_player(
             resolved_name,
@@ -486,6 +535,10 @@ class BattleSession:
             magic_armor=max(0, int(magic_armor)),
             power=max(0, int(power)),
             movement=max(0, int(movement)),
+            base_guard=max(0, int(base_guard)),
+            initiative_modifier=max(0, int(initiative_modifier)),
+            player_deck=player_deck,
+            rnd=self._rng,
         )
         self.state.add_enemy(instance)
         self._auto_place_entity(instance)
@@ -1028,11 +1081,16 @@ class BattleSession:
         self.autosave()
 
     def draw_turn(self) -> None:
-        entity = self._require_selected_enemy()
+        entity = self._require_selected_entity()
         if not self._can_take_turn(entity):
             raise BattleSessionError("Down units cannot take a turn.")
         if self.active_turn_id is not None and self.active_turn_id != entity.instance_id:
-            raise BattleSessionError("Another enemy has the active turn. End that turn first.")
+            raise BattleSessionError("Another unit has the active turn. End that turn first.")
+
+        if self.is_player(entity):
+            self._draw_player_turn(entity)
+            return
+
         if self.turn_in_progress:
             raise BattleSessionError("This enemy has already drawn this turn.")
 
@@ -1102,17 +1160,16 @@ class BattleSession:
         self.next_turn()
 
     def end_turn_selected(self) -> None:
-        entity = self._require_selected_enemy()
+        entity = self._require_selected_entity()
         if self.active_turn_id is None or self.active_turn_id != entity.instance_id:
-            raise BattleSessionError("End turn applies only to the active enemy.")
+            raise BattleSessionError("End turn applies only to the active unit.")
         if not self.turn_in_progress:
             raise BattleSessionError("Press Draw first (or use Enemy turn without draw).")
 
-        end_turn(entity)
+        self._finish_turn(entity)
         self.active_turn_id = None
         self.turn_in_progress = False
         self.movement_state = None
-        self._add_log(f"Ended turn: {entity.name}")
         self.autosave()
 
     def _consume_surprised_skip(self, entity: EnemyInstance) -> bool:
@@ -1162,10 +1219,7 @@ class BattleSession:
             self.selected_id = entity.instance_id
             self.active_turn_id = entity.instance_id
             self.turn_in_progress = False
-            if not self.is_player(entity):
-                self._start_turn(entity)
-            else:
-                self._set_visible_draw(entity, [])
+            self._start_turn(entity)
             self._reset_movement_state(entity.instance_id)
             self._add_log(f"Active turn: {entity.name}")
             self.autosave()
@@ -1181,9 +1235,8 @@ class BattleSession:
 
         if self.active_turn_id is not None:
             active_enemy = self.state.enemies.get(self.active_turn_id)
-            if active_enemy and not self.is_player(active_enemy):
-                end_turn(active_enemy)
-                self._add_log(f"Ended turn: {active_enemy.name}")
+            if active_enemy:
+                self._finish_turn(active_enemy)
             self.active_turn_id = None
             self.turn_in_progress = False
             self.movement_state = None
@@ -1200,8 +1253,7 @@ class BattleSession:
             if self._can_take_turn(entity):
                 self.active_turn_id = entity.instance_id
                 self.turn_in_progress = False
-                if not self.is_player(entity):
-                    self._start_turn(entity)
+                self._start_turn(entity)
                 self._reset_movement_state(entity.instance_id)
                 self._add_log(f"Active turn: {entity.name}")
         self.autosave()
@@ -1225,8 +1277,7 @@ class BattleSession:
             self.selected_id = entity.instance_id
             self.active_turn_id = entity.instance_id
             self.turn_in_progress = False
-            if not self.is_player(entity):
-                self._start_turn(entity)
+            self._start_turn(entity)
             self._reset_movement_state(entity.instance_id)
             self._add_log(f"Active turn: {entity.name}")
             break
@@ -1696,6 +1747,8 @@ class BattleSession:
         card = self.context.card_index.get(card_id)
         if not card:
             return card_id
+        if self._has_player_card_metadata(card):
+            return self._player_card_text(card)
         parts: list[str] = []
         for effect in card.effects:
             if effect.type == "attack":
@@ -1712,6 +1765,64 @@ class BattleSession:
             else:
                 parts.append(effect.type)
         return " + ".join(parts) if parts else (card.title or card_id)
+
+    @staticmethod
+    def _has_player_card_metadata(card: Card) -> bool:
+        return bool(
+            card.energy_type
+            or card.energy_amount
+            or card.outcome
+            or card.extra_draw
+            or card.reshuffle
+            or card.instruction
+        )
+
+    @staticmethod
+    def _player_card_text(card: Card) -> str:
+        energy_type = (card.energy_type or "").strip()
+        outcome = (card.outcome or "").strip()
+        energy_amount = max(0, int(card.energy_amount))
+        if energy_type:
+            if energy_type.lower() == "void" and energy_amount == 0:
+                base = f"{energy_type} {outcome}".strip()
+            elif energy_amount > 1:
+                base = f"{energy_type} {energy_amount} energy {outcome}".strip()
+            elif energy_amount == 1:
+                base = f"{energy_type} energy {outcome}".strip()
+            else:
+                base = f"{energy_type} {outcome}".strip()
+        else:
+            base = outcome or card.title or card.id
+
+        suffix_parts: list[str] = []
+        instruction = (card.instruction or "").strip()
+        if card.extra_draw and "draw" not in instruction.lower():
+            suffix_parts.append(f"draw {int(card.extra_draw)}")
+        if instruction:
+            suffix_parts.append(instruction)
+        if card.reshuffle:
+            suffix_parts.append("reshuffle at end turn")
+
+        return f"{base} ({'; '.join(suffix_parts)})" if suffix_parts else base
+
+    def _player_draw_summary(self, card_ids: list[str]) -> dict:
+        outcomes = {"success": 0, "fate": 0, "fail": 0}
+        energies: dict[str, int] = {}
+        for card_id in card_ids:
+            card = self.context.card_index.get(card_id)
+            if not card:
+                continue
+            outcome = (card.outcome or "").strip().lower()
+            if outcome in outcomes:
+                outcomes[outcome] += 1
+            energy_type = (card.energy_type or "").strip()
+            energy_amount = max(0, int(card.energy_amount))
+            if energy_type and energy_amount > 0:
+                energies[energy_type] = energies.get(energy_type, 0) + energy_amount
+        return {
+            "outcomes": outcomes,
+            "energies": dict(sorted(energies.items(), key=lambda item: item[0].lower())),
+        }
 
     def _quick_attack_steps_for(self, entity: EnemyInstance) -> list[QuickAttackStep]:
         steps: list[QuickAttackStep] = []
@@ -1790,15 +1901,85 @@ class BattleSession:
     def visible_draw_for(self, entity: EnemyInstance) -> list[str]:
         return list(getattr(entity, "visible_draw", []))
 
-    def _draw_cards_for_turn(self, entity: EnemyInstance):
+    def visible_draw_groups_for(self, entity: EnemyInstance) -> list[list[str]]:
+        groups = [
+            list(group)
+            for group in getattr(entity, "draw_groups", [])
+            if isinstance(group, list) and group
+        ]
+        if groups:
+            return groups
+        visible = self.visible_draw_for(entity)
+        return [visible] if visible else []
+
+    def _draw_player_turn(self, entity: EnemyInstance) -> None:
+        if self.active_turn_id is None:
+            self.active_turn_id = entity.instance_id
+            self._start_turn(entity)
+            self._reset_movement_state(entity.instance_id)
+
+        result = draw_additional_cards(entity, self._draw_count_for(entity), rnd=self._rng)
+        self.turn_in_progress = True
+        entity.quick_attack_used = False
+        draw_resolution = self._resolve_player_draw_effects(entity, result.drawn)
+        self._append_visible_draw_group(entity, list(draw_resolution.card_ids))
+
+        if draw_resolution.card_ids:
+            drawn_text = ", ".join(self.card_to_effect_text(card_id) for card_id in draw_resolution.card_ids)
+            suffix_parts: list[str] = []
+            if draw_resolution.extra_drawn:
+                suffix_parts.append(f"+{draw_resolution.extra_drawn} draw")
+            if draw_resolution.reshuffle_pending:
+                suffix_parts.append("reshuffle pending")
+            suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
+            self._add_log(f"{entity.name} draws: {drawn_text}{suffix}")
+            for instruction in draw_resolution.instructions:
+                self._add_log(f"{entity.name}: {instruction}")
+        else:
+            self._add_log(f"{entity.name} draws no cards")
+
+        self.autosave()
+
+    def _draw_count_for(self, entity: EnemyInstance) -> int:
         draws = entity.power_base
         if entity.toughness_current <= 0:
             draws = 0
         if "paralyzed" in entity.statuses:
             draws -= 1
-        if draws < 0:
-            draws = 0
-        return draw_cards(entity, draws, rnd=self._rng)
+        return max(0, int(draws))
+
+    def _draw_cards_for_turn(self, entity: EnemyInstance):
+        return draw_cards(entity, self._draw_count_for(entity), rnd=self._rng)
+
+    def _resolve_player_draw_effects(self, entity: EnemyInstance, card_ids: list[str]) -> PlayerDrawResolution:
+        resolved: list[str] = list(card_ids)
+        pending: list[str] = list(card_ids)
+        extra_drawn = 0
+        instructions: list[str] = []
+        reshuffle_pending = False
+        while pending:
+            card_id = pending.pop(0)
+            card = self.context.card_index.get(card_id)
+            if not card:
+                continue
+            if card.reshuffle:
+                entity.pending_reshuffle = True
+                reshuffle_pending = True
+            instruction = (card.instruction or "").strip()
+            if instruction and instruction not in instructions:
+                instructions.append(instruction)
+            if card.extra_draw:
+                result = draw_additional_cards(entity, max(0, int(card.extra_draw)), rnd=self._rng)
+                if result.drawn:
+                    resolved.extend(result.drawn)
+                    pending.extend(result.drawn)
+                    extra_drawn += len(result.drawn)
+        return PlayerDrawResolution(
+            card_ids=tuple(resolved),
+            extra_drawn=extra_drawn,
+            instructions=tuple(instructions),
+            reshuffle_pending=reshuffle_pending,
+        )
 
     def _resolve_draw_effects(self, entity: EnemyInstance, card_ids: list[str]) -> DrawResolution:
         resolved: list[str] = list(card_ids)
@@ -1846,9 +2027,32 @@ class BattleSession:
     def _start_turn(self, entity: EnemyInstance) -> None:
         start_log = start_turn(entity)
         self._set_visible_draw(entity, [])
+        entity.pending_reshuffle = False
         entity.quick_attack_used = False
         if start_log.dot_damage:
             self._add_log(f"{entity.name} takes {start_log.dot_damage} DOT")
+
+    def _finish_turn(self, entity: EnemyInstance) -> None:
+        if self.is_player(entity):
+            self._finish_player_turn(entity)
+        else:
+            end_turn(entity)
+        self._add_log(f"Ended turn: {entity.name}")
+
+    def _finish_player_turn(self, entity: EnemyInstance) -> None:
+        end_turn(entity)
+        if getattr(entity, "pending_reshuffle", False):
+            self._reshuffle_player_deck_at_end(entity)
+
+    def _reshuffle_player_deck_at_end(self, entity: EnemyInstance) -> None:
+        deck_state = entity.deck_state
+        cards = list(deck_state.draw_pile) + list(deck_state.discard_pile) + list(deck_state.hand)
+        deck_state.draw_pile = cards
+        deck_state.discard_pile.clear()
+        deck_state.hand.clear()
+        self._rng.shuffle(deck_state.draw_pile)
+        entity.pending_reshuffle = False
+        self._add_log(f"{entity.name} reshuffles their deck at end of turn.")
 
     @staticmethod
     def _has_position(entity: EnemyInstance) -> bool:
@@ -2025,6 +2229,14 @@ class BattleSession:
 
     def _serialize_enemy(self, instance_id: str) -> dict:
         entity = self.state.enemies[instance_id]
+        draw_groups = [
+            {
+                "label": f"Draw {index + 1}",
+                "items": [self.card_to_effect_text(card_id) for card_id in group],
+                "summary": self._player_draw_summary(group) if self.is_player(entity) else None,
+            }
+            for index, group in enumerate(self.visible_draw_groups_for(entity))
+        ]
         payload = enemy_to_dict(entity)
         payload.update(
             {
@@ -2034,7 +2246,14 @@ class BattleSession:
                 "quick_attack_used": bool(getattr(entity, "quick_attack_used", False)),
                 "effective_movement": self.effective_movement(entity),
                 "status_text": self.format_statuses(entity.statuses),
+                "current_draw_groups": draw_groups,
                 "current_draw_text": [self.card_to_effect_text(card_id) for card_id in self.visible_draw_for(entity)],
+                "current_draw_summary": (
+                    self._player_draw_summary(self.visible_draw_for(entity))
+                    if self.is_player(entity)
+                    else None
+                ),
+                "pending_reshuffle": bool(getattr(entity, "pending_reshuffle", False)),
                 "current_draw_attacks": [
                     self._quick_attack_payload(step)
                     for step in self._quick_attack_steps_for(entity)
@@ -2049,6 +2268,33 @@ class BattleSession:
     @staticmethod
     def _set_visible_draw(entity: EnemyInstance, card_ids: list[str]) -> None:
         entity.visible_draw = list(card_ids)
+        entity.draw_groups = [list(card_ids)] if card_ids else []
+
+    @staticmethod
+    def _append_visible_draw_group(entity: EnemyInstance, card_ids: list[str]) -> None:
+        groups = [
+            list(group)
+            for group in getattr(entity, "draw_groups", [])
+            if isinstance(group, list) and group
+        ]
+        groups.append(list(card_ids))
+        entity.draw_groups = groups
+        entity.visible_draw = [card_id for group in groups for card_id in group]
+
+    def _migrate_player_deck_state(self, entity: EnemyInstance) -> None:
+        player_deck = self.context.player_decks.get(PLAYER_DECK_ID)
+        if player_deck is None:
+            return
+        if getattr(entity, "core_deck_id", None) != PLAYER_DECK_ID:
+            entity.core_deck_id = PLAYER_DECK_ID
+
+        deck_state = entity.deck_state
+        player_card_ids = {card.id for card in player_deck.cards}
+        saved_cards = list(deck_state.draw_pile) + list(deck_state.discard_pile) + list(deck_state.hand)
+        if any(card_id in player_card_ids for card_id in saved_cards):
+            return
+
+        deck_state.draw_pile.extend(build_core_deck_ids(player_deck, rnd=self._rng))
 
     def _migrate_template_deck_state(self, entity: EnemyInstance) -> None:
         template = self.context.enemy_templates.get(getattr(entity, "template_id", ""))

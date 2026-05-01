@@ -24,12 +24,18 @@ def _parse_effect(obj: dict) -> Effect:
 
 
 def _parse_card(obj: dict) -> Card:
-    effects = tuple(_parse_effect(e) for e in obj["effects"])
+    effects = tuple(_parse_effect(e) for e in obj.get("effects", []))
     return Card(
         id=obj["id"],
         title=obj.get("title", obj["id"]),
         effects=effects,
         weight=int(obj.get("weight", 1)),
+        energy_type=obj.get("energyType"),
+        energy_amount=int(obj.get("energyAmount", 0)),
+        outcome=obj.get("outcome"),
+        extra_draw=int(obj.get("extraDraw", 0)),
+        reshuffle=bool(obj.get("reshuffle", False)),
+        instruction=obj.get("instruction"),
     )
 
 

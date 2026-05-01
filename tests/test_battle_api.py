@@ -669,6 +669,27 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(default_response.status_code, 200)
         default_player = next(e for e in default_response.json()["enemies"] if "Player" in e["name"])
         self.assertIn("Player", default_player["name"])
+        self.assertEqual(default_player["toughness_max"], 4)
+        self.assertEqual(default_player["armor_max"], 1)
+        self.assertEqual(default_player["guard_base"], 1)
+        self.assertEqual(default_player["power_base"], 4)
+        self.assertEqual(default_player["initiative_modifier"], 2)
+
+    def test_player_draw_endpoint_allows_multiple_draws_in_active_turn(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        added = self.client.post(f"/api/battle/sessions/{sid}/players", json={"name": "Mira"}).json()
+        player_id = added["selectedId"]
+
+        first = self.client.post(f"/api/battle/sessions/{sid}/turn/draw")
+        self.assertEqual(first.status_code, 200)
+        first_payload = first.json()
+        self.assertEqual(first_payload["activeTurnId"], player_id)
+        self.assertTrue(first_payload["turnInProgress"])
+
+        second = self.client.post(f"/api/battle/sessions/{sid}/turn/draw")
+        self.assertEqual(second.status_code, 200)
+        player = next(e for e in second.json()["enemies"] if e["instance_id"] == player_id)
+        self.assertEqual(len(player["current_draw_groups"]), 2)
 
     def test_roll_initiative_endpoint(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]

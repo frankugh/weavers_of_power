@@ -86,6 +86,8 @@ class EnemyInstance:
 
     deck_state: DeckState = field(default_factory=DeckState)
     quick_attack_used: bool = False
+    draw_groups: list[list[str]] = field(default_factory=list)
+    pending_reshuffle: bool = False
 
     statuses: dict[str, dict] = field(default_factory=dict)
 

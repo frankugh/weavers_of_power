@@ -1060,6 +1060,115 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(restored.toughness_max, 18)
         self.assertEqual(restored.movement, 5)
 
+    def test_default_player_is_level_one_human_fighter_with_deck(self) -> None:
+        session = self.context.create_session("player-fighter-default")
+        session.add_player(name="Mira")
+
+        player = next(e for e in session.state.enemies.values() if session.is_player(e))
+        self.assertEqual(player.toughness_max, 4)
+        self.assertEqual(player.armor_max, 1)
+        self.assertEqual(player.guard_base, 1)
+        self.assertEqual(player.power_base, 4)
+        self.assertEqual(player.movement, 6)
+        self.assertEqual(player.initiative_modifier, 2)
+        self.assertEqual(player.core_deck_id, "human_fighter_lvl1")
+        self.assertEqual(len(player.deck_state.draw_pile), 26)
+
+        reloaded = self.context.load_session("player-fighter-default")
+        restored = next(e for e in reloaded.state.enemies.values() if reloaded.is_player(e))
+        self.assertEqual(restored.core_deck_id, "human_fighter_lvl1")
+        self.assertEqual(len(restored.deck_state.draw_pile), 26)
+
+    def test_player_can_draw_multiple_groups_in_one_turn(self) -> None:
+        session = self.context.create_session("player-multiple-draw")
+        session.add_player(name="Mira")
+        player = session.state.enemies[session.selected_id]
+        player.deck_state.draw_pile = [
+            "hf_martial_1_success",
+            "hf_elemental_1_fail",
+            "hf_void_success",
+            "hf_radiance_2_fate",
+            "hf_martial_2_fail",
+            "hf_elemental_2_fate",
+            "hf_void_fail",
+            "hf_radiance_1_success",
+        ]
+        player.deck_state.discard_pile = []
+        player.deck_state.hand = []
+
+        session.draw_turn()
+        session.draw_turn()
+
+        self.assertTrue(session.turn_in_progress)
+        self.assertEqual(session.active_turn_id, player.instance_id)
+        self.assertEqual(len(session.visible_draw_groups_for(player)), 2)
+        self.assertEqual(len(session.visible_draw_groups_for(player)[0]), 4)
+        self.assertEqual(len(session.visible_draw_groups_for(player)[1]), 4)
+        payload = session.snapshot()["enemies"][0]
+        self.assertEqual(len(payload["current_draw_groups"]), 2)
+        self.assertIn("Martial energy success", payload["current_draw_groups"][0]["items"][0])
+        self.assertEqual(payload["current_draw_groups"][0]["summary"]["outcomes"], {"success": 2, "fate": 1, "fail": 1})
+        self.assertEqual(payload["current_draw_groups"][0]["summary"]["energies"], {"Elemental": 1, "Martial": 1, "Radiance": 2})
+        self.assertEqual(payload["current_draw_summary"]["outcomes"], {"success": 3, "fate": 2, "fail": 3})
+        self.assertEqual(
+            payload["current_draw_summary"]["energies"],
+            {"Elemental": 3, "Martial": 3, "Radiance": 3},
+        )
+
+    def test_player_race_and_class_cards_draw_into_same_group(self) -> None:
+        session = self.context.create_session("player-extra-draws")
+        session.add_player(name="Mira", power=2)
+        player = session.state.enemies[session.selected_id]
+        player.deck_state.draw_pile = [
+            "hf_race_human_fate",
+            "hf_class_fighter_fate",
+            "hf_martial_1_success",
+            "hf_void_fail",
+            "hf_elemental_1_success",
+        ]
+        player.deck_state.discard_pile = []
+        player.deck_state.hand = []
+
+        session.draw_turn()
+
+        self.assertEqual(
+            player.deck_state.hand,
+            [
+                "hf_race_human_fate",
+                "hf_class_fighter_fate",
+                "hf_martial_1_success",
+                "hf_void_fail",
+                "hf_elemental_1_success",
+            ],
+        )
+        self.assertEqual(session.visible_draw_groups_for(player), [player.deck_state.hand])
+        self.assertTrue(any("Fighter: perform a martial action" in entry for entry in session.combat_log))
+        self.assertIn("+3 draw", next(entry for entry in session.combat_log if "draws:" in entry))
+
+    def test_player_reshuffle_card_reshuffles_deck_discard_and_hand_at_end_turn(self) -> None:
+        session = self.context.create_session("player-delayed-reshuffle")
+        session.add_player(name="Mira", power=1)
+        player = session.state.enemies[session.selected_id]
+        player.deck_state.draw_pile = ["hf_master_fate_reshuffle", "hf_martial_1_success"]
+        player.deck_state.discard_pile = ["hf_void_fail"]
+        player.deck_state.hand = []
+
+        session.draw_turn()
+
+        self.assertTrue(player.pending_reshuffle)
+        self.assertEqual(player.deck_state.hand, ["hf_master_fate_reshuffle"])
+
+        session.next_turn()
+
+        self.assertFalse(player.pending_reshuffle)
+        self.assertEqual(player.deck_state.hand, [])
+        self.assertEqual(player.deck_state.discard_pile, [])
+        self.assertCountEqual(
+            player.deck_state.draw_pile,
+            ["hf_master_fate_reshuffle", "hf_martial_1_success", "hf_void_fail"],
+        )
+        self.assertEqual(session.visible_draw_groups_for(player), [["hf_master_fate_reshuffle"]])
+
     def test_add_player_without_name_gets_auto_name(self) -> None:
         session = self.context.create_session("player-autoname")
         session.add_player()

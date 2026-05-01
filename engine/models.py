@@ -50,6 +50,12 @@ class Card:
     title: str
     effects: tuple[Effect, ...]
     weight: int = 1
+    energy_type: Optional[str] = None
+    energy_amount: int = 0
+    outcome: Optional[str] = None
+    extra_draw: int = 0
+    reshuffle: bool = False
+    instruction: Optional[str] = None
 
     def validate(self, path: str) -> list[str]:
         errs: list[str] = []
@@ -59,8 +65,22 @@ class Card:
             errs.append(f"{path}: card title is empty")
         if self.weight <= 0:
             errs.append(f"{path}: card weight must be > 0 (got {self.weight})")
-        if not self.effects:
-            errs.append(f"{path}: card must have at least 1 effect")
+        has_player_metadata = any(
+            (
+                self.energy_type,
+                self.energy_amount,
+                self.outcome,
+                self.extra_draw,
+                self.reshuffle,
+                self.instruction,
+            )
+        )
+        if not self.effects and not has_player_metadata:
+            errs.append(f"{path}: card must have at least 1 effect or player-card metadata")
+        if self.energy_amount < 0:
+            errs.append(f"{path}: energy_amount cannot be negative (got {self.energy_amount})")
+        if self.extra_draw < 0:
+            errs.append(f"{path}: extra_draw cannot be negative (got {self.extra_draw})")
         for i, e in enumerate(self.effects):
             errs += e.validate(f"{path}.effects[{i}]")
         return errs

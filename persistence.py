@@ -130,6 +130,8 @@ def enemy_to_dict(e: EnemyInstance) -> Dict[str, Any]:
     # Make sure optional runtime extras exist in the save
     d.setdefault("visible_draw", getattr(e, "visible_draw", getattr(e, "last_drawn", [])))
     d.setdefault("quick_attack_used", bool(getattr(e, "quick_attack_used", False)))
+    d.setdefault("draw_groups", getattr(e, "draw_groups", []))
+    d.setdefault("pending_reshuffle", bool(getattr(e, "pending_reshuffle", False)))
     d.setdefault("loot_rolled", getattr(e, "loot_rolled", False))
     d.setdefault("rolled_loot", getattr(e, "rolled_loot", None))
     d.setdefault("grid_x", getattr(e, "grid_x", None))
@@ -169,11 +171,19 @@ def enemy_from_dict(d: Dict[str, Any]) -> EnemyInstance:
         initiative_mode=str(d.get("initiative_mode", "normal")),
         deck_state=deck_state,
         quick_attack_used=bool(d.get("quick_attack_used", False)),
+        draw_groups=[
+            list(group)
+            for group in d.get("draw_groups", [])
+            if isinstance(group, list)
+        ],
+        pending_reshuffle=bool(d.get("pending_reshuffle", False)),
         statuses=dict(d.get("statuses", {})),
     )
 
     # runtime extras
     e.visible_draw = list(d.get("visible_draw", d.get("last_drawn", [])))
+    if not e.draw_groups and e.visible_draw:
+        e.draw_groups = [list(e.visible_draw)]
     e.loot_rolled = bool(d.get("loot_rolled", False))
     e.rolled_loot = d.get("rolled_loot", None)
     e.grid_x = int(d["grid_x"]) if d.get("grid_x") is not None else None

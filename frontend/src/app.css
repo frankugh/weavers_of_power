@@ -1216,6 +1216,76 @@ button.draw-card:hover {
   gap: 5px;
 }
 
+.draw-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.draw-groups-compact {
+  gap: 7px;
+}
+
+.draw-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.draw-group-label {
+  color: var(--muted);
+  font-size: 0.66rem;
+  line-height: 1;
+}
+
+.draw-group-header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.draw-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.draw-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.draw-summary-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(240, 207, 133, 0.22);
+  background: rgba(240, 207, 133, 0.06);
+  color: var(--muted);
+  font-size: 0.64rem;
+  line-height: 1;
+}
+
+.draw-summary-success {
+  color: #b9d98e;
+}
+
+.draw-summary-fate {
+  color: #dccc8e;
+}
+
+.draw-summary-fail {
+  color: #e0a18d;
+}
+
+.draw-summary-energy {
+  color: var(--accent-bright);
+}
+
 .draw-card-compact {
   display: inline-flex;
   align-items: center;
@@ -1231,8 +1301,10 @@ button.draw-card:hover {
   top: 8px;
   right: 312px;
   width: min(292px, calc(100% - 336px));
-  max-height: min(42vh, 360px);
-  pointer-events: none;
+  max-height: min(72vh, 680px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  pointer-events: auto;
   transform-origin: top right;
   transition:
     opacity 520ms ease,
@@ -1242,6 +1314,7 @@ button.draw-card:hover {
 
 .draw-reveal-panel-enter {
   opacity: 0;
+  pointer-events: none;
   transform: translateY(8px) scale(0.96);
 }
 
@@ -1252,8 +1325,14 @@ button.draw-card:hover {
 
 .draw-reveal-panel-settle {
   opacity: 0;
+  pointer-events: none;
   transform: translate(236px, 28px) scale(0.58);
   filter: saturate(1.1);
+}
+
+.draw-reveal-panel .draw-card-view {
+  max-height: none;
+  overflow: visible;
 }
 
 .draw-card-view {
@@ -2704,7 +2783,7 @@ button.draw-card:hover {
     right: auto;
     left: 50%;
     width: min(292px, calc(100vw - 24px));
-    max-height: min(46vh, 360px);
+    max-height: min(72vh, 640px);
     transform-origin: top center;
   }
 

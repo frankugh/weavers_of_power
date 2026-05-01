@@ -29,10 +29,12 @@ function buildEnemy(overrides = {}) {
     magic_armor_max: 0,
     guard_current: 0,
     draws_base: 1,
+    power_base: 1,
     effective_movement: 6,
     statuses: {},
     status_text: "-",
     current_draw_text: [],
+    current_draw_groups: [],
     current_draw_attacks: [],
     quick_attack_used: false,
     last_draw_text: [],
@@ -977,6 +979,112 @@ describe("App", () => {
       vi.advanceTimersByTime(900);
     });
     expect(screen.queryByRole("complementary", { name: "Draw Card Inspector" })).not.toBeInTheDocument();
+  });
+
+  it("keeps player draw enabled and renders grouped player draws", async () => {
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      toughness_current: 4,
+      toughness_max: 4,
+      armor_current: 1,
+      armor_max: 1,
+      guard_current: 1,
+      power_base: 4,
+      current_draw_text: ["Martial energy success"],
+      current_draw_groups: [
+        {
+          label: "Draw 1",
+          items: ["Martial energy success"],
+          summary: { outcomes: { success: 1, fate: 0, fail: 0 }, energies: { Martial: 1 } },
+        },
+      ],
+    });
+    const nextSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "player-1",
+      turnInProgress: true,
+      order: ["player-1"],
+      enemies: [
+        {
+          ...player,
+          current_draw_text: ["Martial energy success", "Elemental energy fail"],
+          current_draw_groups: [
+            {
+              label: "Draw 1",
+              items: ["Martial energy success"],
+              summary: { outcomes: { success: 1, fate: 0, fail: 0 }, energies: { Martial: 1 } },
+            },
+            {
+              label: "Draw 2",
+              items: ["Elemental energy fail"],
+              summary: { outcomes: { success: 0, fate: 0, fail: 1 }, energies: { Elemental: 1 } },
+            },
+          ],
+        },
+      ],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "player-1",
+        activeTurnId: "player-1",
+        turnInProgress: true,
+        order: ["player-1"],
+        enemies: [player],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/turn/draw" && requestOptions?.method === "POST") {
+            return jsonResponse(nextSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Mira");
+    expect(screen.getByRole("button", { name: "Draw" })).toBeEnabled();
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "Draw" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/battle/sessions/sid-123/turn/draw",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(screen.getByRole("button", { name: "Draw" })).toBeEnabled();
+    const reveal = screen.getByRole("complementary", { name: "Draw Card Inspector" });
+    expect(within(reveal).getByText("Elemental energy fail")).toBeInTheDocument();
+    expect(within(reveal).getByText("fail 1")).toBeInTheDocument();
+    expect(within(reveal).getByText("Elemental 1")).toBeInTheDocument();
+    expect(within(reveal).getByText("fail 1").closest(".draw-summary-row")).not.toBe(
+      within(reveal).getByText("Elemental 1").closest(".draw-summary-row"),
+    );
+    expect(within(reveal).queryByText("Martial energy success")).not.toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(reveal).toHaveAttribute("data-draw-reveal-phase", "hold");
+    act(() => {
+      vi.advanceTimersByTime(10000);
+    });
+    expect(reveal).toHaveAttribute("data-draw-reveal-phase", "hold");
+    fireEvent.pointerDown(reveal);
+    expect(reveal).toHaveAttribute("data-draw-reveal-phase", "hold");
+    fireEvent.pointerDown(document.body);
+    expect(reveal).toHaveAttribute("data-draw-reveal-phase", "settle");
+    const draw1 = screen.getByText("Draw 1");
+    const draw2 = screen.getByText("Draw 2");
+    expect(draw2.compareDocumentPosition(draw1) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByText("4").length).toBeGreaterThan(0);
   });
 
   it("settles the draw card inspector immediately when the screen is clicked", async () => {
