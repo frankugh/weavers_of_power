@@ -11,12 +11,12 @@ from typing import Optional
 
 from engine.combat import WOUND_CARD_ID, AttackMod, apply_attack, apply_heal
 from engine.dungeon import analyze as dungeon_analyze
-from engine.dungeon import migrate_to_dungeon
+from engine.dungeon import canonical_edge_key, migrate_to_dungeon, normalize_side
 from engine.loader import load_decks, load_enemies
 from engine.loot import roll_loot
 from engine.models import Card, Deck, EnemyTemplate
 from engine.runtime import BattleState, draw_additional_cards, draw_cards, end_turn, spawn_enemy, start_turn
-from engine.runtime_models import DeckState, DungeonState, EnemyInstance, Tile
+from engine.runtime_models import DeckState, DungeonState, DungeonWall, EnemyInstance, Tile
 from persistence import (
     enemy_to_dict,
     load_save_payload,
@@ -84,6 +84,7 @@ def spawn_custom_enemy(
         guard_current=0,
         power_base=power,
         movement=movement,
+        core_deck_id=core_deck.id,
         deck_state=DeckState(draw_pile=build_core_deck_ids(core_deck, rnd=rnd), discard_pile=[], hand=[]),
         statuses={},
     )
@@ -112,6 +113,7 @@ def spawn_player(
         guard_current=0,
         power_base=power,
         movement=movement,
+        core_deck_id=None,
         deck_state=DeckState(draw_pile=[], discard_pile=[], hand=[]),
         statuses={},
     )
@@ -569,8 +571,12 @@ class BattleSession:
             return None
         ds = self.dungeon
         tiles_out = {
-            key: {"tile_type": t.tile_type, "door_open": t.door_open}
+            key: {"tile_type": t.tile_type}
             for key, t in ds.tiles.items()
+        }
+        walls_out = {
+            key: {"wall_type": w.wall_type, "door_open": w.door_open}
+            for key, w in ds.walls.items()
         }
         rooms_out = [
             {
@@ -584,6 +590,7 @@ class BattleSession:
                 "issue_type": i.issue_type,
                 "x": i.x,
                 "y": i.y,
+                "side": i.side,
                 "unit_id": i.unit_id,
                 "detail": i.detail,
             }
@@ -618,6 +625,7 @@ class BattleSession:
             visible_ordered = [r.room_id for r in ds.rooms]
         return {
             "tiles": tiles_out,
+            "walls": walls_out,
             "rooms": rooms_out,
             "revealedRoomIds": list(ds.revealed_room_ids),
             "pendingEncounterRoomIds": list(ds.pending_encounter_room_ids),
@@ -631,8 +639,27 @@ class BattleSession:
             "linkedDoors": linked_doors_out,
         }
 
+    def _cleanup_walls_around(self) -> None:
+        """Remove orphaned wall/door edges after tile changes."""
+        to_delete = []
+        for key, wall in self.dungeon.walls.items():
+            parts = key.split(",")
+            x, y, side = int(parts[0]), int(parts[1]), parts[2]
+            cell_a = f"{x},{y}"
+            cell_b = f"{x + 1},{y}" if side == 'e' else f"{x},{y + 1}"
+            tile_a = self.dungeon.tiles.get(cell_a)
+            tile_b = self.dungeon.tiles.get(cell_b)
+            if wall.wall_type == "wall":
+                if tile_a is None and tile_b is None:
+                    to_delete.append(key)
+            else:  # door
+                if tile_a is None or tile_b is None:
+                    to_delete.append(key)
+        for key in to_delete:
+            del self.dungeon.walls[key]
+
     def edit_dungeon_tiles(self, tile_type: str, cells: list[list[int]]) -> None:
-        if tile_type not in ("floor", "door", "void"):
+        if tile_type not in ("floor", "void"):
             raise BattleSessionError(f"Unknown tile type '{tile_type}'")
         if self.dungeon is None:
             self.dungeon = DungeonState()
@@ -647,9 +674,26 @@ class BattleSession:
                         self._set_position(entity, None, None)
                         entity.room_id = None
             else:
-                existing = self.dungeon.tiles.get(key)
-                door_open = existing.door_open if existing and tile_type == "door" else False
-                self.dungeon.tiles[key] = Tile(tile_type=tile_type, door_open=door_open)
+                self.dungeon.tiles[key] = Tile(tile_type="floor")
+        self._cleanup_walls_around()
+        self.dungeon.render_version += 1
+        self.autosave()
+
+    def edit_dungeon_walls(self, wall_type: str, edges: list[dict]) -> None:
+        if wall_type not in ("wall", "door", "erase"):
+            raise BattleSessionError(f"Unknown wall type '{wall_type}'")
+        if self.dungeon is None:
+            self.dungeon = DungeonState()
+        for edge in edges:
+            x, y, side = int(edge["x"]), int(edge["y"]), str(edge["side"])
+            try:
+                key = normalize_side(x, y, side)
+            except ValueError as exc:
+                raise BattleSessionError(str(exc)) from exc
+            if wall_type == "erase":
+                self.dungeon.walls.pop(key, None)
+            else:
+                self.dungeon.walls[key] = DungeonWall(wall_type=wall_type, door_open=False)
         self.dungeon.render_version += 1
         self.autosave()
 
@@ -659,46 +703,54 @@ class BattleSession:
         dungeon_analyze(self.dungeon, list(self.state.enemies.values()))
         self.autosave()
 
-    def open_door(self, x: int, y: int) -> None:
+    def set_door_state(self, x: int, y: int, side: str, open_state: bool) -> None:
         if self.dungeon is None:
             raise BattleSessionError("No dungeon loaded")
-        key = f"{x},{y}"
-        tile = self.dungeon.tiles.get(key)
-        if tile is None or tile.tile_type != "door":
-            raise BattleSessionError(f"No door at ({x}, {y})")
-        if tile.door_open:
-            raise BattleSessionError(f"Door at ({x}, {y}) is already open")
-        link = self.dungeon.linked_doors.get(key)
-        if not link or len(link) != 2:
-            raise BattleSessionError(f"Door at ({x}, {y}) is not linked to two rooms")
+        try:
+            key = normalize_side(x, y, side)
+        except ValueError as exc:
+            raise BattleSessionError(str(exc)) from exc
+        wall = self.dungeon.walls.get(key)
+        if wall is None or wall.wall_type != "door":
+            raise BattleSessionError(f"No door at edge {key!r}")
+
+        # Adjacent cells derived from canonical edge key
+        parts = key.split(",")
+        kx, ky, ks = int(parts[0]), int(parts[1]), parts[2]
+        cell_a = (kx, ky)
+        cell_b = (kx + 1, ky) if ks == 'e' else (kx, ky + 1)
 
         selected = self._require_selected_entity()
         if selected.grid_x is None or selected.grid_y is None:
             raise BattleSessionError("Selected unit is not on the map")
-        dist = max(abs(selected.grid_x - x), abs(selected.grid_y - y))
-        if dist > 1:
+        unit_pos = (selected.grid_x, selected.grid_y)
+        if unit_pos != cell_a and unit_pos != cell_b:
             raise BattleSessionError("Selected unit is not adjacent to the door")
 
-        tile.door_open = True
+        link = self.dungeon.linked_doors.get(key)
+        if not link or len(link) != 2:
+            raise BattleSessionError(f"Door at {key!r} is not linked to two rooms")
+        if selected.room_id not in link:
+            raise BattleSessionError("Selected unit's room is not linked to this door")
+
+        wall.door_open = open_state
         self.dungeon.render_version += 1
 
-        # Reveal the room the unit is NOT already in
-        unit_room = selected.room_id
-        new_room_id = link[1] if link[0] == unit_room else link[0]
-        if new_room_id not in self.dungeon.revealed_room_ids:
-            self.dungeon.revealed_room_ids.append(new_room_id)
-
-        # During active combat, newly visible enemies join on next round start
-        if self.encounter_started:
-            units_in_new_room = [
-                e for e in self.state.enemies.values()
-                if e.room_id == new_room_id and not self.is_player(e) and not self.is_down(e)
-            ]
-            if units_in_new_room:
-                if new_room_id not in self.dungeon.pending_encounter_room_ids:
+        if open_state:
+            new_room_id = link[1] if link[0] == selected.room_id else link[0]
+            if new_room_id not in self.dungeon.revealed_room_ids:
+                self.dungeon.revealed_room_ids.append(new_room_id)
+            if self.encounter_started:
+                units_in_new_room = [
+                    e for e in self.state.enemies.values()
+                    if e.room_id == new_room_id and not self.is_player(e) and not self.is_down(e)
+                ]
+                if units_in_new_room and new_room_id not in self.dungeon.pending_encounter_room_ids:
                     self.dungeon.pending_encounter_room_ids.append(new_room_id)
+            self._add_log(f"{selected.name} opened a door.")
+        else:
+            self._add_log(f"{selected.name} closed a door.")
 
-        self._add_log(f"{selected.name} opened a door.")
         self.autosave()
 
     def flush_pending_encounter_rooms(self) -> list[str]:
@@ -750,67 +802,40 @@ class BattleSession:
         self.dungeon.render_version += 1
         self.autosave()
 
-    def crop_dungeon(
-        self,
-        min_x: int,
-        min_y: int,
-        columns: int,
-        rows: int,
-        *,
-        confirm_unit_unplace: bool = False,
-    ) -> None:
-        if self.dungeon is None:
-            raise BattleSessionError("No dungeon loaded")
-        min_x = int(min_x)
-        min_y = int(min_y)
-        columns = int(columns)
-        rows = int(rows)
-        if columns < 1 or rows < 1:
-            raise BattleSessionError("Crop width and height must be at least 1")
-        max_x = min_x + columns - 1
-        max_y = min_y + rows - 1
-
-        out_of_crop = [
-            entity
-            for entity in self.state.enemies.values()
-            if self._has_position(entity)
-            and not (min_x <= int(entity.grid_x) <= max_x and min_y <= int(entity.grid_y) <= max_y)
-        ]
-        if out_of_crop and not confirm_unit_unplace:
-            names = ", ".join(entity.name for entity in out_of_crop[:4])
-            suffix = f" and {len(out_of_crop) - 4} more" if len(out_of_crop) > 4 else ""
-            raise BattleSessionError(f"Crop would unplace {len(out_of_crop)} unit(s): {names}{suffix}")
-
-        self.dungeon.tiles = {
-            key: tile
-            for key, tile in self.dungeon.tiles.items()
-            if min_x <= self._tile_key_to_xy(key)[0] <= max_x
-            and min_y <= self._tile_key_to_xy(key)[1] <= max_y
-        }
-        for entity in out_of_crop:
-            self._set_position(entity, None, None)
-        dungeon_analyze(self.dungeon, list(self.state.enemies.values()))
-        valid_room_ids = {room.room_id for room in self.dungeon.rooms}
-        self.dungeon.revealed_room_ids = [
-            room_id for room_id in self.dungeon.revealed_room_ids if room_id in valid_room_ids
-        ]
-        self.dungeon.pending_encounter_room_ids = [
-            room_id for room_id in self.dungeon.pending_encounter_room_ids if room_id in valid_room_ids
-        ]
-        self._add_log(f"Dungeon cropped to {columns}x{rows} at ({min_x}, {min_y})")
-        self.autosave()
 
     def _dungeon_blocks_cell(self, x: int, y: int) -> bool:
-        """Return True if the dungeon makes cell (x,y) impassable."""
+        """Return True if the dungeon makes cell (x,y) impassable (void/absent tile)."""
         if self.dungeon is None:
             return False
-        key = f"{x},{y}"
-        tile = self.dungeon.tiles.get(key)
-        if tile is None:
-            return True   # void / unknown
-        if tile.tile_type == "door" and not tile.door_open:
-            return True   # closed door
-        return False
+        tile = self.dungeon.tiles.get(f"{x},{y}")
+        return tile is None
+
+    def _canonical_edge_between(self, ax: int, ay: int, bx: int, by: int) -> str:
+        return canonical_edge_key(ax, ay, bx, by)
+
+    def _wall_blocks_orthogonal(self, x: int, y: int, next_x: int, next_y: int) -> bool:
+        """Wall or closed door blocks straight movement between adjacent cells."""
+        if not self.dungeon or not self.dungeon.walls:
+            return False
+        wall = self.dungeon.walls.get(self._canonical_edge_between(x, y, next_x, next_y))
+        if wall is None:
+            return False
+        return wall.wall_type == "wall" or not wall.door_open
+
+    def _edge_has_any_wall(self, x: int, y: int, next_x: int, next_y: int) -> bool:
+        """Any wall or door (open or closed) blocks a diagonal side-passage."""
+        if not self.dungeon or not self.dungeon.walls:
+            return False
+        return self._canonical_edge_between(x, y, next_x, next_y) in self.dungeon.walls
+
+    def _diagonal_touches_any_wall(self, x: int, y: int, next_x: int, next_y: int) -> bool:
+        """Any wall/door around a diagonal corner blocks slipping past that corner."""
+        return (
+            self._edge_has_any_wall(x, y, next_x, y)
+            or self._edge_has_any_wall(x, y, x, next_y)
+            or self._edge_has_any_wall(next_x, next_y, x, next_y)
+            or self._edge_has_any_wall(next_x, next_y, next_x, y)
+        )
 
     def _uses_sparse_dungeon_grid(self) -> bool:
         return self.dungeon is not None
@@ -839,6 +864,97 @@ class BattleSession:
         self._set_position(entity, x, y)
         self.selected_id = instance_id
         self._add_log(f"Repositioned {entity.name} to ({x + 1}, {y + 1})")
+        self.autosave()
+
+    def set_entity_positions(self, placements: list[dict]) -> None:
+        if not placements:
+            raise BattleSessionError("No positions provided")
+
+        normalized: list[tuple[EnemyInstance, int, int]] = []
+        moving_ids: set[str] = set()
+        target_positions: set[tuple[int, int]] = set()
+
+        for placement in placements:
+            instance_id = str(placement.get("instanceId") or "")
+            if not instance_id:
+                raise BattleSessionError("Position update is missing an instanceId")
+            if instance_id in moving_ids:
+                raise BattleSessionError(f"Duplicate position update for '{instance_id}'")
+            entity = self.state.enemies.get(instance_id)
+            if not entity:
+                raise BattleSessionError(f"Entity '{instance_id}' does not exist")
+
+            try:
+                x = int(placement.get("x"))
+                y = int(placement.get("y"))
+            except (TypeError, ValueError) as exc:
+                raise BattleSessionError(f"Position update for '{instance_id}' needs numeric x and y") from exc
+            if not self._position_in_bounds(x, y):
+                raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is outside the battle map")
+            if not self._position_is_walkable(x, y):
+                raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is not walkable")
+            if (x, y) in target_positions:
+                raise BattleSessionError(f"Multiple units cannot move to ({x + 1}, {y + 1})")
+
+            moving_ids.add(instance_id)
+            target_positions.add((x, y))
+            normalized.append((entity, x, y))
+
+        for entity, x, y in normalized:
+            occupying = self._entity_at_position(x, y, exclude_ids=moving_ids, blocking_only=True)
+            if occupying:
+                raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is occupied by {occupying.name}")
+
+        for entity, x, y in normalized:
+            self._set_position(entity, x, y)
+
+        self.selected_id = normalized[0][0].instance_id
+        self._add_log(f"Repositioned {len(normalized)} unit{'s' if len(normalized) != 1 else ''}")
+        self.autosave()
+
+    def copy_entity(self, instance_id: str) -> None:
+        source = self.state.enemies.get(instance_id)
+        if not source:
+            raise BattleSessionError(f"Entity '{instance_id}' does not exist")
+        if self.is_player(source):
+            raise BattleSessionError("Players cannot be copied")
+        if not self._has_position(source):
+            raise BattleSessionError(f"{source.name} must be placed before it can be copied")
+
+        if source.template_id == "custom":
+            core_deck_id = getattr(source, "core_deck_id", None) or next(iter(self.context.decks.keys()), None)
+            if not core_deck_id or core_deck_id not in self.context.decks:
+                raise BattleSessionError("Custom enemy copy needs a valid core deck")
+            instance = spawn_custom_enemy(
+                name=f"{source.name} {self._next_suffix(source.name)}",
+                toughness=int(source.toughness_max),
+                armor=int(source.armor_max),
+                magic_armor=int(source.magic_armor_max),
+                power=int(source.power_base),
+                movement=int(source.movement),
+                core_deck=self.context.decks[core_deck_id],
+                rnd=self._rng,
+            )
+            instance.image = source.image
+        else:
+            template = self.context.enemy_templates.get(source.template_id)
+            if not template:
+                raise BattleSessionError(f"Missing template for '{source.name}'")
+            instance = spawn_enemy(template, self.context.decks, rnd=self._rng)
+            instance.name = f"{template.name} {self._next_suffix(template.name)}"
+
+        position = self._copy_position_for(source)
+        if position is None:
+            raise BattleSessionError(f"No free adjacent position found for {source.name}")
+
+        self._set_position(instance, position[0], position[1])
+        self.state.add_enemy(instance)
+        if source.instance_id in self.order:
+            self.order.insert(self.order.index(source.instance_id) + 1, instance.instance_id)
+        else:
+            self.order.append(instance.instance_id)
+        self.selected_id = instance.instance_id
+        self._add_log(f"Copied {source.name} to {instance.name}")
         self.autosave()
 
     def move_entity_with_movement(self, instance_id: str, x: int, y: int, *, dash: bool = False) -> None:
@@ -1529,6 +1645,12 @@ class BattleSession:
                     continue
 
                 is_diagonal = dx != 0 and dy != 0
+                if is_diagonal:
+                    if self._diagonal_touches_any_wall(x, y, next_x, next_y):
+                        continue
+                else:
+                    if self._wall_blocks_orthogonal(x, y, next_x, next_y):
+                        continue
                 step_cost = 1
                 next_parity = parity
                 next_diagonal_steps = diagonal_steps
@@ -1782,10 +1904,14 @@ class BattleSession:
         y: int,
         *,
         exclude_id: Optional[str] = None,
+        exclude_ids: Optional[set[str]] = None,
         blocking_only: bool = False,
     ) -> Optional[EnemyInstance]:
+        excluded = set(exclude_ids or set())
+        if exclude_id is not None:
+            excluded.add(exclude_id)
         for entity in self.state.enemies.values():
-            if entity.instance_id == exclude_id:
+            if entity.instance_id in excluded:
                 continue
             if blocking_only and not self._blocks_position(entity):
                 continue
@@ -1811,10 +1937,8 @@ class BattleSession:
     def _candidate_positions(self) -> list[tuple[int, int]]:
         if self._uses_sparse_dungeon_grid():
             positions: list[tuple[int, int]] = []
-            for key, tile in self.dungeon.tiles.items():
+            for key in self.dungeon.tiles:
                 x, y = self._tile_key_to_xy(key)
-                if tile.tile_type == "door" and not tile.door_open:
-                    continue
                 positions.append((x, y))
             extents = self._dungeon_extents()
             center_x = (extents["minX"] + extents["maxX"]) / 2
@@ -1840,6 +1964,41 @@ class BattleSession:
         for position in self._candidate_positions():
             if position not in occupied:
                 return position
+        return None
+
+    @staticmethod
+    def _clockwise_ring_offsets(radius: int) -> list[tuple[int, int]]:
+        offsets: list[tuple[int, int]] = [(radius, 0)]
+        for dy in range(1, radius + 1):
+            offsets.append((radius, dy))
+        for dx in range(radius - 1, -radius - 1, -1):
+            offsets.append((dx, radius))
+        for dy in range(radius - 1, -radius - 1, -1):
+            offsets.append((-radius, dy))
+        for dx in range(-radius + 1, radius + 1):
+            offsets.append((dx, -radius))
+        return offsets
+
+    def _copy_position_for(self, source: EnemyInstance) -> Optional[tuple[int, int]]:
+        sx = int(source.grid_x)
+        sy = int(source.grid_y)
+        occupied = self._occupied_positions()
+        candidates = {
+            position
+            for position in self._candidate_positions()
+            if position not in occupied
+            and self._position_in_bounds(position[0], position[1])
+            and self._position_is_walkable(position[0], position[1])
+        }
+        if not candidates:
+            return None
+
+        max_radius = max(max(abs(x - sx), abs(y - sy)) for x, y in candidates)
+        for radius in range(1, max_radius + 1):
+            for dx, dy in self._clockwise_ring_offsets(radius):
+                position = (sx + dx, sy + dy)
+                if position in candidates:
+                    return position
         return None
 
     def _auto_place_entity(self, entity: EnemyInstance) -> bool:
@@ -1895,6 +2054,8 @@ class BattleSession:
         template = self.context.enemy_templates.get(getattr(entity, "template_id", ""))
         if template is None:
             return
+        if not getattr(entity, "core_deck_id", None):
+            entity.core_deck_id = template.coreDeck
         core_deck = self.context.decks.get(template.coreDeck)
         if core_deck is None:
             return

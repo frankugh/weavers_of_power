@@ -5,7 +5,13 @@ from typing import Optional
 
 @dataclass
 class Tile:
-    tile_type: str          # "floor" | "door"
+    tile_type: str          # "floor"
+    door_open: bool = False
+
+
+@dataclass
+class DungeonWall:
+    wall_type: str          # "wall" | "door"
     door_open: bool = False
 
 
@@ -17,9 +23,10 @@ class DungeonRoom:
 
 @dataclass
 class DungeonIssue:
-    issue_type: str         # "unlinkedDoor" | "ambiguousDoor" | "unitOffGrid" | "roomIdentityConflict"
+    issue_type: str         # "unlinkedDoor" | "unitOffGrid" | "roomIdentityConflict"
     x: Optional[int] = None
     y: Optional[int] = None
+    side: Optional[str] = None   # "e" or "s" — for edge-related issues
     unit_id: Optional[str] = None
     detail: str = ""
 
@@ -27,6 +34,7 @@ class DungeonIssue:
 @dataclass
 class DungeonState:
     tiles: dict = field(default_factory=dict)                       # "x,y" → Tile
+    walls: dict = field(default_factory=dict)                       # "x,y,e"|"x,y,s" → DungeonWall
     rooms: list = field(default_factory=list)                       # list of DungeonRoom
     revealed_room_ids: list = field(default_factory=list)           # str room_ids
     pending_encounter_room_ids: list = field(default_factory=list)  # str room_ids
@@ -35,7 +43,7 @@ class DungeonState:
     analysis_version: int = 0
     render_version: int = 0
     # linked_doors is derived by analysis and persisted to avoid re-analyzing on every request.
-    linked_doors: dict = field(default_factory=dict)                # "x,y" → [room_id_a, room_id_b]
+    linked_doors: dict = field(default_factory=dict)                # "x,y,e"|"x,y,s" → [room_id_a, room_id_b]
 
 
 @dataclass
@@ -66,6 +74,7 @@ class EnemyInstance:
 
     power_base: int = 1
     movement: int = 0
+    core_deck_id: Optional[str] = None
 
     initiative_modifier: int = 2
     initiative_roll: Optional[int] = None

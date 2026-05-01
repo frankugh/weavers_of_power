@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
 from typing import Optional
 
-from engine.runtime_models import DungeonIssue, DungeonRoom, DungeonState, EnemyInstance, Tile
+from engine.runtime_models import DungeonIssue, DungeonRoom, DungeonState, DungeonWall, EnemyInstance, Tile
 
 
 def _tile_key(x: int, y: int) -> str:
@@ -21,15 +20,45 @@ def _short_id() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Canonical edge helpers (public for reuse in battle_session.py)
+# ---------------------------------------------------------------------------
+
+def canonical_edge_key(ax: int, ay: int, bx: int, by: int) -> str:
+    """Return the canonical edge key between two adjacent cells."""
+    if bx == ax + 1: return f"{ax},{ay},e"
+    if bx == ax - 1: return f"{bx},{ay},e"
+    if by == ay + 1: return f"{ax},{ay},s"
+    if by == ay - 1: return f"{ax},{by},s"
+    raise ValueError(f"Cells ({ax}, {ay}) and ({bx}, {by}) are not adjacent")
+
+
+def normalize_side(x: int, y: int, side: str) -> str:
+    """Normalize an (x, y, side) triple to a canonical edge key."""
+    s = side.lower()
+    if s == 'e': return f"{x},{y},e"
+    if s == 'w': return f"{x - 1},{y},e"
+    if s == 's': return f"{x},{y},s"
+    if s == 'n': return f"{x},{y - 1},s"
+    raise ValueError(f"Unknown side: {side!r}")
+
+
+# ---------------------------------------------------------------------------
 # Connected-component analysis
 # ---------------------------------------------------------------------------
 
-def _connected_components(tiles: dict[str, Tile]) -> list[frozenset[tuple[int, int]]]:
-    """Return list of room components (floor tiles only) via cardinal flood-fill."""
+def _connected_components(
+    tiles: dict[str, Tile],
+    walls: dict[str, DungeonWall],
+) -> list[frozenset[tuple[int, int]]]:
+    """Return list of room components (floor tiles only) via cardinal flood-fill.
+
+    Adjacency is blocked by any wall or door edge between two cells.
+    """
     floor_cells: set[tuple[int, int]] = set()
     for key, tile in tiles.items():
         if tile.tile_type == "floor":
-            floor_cells.add(_parse_key(key))
+            x, y = key.split(",")
+            floor_cells.add((int(x), int(y)))
 
     visited: set[tuple[int, int]] = set()
     components: list[frozenset[tuple[int, int]]] = []
@@ -47,8 +76,12 @@ def _connected_components(tiles: dict[str, Tile]) -> list[frozenset[tuple[int, i
             component.add(cell)
             x, y = cell
             for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
-                if (nx, ny) in floor_cells and (nx, ny) not in visited:
-                    stack.append((nx, ny))
+                if (nx, ny) not in floor_cells or (nx, ny) in visited:
+                    continue
+                edge = canonical_edge_key(x, y, nx, ny)
+                if edge in walls:
+                    continue  # wall or door on this edge — not adjacent
+                stack.append((nx, ny))
         components.append(frozenset(component))
 
     return components
@@ -149,26 +182,18 @@ def _assign_room_ids(
 
 
 # ---------------------------------------------------------------------------
-# Door linking
+# Door wall linking
 # ---------------------------------------------------------------------------
 
-@dataclass
-class LinkedDoor:
-    x: int
-    y: int
-    room_id_a: str
-    room_id_b: str
-
-
-def _link_doors(
-    tiles: dict[str, Tile],
+def _link_door_walls(
+    walls: dict[str, DungeonWall],
     rooms: list[DungeonRoom],
 ) -> tuple[dict[str, list[str]], list[DungeonIssue]]:
     """
-    For each door tile, determine which two rooms it connects.
-    A door links rooms A and B when room A occupies the cell directly north (or west)
-    of the door AND room B occupies the cell directly south (or east).
-    Returns linked_doors dict ("x,y" → [room_id_a, room_id_b]) and issues list.
+    For each door-type wall edge, determine which two rooms it connects.
+    Edge key "x,y,e" connects cells (x,y) and (x+1,y).
+    Edge key "x,y,s" connects cells (x,y) and (x,y+1).
+    Returns linked_doors dict (edge_key → [room_id_a, room_id_b]) and issues.
     """
     cell_to_room: dict[tuple[int, int], str] = {}
     for room in rooms:
@@ -178,29 +203,28 @@ def _link_doors(
     linked_doors: dict[str, list[str]] = {}
     issues: list[DungeonIssue] = []
 
-    for key, tile in tiles.items():
-        if tile.tile_type != "door":
+    for key, wall in walls.items():
+        if wall.wall_type != "door":
             continue
-        x, y = _parse_key(key)
+        parts = key.split(",")
+        x, y, side = int(parts[0]), int(parts[1]), parts[2]
 
-        north = cell_to_room.get((x, y - 1))
-        south = cell_to_room.get((x, y + 1))
-        west = cell_to_room.get((x - 1, y))
-        east = cell_to_room.get((x + 1, y))
+        if side == 'e':
+            cell_a, cell_b = (x, y), (x + 1, y)
+        else:  # 's'
+            cell_a, cell_b = (x, y), (x, y + 1)
 
-        ns_link = (north and south and north != south)
-        ew_link = (west and east and west != east)
+        ra = cell_to_room.get(cell_a)
+        rb = cell_to_room.get(cell_b)
 
-        if ns_link and not ew_link:
-            linked_doors[key] = [north, south]
-        elif ew_link and not ns_link:
-            linked_doors[key] = [west, east]
-        elif ns_link and ew_link:
-            issues.append(DungeonIssue(issue_type="ambiguousDoor", x=x, y=y,
-                                       detail="Door tile has valid links in both axes."))
+        if ra and rb and ra != rb:
+            linked_doors[key] = [ra, rb]
         else:
-            issues.append(DungeonIssue(issue_type="unlinkedDoor", x=x, y=y,
-                                       detail="Door tile has no valid room pair on either axis."))
+            issues.append(DungeonIssue(
+                issue_type="unlinkedDoor",
+                x=x, y=y, side=side,
+                detail="Door edge has no valid room pair.",
+            ))
 
     return linked_doors, issues
 
@@ -253,21 +277,25 @@ def analyze(
 ) -> None:
     """
     Run full dungeon analysis in-place on `dungeon`:
-    - Recompute rooms (connected components of floor tiles).
+    - Recompute rooms (connected components of floor tiles, split by wall/door edges).
     - Assign stable room IDs.
-    - Link door tiles to room pairs.
+    - Link door edges to room pairs.
     - Assign unit room_ids; unplace units on void tiles.
     - Populate dungeon.issues.
     - Increment analysis_version.
+
+    This is NOT called automatically by tile/wall edits — the client must call
+    the /analyze endpoint after editing to refresh rooms and linkedDoors.
     """
     tiles = dungeon.tiles
+    walls = dungeon.walls
 
     # 1. Connected components → rooms with stable IDs
-    components = _connected_components(tiles)
+    components = _connected_components(tiles, walls)
     new_rooms, id_issues = _assign_room_ids(components, dungeon.rooms)
 
-    # 2. Door linking
-    linked_doors, door_issues = _link_doors(tiles, new_rooms)
+    # 2. Door wall linking
+    linked_doors, door_issues = _link_door_walls(walls, new_rooms)
 
     # 3. Unit room assignment
     unit_issues = _assign_unit_rooms(entities, tiles, new_rooms)

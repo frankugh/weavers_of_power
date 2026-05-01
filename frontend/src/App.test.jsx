@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App.jsx";
-import { MAP_ZOOM, cellToWorld } from "./mapGeometry.js";
+import { MAP_GRID_GAP, MAP_VIEWPORT_PADDING, MAP_ZOOM, cellToWorld, mapStep } from "./mapGeometry.js";
 
 function jsonResponse(payload, init = {}) {
   return Promise.resolve({
@@ -82,6 +82,7 @@ function buildDungeon(overrides = {}) {
     issues: [],
     analysisVersion: 1,
     renderVersion: 1,
+    walls: {},
     linkedDoors: {},
     extents: { minX: 0, minY: 0, maxX: 1, maxY: 1, width: 2, height: 2 },
     ...overrides,
@@ -155,6 +156,31 @@ function mapPointForCell(viewport, x, y) {
   };
 }
 
+function mapPointForEdge(viewport, edge, options = {}) {
+  const rect = viewport.getBoundingClientRect();
+  const cellSize = Number(viewport.dataset.cellSize || MAP_ZOOM.defaultSize);
+  const cameraX = Number(viewport.dataset.cameraX || 0);
+  const cameraY = Number(viewport.dataset.cameraY || 0);
+  const step = mapStep(cellSize);
+  const halfGap = Math.floor(MAP_GRID_GAP / 2);
+  const along = Number.isFinite(options.along) ? options.along : 0.5;
+  let worldX;
+  let worldY;
+
+  if (edge.side === "e") {
+    worldX = MAP_VIEWPORT_PADDING + (edge.x + 1) * step - halfGap;
+    worldY = MAP_VIEWPORT_PADDING + edge.y * step + cellSize * along;
+  } else {
+    worldX = MAP_VIEWPORT_PADDING + edge.x * step + cellSize * along;
+    worldY = MAP_VIEWPORT_PADDING + (edge.y + 1) * step - halfGap;
+  }
+
+  return {
+    clientX: rect.left + cameraX + worldX + (options.dx || 0),
+    clientY: rect.top + cameraY + worldY + (options.dy || 0),
+  };
+}
+
 function expectedCameraForExtents(extents, cellSize = MAP_ZOOM.defaultSize) {
   const center = cellToWorld((extents.minX + extents.maxX) / 2, (extents.minY + extents.maxY) / 2, cellSize);
 
@@ -164,9 +190,14 @@ function expectedCameraForExtents(extents, cellSize = MAP_ZOOM.defaultSize) {
   };
 }
 
-function pointerClickMapCell(x, y, pointerId = 1) {
+function pointerClickMapCell(x, y, pointerId = 1, options = {}) {
   const viewport = getMapViewport();
   const point = mapPointForCell(viewport, x, y);
+  const modifiers = {
+    shiftKey: Boolean(options.shiftKey),
+    ctrlKey: Boolean(options.ctrlKey),
+    metaKey: Boolean(options.metaKey),
+  };
 
   fireEvent.pointerDown(viewport, {
     pointerId,
@@ -174,6 +205,7 @@ function pointerClickMapCell(x, y, pointerId = 1) {
     button: 0,
     buttons: 1,
     ...point,
+    ...modifiers,
   });
   fireEvent.pointerUp(viewport, {
     pointerId,
@@ -181,6 +213,7 @@ function pointerClickMapCell(x, y, pointerId = 1) {
     button: 0,
     buttons: 0,
     ...point,
+    ...modifiers,
   });
 }
 
@@ -251,6 +284,11 @@ function pointerDragBetweenCells(startX, startY, endX, endY, options = {}) {
   const pointerId = options.pointerId || 1;
   const button = options.button ?? 0;
   const buttons = options.buttons ?? 1;
+  const modifiers = {
+    shiftKey: Boolean(options.shiftKey),
+    ctrlKey: Boolean(options.ctrlKey),
+    metaKey: Boolean(options.metaKey),
+  };
 
   fireEvent.pointerDown(viewport, {
     pointerId,
@@ -258,12 +296,14 @@ function pointerDragBetweenCells(startX, startY, endX, endY, options = {}) {
     button,
     buttons,
     ...start,
+    ...modifiers,
   });
   fireEvent.pointerMove(viewport, {
     pointerId,
     pointerType: "mouse",
     buttons,
     ...end,
+    ...modifiers,
   });
   fireEvent.pointerUp(viewport, {
     pointerId,
@@ -271,6 +311,7 @@ function pointerDragBetweenCells(startX, startY, endX, endY, options = {}) {
     button,
     buttons: 0,
     ...end,
+    ...modifiers,
   });
 }
 
@@ -1414,6 +1455,46 @@ describe("App", () => {
     expect(await screen.findByText("Moved Goblin 1 to (1, 1)")).toBeInTheDocument();
   });
 
+  it("does not offer diagonal movement past a target-corner wall", async () => {
+    const user = userEvent.setup();
+    const floor = { tile_type: "floor", door_open: false };
+    const dungeon = buildDungeon({
+      tiles: {
+        "0,0": floor,
+        "1,1": floor,
+      },
+      rooms: [{ room_id: "room-1", cells: [[0, 0], [1, 1]] }],
+      walls: { "0,1,e": { wall_type: "wall", door_open: false } },
+      extents: { minX: 0, minY: 0, maxX: 1, maxY: 1, width: 2, height: 2 },
+    });
+    const moveCalls = [];
+
+    renderWithSnapshot(
+      buildSnapshot({
+        dungeon,
+        activeTurnId: "enemy-1",
+        movementState: buildMovementState(),
+        enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/entities/enemy-1/move" && requestOptions?.method === "POST") {
+            moveCalls.push(JSON.parse(requestOptions.body));
+            return jsonResponse(buildSnapshot({ dungeon }));
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Move" }));
+
+    expect(getMapViewport().dataset.reachableNormal).toBe("0");
+    pointerClickMapCell(1, 1);
+    expect(moveCalls).toEqual([]);
+  });
+
   it("moves the selected unit onto a cell occupied only by a down unit", async () => {
     const user = userEvent.setup();
     const downEnemy = buildEnemy({
@@ -1946,6 +2027,55 @@ describe("App", () => {
     });
     expect(screen.getByRole("button", { name: "Exit GM" })).toBeInTheDocument();
     expect(getMapViewport().dataset.mapMode).toBe("gm-reposition");
+  });
+
+  it("limits GM reposition dungeon targets to visible rooms", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon({
+      tiles: {
+        "0,0": { tile_type: "floor", door_open: false },
+        "1,0": { tile_type: "floor", door_open: false },
+        "3,0": { tile_type: "floor", door_open: false },
+        "4,0": { tile_type: "floor", door_open: false },
+      },
+      rooms: [
+        { room_id: "visible-room", cells: [[0, 0], [1, 0]] },
+        { room_id: "hidden-room", cells: [[3, 0], [4, 0]] },
+      ],
+      revealedRoomIds: ["visible-room"],
+      fogOfWarEnabled: true,
+      currentPcRoomIds: ["visible-room"],
+      visibleRoomIds: ["visible-room"],
+      extents: { minX: 0, minY: 0, maxX: 4, maxY: 0, width: 5, height: 1 },
+    });
+    const goblin = buildEnemy({ grid_x: 0, grid_y: 0, room_id: "visible-room" });
+    const movedSnapshot = buildSnapshot({
+      dungeon,
+      enemies: [{ ...goblin, grid_x: 1, grid_y: 0 }],
+      combatLog: ["Repositioned Goblin 1 to (2, 1)"],
+    });
+    const positionCalls = [];
+
+    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [goblin] }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/position" && requestOptions?.method === "POST") {
+          positionCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse(movedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "GM Reposition" }));
+
+    pointerClickMapCell(3, 0, 93);
+    expect(positionCalls).toEqual([]);
+
+    pointerClickMapCell(1, 0, 94);
+    await waitFor(() => {
+      expect(positionCalls).toEqual([{ x: 1, y: 0 }]);
+    });
   });
 
   it("rolls loot from a down enemy context menu and hides it after loot is rolled", async () => {
@@ -2529,24 +2659,23 @@ describe("App", () => {
   it("fits dungeon maps to visible rooms instead of the full dungeon", async () => {
     const user = userEvent.setup();
     const floor = { tile_type: "floor", door_open: false };
-    const door = { tile_type: "door", door_open: false };
     const dungeon = buildDungeon({
       tiles: {
         "0,0": floor,
         "1,0": floor,
-        "2,0": door,
-        "3,0": floor,
+        "2,0": floor,
         "40,0": floor,
         "41,0": floor,
       },
+      walls: { "1,0,e": { wall_type: "door", door_open: false } },
       rooms: [
         { room_id: "visible-near", cells: [[0, 0], [1, 0]] },
-        { room_id: "hidden-adjacent", cells: [[3, 0]] },
+        { room_id: "hidden-adjacent", cells: [[2, 0]] },
         { room_id: "hidden-far", cells: [[40, 0], [41, 0]] },
       ],
       visibleRoomIds: ["visible-near"],
       currentPcRoomIds: [],
-      linkedDoors: { "2,0": ["visible-near", "hidden-adjacent"] },
+      linkedDoors: { "1,0,e": ["visible-near", "hidden-adjacent"] },
       extents: { minX: 0, minY: 0, maxX: 41, maxY: 0, width: 42, height: 1 },
     });
 
@@ -2566,32 +2695,33 @@ describe("App", () => {
   it("fits dungeon maps to PC rooms plus directly adjacent visible rooms", async () => {
     const user = userEvent.setup();
     const floor = { tile_type: "floor", door_open: false };
-    const door = { tile_type: "door", door_open: false };
     const dungeon = buildDungeon({
       tiles: {
         "0,0": floor,
         "1,0": floor,
-        "2,0": door,
+        "2,0": floor,
         "3,0": floor,
-        "4,0": floor,
-        "0,2": door,
-        "0,3": floor,
+        "0,1": floor,
         "40,0": floor,
         "41,0": floor,
       },
+      walls: {
+        "1,0,e": { wall_type: "door", door_open: false },
+        "0,0,s": { wall_type: "door", door_open: false },
+      },
       rooms: [
         { room_id: "pc-room", cells: [[0, 0], [1, 0]] },
-        { room_id: "adjacent-visible", cells: [[3, 0], [4, 0]] },
-        { room_id: "adjacent-hidden", cells: [[0, 3]] },
+        { room_id: "adjacent-visible", cells: [[2, 0], [3, 0]] },
+        { room_id: "adjacent-hidden", cells: [[0, 1]] },
         { room_id: "visible-far", cells: [[40, 0], [41, 0]] },
       ],
       visibleRoomIds: ["pc-room", "adjacent-visible", "visible-far"],
       currentPcRoomIds: ["pc-room"],
       linkedDoors: {
-        "2,0": ["pc-room", "adjacent-visible"],
-        "0,2": ["pc-room", "adjacent-hidden"],
+        "1,0,e": ["pc-room", "adjacent-visible"],
+        "0,0,s": ["pc-room", "adjacent-hidden"],
       },
-      extents: { minX: 0, minY: 0, maxX: 41, maxY: 3, width: 42, height: 4 },
+      extents: { minX: 0, minY: 0, maxX: 41, maxY: 1, width: 42, height: 2 },
     });
 
     renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })] }));
@@ -2600,7 +2730,7 @@ describe("App", () => {
     const viewport = getMapViewport();
     await user.click(screen.getByRole("button", { name: "Fit dungeon map" }));
 
-    const expectedCamera = expectedCameraForExtents({ minX: 0, minY: 0, maxX: 4, maxY: 2 });
+    const expectedCamera = expectedCameraForExtents({ minX: 0, minY: 0, maxX: 3, maxY: 1 });
     await waitFor(() => {
       expect(Number(viewport.dataset.cameraX)).toBeCloseTo(expectedCamera.x);
       expect(Number(viewport.dataset.cameraY)).toBeCloseTo(expectedCamera.y);
@@ -2620,6 +2750,201 @@ describe("App", () => {
     fireEvent.pointerUp(viewport, { pointerId: 12, pointerType: "touch" });
 
     expect(Number.parseInt(viewport.dataset.cellSize, 10)).toBeGreaterThan(MAP_ZOOM.defaultSize);
+  });
+
+  it("switches GM Dungeon draw, select, and drag modes", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon();
+    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })] }));
+
+    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    const viewport = getMapViewport();
+    expect(viewport.dataset.gmInteractionMode).toBe("draw");
+    expect(screen.getByRole("button", { name: "Brush" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Select" }));
+    expect(viewport.dataset.gmInteractionMode).toBe("select");
+    expect(screen.queryByRole("button", { name: "Brush" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Drag" }));
+    expect(viewport.dataset.gmInteractionMode).toBe("drag");
+    const beforeX = Number(viewport.dataset.cameraX);
+    pointerDragFromCell(0, 0, 48, 0, { pointerId: 83 });
+
+    await waitFor(() => {
+      expect(Number(viewport.dataset.cameraX)).not.toBe(beforeX);
+    });
+  });
+
+  it("multiselects units in GM Dungeon Select mode with modifiers and rectangle select", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon();
+    const goblin = buildEnemy({ grid_x: 0, grid_y: 0 });
+    const bandit = buildEnemy({
+      instance_id: "enemy-2",
+      template_id: "bandit",
+      name: "Bandit 1",
+      image_url: "/images/Outlaws/bandit.png",
+      grid_x: 1,
+      grid_y: 0,
+    });
+    const baseSnapshot = buildSnapshot({
+      dungeon,
+      enemies: [goblin, bandit],
+      order: ["enemy-1", "enemy-2"],
+    });
+
+    renderWithSnapshot(baseSnapshot, {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+          const payload = JSON.parse(requestOptions.body);
+          return jsonResponse({ ...baseSnapshot, selectedId: payload.instanceId });
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(screen.getByRole("button", { name: "Select" }));
+    const viewport = getMapViewport();
+    expect(viewport.dataset.selectedUnitIds).toBe("enemy-1");
+
+    pointerClickMapCell(1, 0, 84, { shiftKey: true });
+    await waitFor(() => {
+      expect(viewport.dataset.selectedUnitIds).toBe("enemy-1,enemy-2");
+    });
+    expect(screen.getByRole("button", { name: "Copy" })).toBeDisabled();
+
+    pointerClickMapCell(1, 0, 85, { ctrlKey: true });
+    await waitFor(() => {
+      expect(viewport.dataset.selectedUnitIds).toBe("enemy-1");
+    });
+
+    pointerDragBetweenCells(0, 1, 1, 0, { pointerId: 86 });
+    await waitFor(() => {
+      expect(viewport.dataset.selectedUnitIds).toBe("enemy-1,enemy-2");
+    });
+  });
+
+  it("moves selected GM Dungeon units with one batch position request", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon({
+      tiles: {
+        "0,0": { tile_type: "floor", door_open: false },
+        "1,0": { tile_type: "floor", door_open: false },
+        "2,0": { tile_type: "floor", door_open: false },
+        "0,1": { tile_type: "floor", door_open: false },
+        "1,1": { tile_type: "floor", door_open: false },
+        "2,1": { tile_type: "floor", door_open: false },
+      },
+      rooms: [{ room_id: "room-1", cells: [[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1]] }],
+      extents: { minX: 0, minY: 0, maxX: 2, maxY: 1, width: 3, height: 2 },
+    });
+    const goblin = buildEnemy({ grid_x: 0, grid_y: 0 });
+    const bandit = buildEnemy({
+      instance_id: "enemy-2",
+      template_id: "bandit",
+      name: "Bandit 1",
+      image_url: "/images/Outlaws/bandit.png",
+      grid_x: 1,
+      grid_y: 0,
+    });
+    let currentSnapshot = buildSnapshot({
+      dungeon,
+      enemies: [goblin, bandit],
+      order: ["enemy-1", "enemy-2"],
+    });
+    const positionCalls = [];
+
+    renderWithSnapshot(currentSnapshot, {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+          const payload = JSON.parse(requestOptions.body);
+          currentSnapshot = { ...currentSnapshot, selectedId: payload.instanceId };
+          return jsonResponse(currentSnapshot);
+        }
+        if (url === "/api/battle/sessions/sid-123/entities/positions" && requestOptions?.method === "POST") {
+          const payload = JSON.parse(requestOptions.body);
+          positionCalls.push(payload);
+          const placements = new Map(payload.placements.map((placement) => [placement.instanceId, placement]));
+          currentSnapshot = {
+            ...currentSnapshot,
+            selectedId: payload.placements[0]?.instanceId || currentSnapshot.selectedId,
+            enemies: currentSnapshot.enemies.map((entity) => {
+              const placement = placements.get(entity.instance_id);
+              return placement ? { ...entity, grid_x: placement.x, grid_y: placement.y } : entity;
+            }),
+          };
+          return jsonResponse(currentSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(screen.getByRole("button", { name: "Select" }));
+    pointerClickMapCell(1, 0, 87, { shiftKey: true });
+    await waitFor(() => {
+      expect(getMapViewport().dataset.selectedUnitIds).toBe("enemy-1,enemy-2");
+    });
+
+    pointerDragBetweenCells(0, 0, 1, 0, { pointerId: 88 });
+
+    await waitFor(() => {
+      expect(positionCalls).toEqual([
+        {
+          placements: [
+            { instanceId: "enemy-1", x: 1, y: 0 },
+            { instanceId: "enemy-2", x: 2, y: 0 },
+          ],
+        },
+      ]);
+    });
+  });
+
+  it("copies a single selected GM Dungeon enemy", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon();
+    const goblin = buildEnemy({ grid_x: 0, grid_y: 0 });
+    const copiedGoblin = buildEnemy({
+      instance_id: "enemy-copy",
+      name: "Goblin 2",
+      grid_x: 1,
+      grid_y: 0,
+    });
+    const baseSnapshot = buildSnapshot({
+      dungeon,
+      enemies: [goblin],
+      order: ["enemy-1"],
+    });
+    const copyCalls = [];
+
+    renderWithSnapshot(baseSnapshot, {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/copy" && requestOptions?.method === "POST") {
+          copyCalls.push(url);
+          return jsonResponse({
+            ...baseSnapshot,
+            selectedId: "enemy-copy",
+            enemies: [goblin, copiedGoblin],
+            order: ["enemy-1", "enemy-copy"],
+          });
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(screen.getByRole("button", { name: "Select" }));
+    const copyButton = screen.getByRole("button", { name: "Copy" });
+    expect(copyButton).toBeEnabled();
+
+    await user.click(copyButton);
+
+    await waitFor(() => {
+      expect(copyCalls).toEqual(["/api/battle/sessions/sid-123/entities/enemy-1/copy"]);
+      expect(getMapViewport().dataset.selectedUnitIds).toBe("enemy-copy");
+    });
   });
 
   it("paints dungeon cells at negative coordinates after panning", async () => {
@@ -2652,7 +2977,7 @@ describe("App", () => {
     });
   });
 
-  it("rectangle-paints floor cells but keeps doors brush-only", async () => {
+  it("rectangle-paints floor cells and keeps wall drawing edge-only", async () => {
     const user = userEvent.setup();
     const dungeon = buildDungeon();
     renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })] }), {
@@ -2678,8 +3003,69 @@ describe("App", () => {
       );
     });
 
+    await user.click(screen.getByRole("button", { name: "Walls" }));
+    expect(screen.getByRole("button", { name: "Door" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rect" })).not.toBeInTheDocument();
+  });
+
+  it("posts wall edge strokes from GM Dungeon Walls submode", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon();
+    const wallCalls = [];
+    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })] }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/dungeon/walls" && requestOptions?.method === "POST") {
+          wallCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse(buildSnapshot({ dungeon }));
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(screen.getByRole("button", { name: "Walls" }));
     await user.click(screen.getByRole("button", { name: "Door" }));
-    expect(screen.getByRole("button", { name: "Rect" })).toBeDisabled();
+    pointerClickMapCell(0, 0, 93);
+
+    await waitFor(() => {
+      expect(wallCalls).toEqual([
+        { wallType: "door", edges: [{ x: 0, y: 0, side: "e" }] },
+      ]);
+    });
+  });
+
+  it("keeps wall drag strokes on the first chosen grid line", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon();
+    const wallCalls = [];
+    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })] }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/dungeon/walls" && requestOptions?.method === "POST") {
+          wallCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse(buildSnapshot({ dungeon }));
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(screen.getByRole("button", { name: "Walls" }));
+
+    const viewport = getMapViewport();
+    const start = mapPointForEdge(viewport, { x: 0, y: 0, side: "e" });
+    const cornerWobble = mapPointForEdge(viewport, { x: 0, y: 0, side: "s" }, { along: 0.86 });
+    const end = mapPointForEdge(viewport, { x: 0, y: 1, side: "e" });
+
+    fireEvent.pointerDown(viewport, { pointerId: 94, pointerType: "mouse", button: 0, buttons: 1, ...start });
+    fireEvent.pointerMove(viewport, { pointerId: 94, pointerType: "mouse", buttons: 1, ...cornerWobble });
+    fireEvent.pointerMove(viewport, { pointerId: 94, pointerType: "mouse", buttons: 1, ...end });
+    fireEvent.pointerUp(viewport, { pointerId: 94, pointerType: "mouse", button: 0, buttons: 0, ...end });
+
+    await waitFor(() => {
+      expect(wallCalls).toEqual([
+        { wallType: "wall", edges: [{ x: 0, y: 0, side: "e" }, { x: 0, y: 1, side: "e" }] },
+      ]);
+    });
   });
 
   it("confirms very large rectangle tile edits before posting", async () => {
@@ -2709,48 +3095,6 @@ describe("App", () => {
     await waitFor(() => {
       const tileCall = global.fetch.mock.calls.find(([url]) => url === "/api/battle/sessions/sid-123/dungeon/tiles");
       expect(JSON.parse(tileCall[1].body).cells).toHaveLength(2550);
-    });
-  });
-
-  it("shows crop warning and confirms unit unplace from dungeon tools", async () => {
-    const user = userEvent.setup();
-    const dungeon = buildDungeon();
-    const cropCalls = [];
-    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 1, grid_y: 1 })] }), {
-      extraFetch: (url, requestOptions) => {
-        if (url === "/api/battle/sessions/sid-123/dungeon/crop" && requestOptions?.method === "POST") {
-          const payload = JSON.parse(requestOptions.body);
-          cropCalls.push(payload);
-          if (!payload.confirmUnitUnplace) {
-            return jsonResponse(
-              { detail: "Crop would unplace 1 unit(s): Goblin 1" },
-              { ok: false, status: 400, statusText: "Bad Request" },
-            );
-          }
-          return jsonResponse(buildSnapshot({ dungeon }));
-        }
-        return undefined;
-      },
-    });
-
-    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
-    await user.click(screen.getByRole("button", { name: "Dungeon tools" }));
-    await user.clear(screen.getByLabelText("Crop columns"));
-    await user.type(screen.getByLabelText("Crop columns"), "1");
-    await user.clear(screen.getByLabelText("Crop rows"));
-    await user.type(screen.getByLabelText("Crop rows"), "1");
-    await user.click(screen.getByRole("button", { name: "Crop" }));
-
-    const confirmCropButton = await screen.findByRole("button", { name: "Crop dungeon" });
-    await user.click(confirmCropButton);
-    expect(await screen.findByText("Crop would unplace 1 unit(s): Goblin 1")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Unplace units and crop" }));
-
-    await waitFor(() => {
-      expect(cropCalls).toEqual([
-        { minX: 0, minY: 0, columns: 1, rows: 1, confirmUnitUnplace: false },
-        { minX: 0, minY: 0, columns: 1, rows: 1, confirmUnitUnplace: true },
-      ]);
     });
   });
 

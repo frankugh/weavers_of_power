@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
 
-from engine.runtime_models import DeckState, DungeonIssue, DungeonRoom, DungeonState, EnemyInstance, Tile
+from engine.runtime_models import DeckState, DungeonIssue, DungeonRoom, DungeonState, DungeonWall, EnemyInstance, Tile
 
 
 def _utc_now_iso() -> str:
@@ -40,7 +40,11 @@ def _backup_then_write(path: Path, data: Dict[str, Any]) -> None:
 def dungeon_state_to_dict(ds: DungeonState) -> Dict[str, Any]:
     tiles_out = {}
     for key, tile in ds.tiles.items():
-        tiles_out[key] = {"tile_type": tile.tile_type, "door_open": tile.door_open}
+        tiles_out[key] = {"tile_type": tile.tile_type}
+    walls_out = {
+        key: {"wall_type": w.wall_type, "door_open": w.door_open}
+        for key, w in ds.walls.items()
+    }
     rooms_out = [
         {"room_id": r.room_id, "cells": r.cells}
         for r in ds.rooms
@@ -50,6 +54,7 @@ def dungeon_state_to_dict(ds: DungeonState) -> Dict[str, Any]:
             "issue_type": i.issue_type,
             "x": i.x,
             "y": i.y,
+            "side": i.side,
             "unit_id": i.unit_id,
             "detail": i.detail,
         }
@@ -57,6 +62,7 @@ def dungeon_state_to_dict(ds: DungeonState) -> Dict[str, Any]:
     ]
     return {
         "tiles": tiles_out,
+        "walls": walls_out,
         "rooms": rooms_out,
         "revealed_room_ids": list(ds.revealed_room_ids),
         "pending_encounter_room_ids": list(ds.pending_encounter_room_ids),
@@ -74,7 +80,14 @@ def dungeon_state_to_dict(ds: DungeonState) -> Dict[str, Any]:
 def dungeon_state_from_dict(d: Dict[str, Any]) -> DungeonState:
     tiles = {}
     for key, tv in (d.get("tiles") or {}).items():
-        tiles[key] = Tile(tile_type=tv["tile_type"], door_open=bool(tv.get("door_open", False)))
+        tile_type = tv.get("tile_type", "floor")
+        if tile_type == "door":
+            tile_type = "floor"  # legacy door tiles become floor; walls handle doors now
+        tiles[key] = Tile(tile_type=tile_type)
+    walls = {
+        key: DungeonWall(wall_type=wv["wall_type"], door_open=bool(wv.get("door_open", False)))
+        for key, wv in (d.get("walls") or {}).items()
+    }
     rooms = [
         DungeonRoom(room_id=r["room_id"], cells=list(r.get("cells", [])))
         for r in (d.get("rooms") or [])
@@ -84,6 +97,7 @@ def dungeon_state_from_dict(d: Dict[str, Any]) -> DungeonState:
             issue_type=i["issue_type"],
             x=i.get("x"),
             y=i.get("y"),
+            side=i.get("side"),
             unit_id=i.get("unit_id"),
             detail=i.get("detail", ""),
         )
@@ -91,6 +105,7 @@ def dungeon_state_from_dict(d: Dict[str, Any]) -> DungeonState:
     ]
     return DungeonState(
         tiles=tiles,
+        walls=walls,
         rooms=rooms,
         revealed_room_ids=list(d.get("revealed_room_ids") or []),
         pending_encounter_room_ids=list(d.get("pending_encounter_room_ids") or []),
@@ -147,6 +162,7 @@ def enemy_from_dict(d: Dict[str, Any]) -> EnemyInstance:
         guard_current=int(d.get("guard_current", 0)),
         power_base=int(d.get("power_base", d.get("draws_base", 0))),
         movement=int(d.get("movement", 0)),
+        core_deck_id=d.get("core_deck_id"),
         initiative_modifier=int(d.get("initiative_modifier", 2)),
         initiative_roll=d.get("initiative_roll"),
         initiative_total=d.get("initiative_total"),

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   MAP_DRAG_THRESHOLD,
+  MAP_GRID_GAP,
+  MAP_VIEWPORT_PADDING,
   MAP_ZOOM,
   cellBounds,
   cellToWorld,
@@ -10,6 +12,7 @@ import {
   clampCellSize,
   clientPointToCell,
   mapContentSize,
+  mapStep,
   visibleCellRange,
   sameCell,
   zoomCameraAt,
@@ -18,6 +21,8 @@ import {
 const VIEWPORT_FALLBACK = { left: 0, top: 0, width: 800, height: 500 };
 const UNIT_DOUBLE_CLICK_MS = 320;
 const DUNGEON_CHUNK_SIZE = 32;
+const WALL_EDGE_VERTICAL = "vertical";
+const WALL_EDGE_HORIZONTAL = "horizontal";
 
 function pointerTypeOf(event) {
   return event.pointerType || event.nativeEvent?.pointerType || "mouse";
@@ -79,6 +84,14 @@ function positionKey(x, y) {
   return `${x}:${y}`;
 }
 
+function dungeonTileKey(x, y) {
+  return `${x},${y}`;
+}
+
+function edgeKey(edge) {
+  return `${edge.x},${edge.y},${edge.side}`;
+}
+
 function isBlockingEntity(entity) {
   return !entity?.is_down;
 }
@@ -96,6 +109,27 @@ function getBlockingEntity(entities) {
 
 function getTopSelectableEntity(entities) {
   return getBlockingEntity(entities) || entities[0] || null;
+}
+
+function isAdditiveSelect(event) {
+  return Boolean(event.shiftKey || event.nativeEvent?.shiftKey);
+}
+
+function isSubtractiveSelect(event) {
+  return Boolean(event.ctrlKey || event.metaKey || event.nativeEvent?.ctrlKey || event.nativeEvent?.metaKey);
+}
+
+function entityIdsInRect(entities, firstCell, secondCell) {
+  if (!firstCell || !secondCell) {
+    return [];
+  }
+  const minX = Math.min(firstCell.x, secondCell.x);
+  const maxX = Math.max(firstCell.x, secondCell.x);
+  const minY = Math.min(firstCell.y, secondCell.y);
+  const maxY = Math.max(firstCell.y, secondCell.y);
+  return entities
+    .filter((entity) => entity.grid_x >= minX && entity.grid_x <= maxX && entity.grid_y >= minY && entity.grid_y <= maxY)
+    .map((entity) => entity.instance_id);
 }
 
 function percent(current, max) {
@@ -175,8 +209,13 @@ function calculateDungeonFitExtents(dungeon, roomIds) {
     if (!Array.isArray(linkedRoomIds) || !linkedRoomIds.some((roomId) => roomIds.has(roomId))) {
       return;
     }
-    const [x, y] = key.split(",").map(Number);
+    const parts = key.split(",");
+    const x = Number(parts[0]);
+    const y = Number(parts[1]);
+    const side = parts[2];
     includeCell(x, y);
+    if (side === "e") includeCell(x + 1, y);
+    else if (side === "s") includeCell(x, y + 1);
   });
 
   if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
@@ -230,6 +269,7 @@ function buildDungeonRenderIndex(dungeon) {
   const tileChunks = new Map();
   const roomCellToRoom = new Map();
   const roomCellChunks = new Map();
+  const wallChunks = buildWallRenderIndex(dungeon?.walls);
 
   for (const [key, tile] of Object.entries(dungeon?.tiles || {})) {
     const [x, y] = key.split(",").map(Number);
@@ -253,7 +293,7 @@ function buildDungeonRenderIndex(dungeon) {
     }
   }
 
-  return { tileChunks, roomCellToRoom, roomCellChunks };
+  return { tileChunks, roomCellToRoom, roomCellChunks, wallChunks };
 }
 
 function drawGrid(graphics, room, cellSize, { unbounded = false, camera = { x: 0, y: 0 }, viewport = VIEWPORT_FALLBACK } = {}) {
@@ -307,152 +347,29 @@ function roomIdAt(roomCellToRoom, x, y) {
   return roomCellToRoom.get(`${x},${y}`)?.room_id || null;
 }
 
-function isFloorTile(dungeon, x, y) {
-  return dungeon?.tiles?.[`${x},${y}`]?.tile_type === "floor";
-}
-
-function inferDoorPassageAxis(dungeon, roomCellToRoom, x, y) {
-  const northRoom = roomIdAt(roomCellToRoom, x, y - 1);
-  const southRoom = roomIdAt(roomCellToRoom, x, y + 1);
-  const westRoom = roomIdAt(roomCellToRoom, x - 1, y);
-  const eastRoom = roomIdAt(roomCellToRoom, x + 1, y);
-  const linksNorthSouth = Boolean(northRoom && southRoom && northRoom !== southRoom);
-  const linksEastWest = Boolean(westRoom && eastRoom && westRoom !== eastRoom);
-
-  if (linksNorthSouth !== linksEastWest) {
-    return linksNorthSouth ? "north-south" : "east-west";
-  }
-
-  const hasNorthSouthFloor = isFloorTile(dungeon, x, y - 1) && isFloorTile(dungeon, x, y + 1);
-  const hasEastWestFloor = isFloorTile(dungeon, x - 1, y) && isFloorTile(dungeon, x + 1, y);
-  if (hasNorthSouthFloor !== hasEastWestFloor) {
-    return hasNorthSouthFloor ? "north-south" : "east-west";
-  }
-
-  const northSouthCount = Number(isFloorTile(dungeon, x, y - 1)) + Number(isFloorTile(dungeon, x, y + 1));
-  const eastWestCount = Number(isFloorTile(dungeon, x - 1, y)) + Number(isFloorTile(dungeon, x + 1, y));
-  if (northSouthCount !== eastWestCount) {
-    return northSouthCount > eastWestCount ? "north-south" : "east-west";
-  }
-
-  return "unknown";
-}
-
-function drawDoorTile(graphics, bounds, tile, passageAxis, dimAlpha, { preview = false } = {}) {
-  const bx = bounds.x + 2;
-  const by = bounds.y + 2;
-  const bw = bounds.width - 4;
-  const bh = bounds.height - 4;
-  const plank = Math.max(4, Math.min(10, Math.round(Math.min(bw, bh) * 0.16)));
-  const inset = Math.max(4, Math.round(Math.min(bw, bh) * 0.12));
-  const floorColor = preview ? 0x4a311c : 0x2d1f12;
-  const doorColor = preview ? 0xf0cf85 : 0xd4a254;
-  const doorDark = preview ? 0x8a5b26 : 0x5a3a1a;
-
-  graphics
-    .rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2)
-    .fill({ color: floorColor, alpha: (tile.door_open ? 0.82 : 0.68) * dimAlpha });
-
-  if (tile.door_open) {
-    if (passageAxis === "north-south") {
-      graphics.rect(bx + 2, by + inset, plank, Math.max(plank, bh - inset * 2)).fill({
-        color: doorColor,
-        alpha: 0.88 * dimAlpha,
-      });
-      graphics.circle(bx + 2 + plank / 2, by + bh / 2, Math.max(1.5, plank * 0.28)).fill({
-        color: doorDark,
-        alpha: 0.9 * dimAlpha,
-      });
-    } else if (passageAxis === "east-west") {
-      graphics.rect(bx + inset, by + 2, Math.max(plank, bw - inset * 2), plank).fill({
-        color: doorColor,
-        alpha: 0.88 * dimAlpha,
-      });
-      graphics.circle(bx + bw / 2, by + 2 + plank / 2, Math.max(1.5, plank * 0.28)).fill({
-        color: doorDark,
-        alpha: 0.9 * dimAlpha,
-      });
-    } else {
-      graphics.rect(bx + 2, by + 2, plank, Math.max(plank, bh * 0.45)).fill({
-        color: doorColor,
-        alpha: 0.82 * dimAlpha,
-      });
-    }
-  } else if (passageAxis === "north-south") {
-    graphics.rect(bx + inset, by + bh / 2 - plank / 2, Math.max(plank, bw - inset * 2), plank).fill({
-      color: doorDark,
-      alpha: 0.96 * dimAlpha,
-    });
-    graphics.rect(bx + inset + 1, by + bh / 2 - plank / 2 + 1, Math.max(1, bw - inset * 2 - 2), Math.max(1, plank - 2)).fill({
-      color: doorColor,
-      alpha: 0.95 * dimAlpha,
-    });
-  } else if (passageAxis === "east-west") {
-    graphics.rect(bx + bw / 2 - plank / 2, by + inset, plank, Math.max(plank, bh - inset * 2)).fill({
-      color: doorDark,
-      alpha: 0.96 * dimAlpha,
-    });
-    graphics.rect(bx + bw / 2 - plank / 2 + 1, by + inset + 1, Math.max(1, plank - 2), Math.max(1, bh - inset * 2 - 2)).fill({
-      color: doorColor,
-      alpha: 0.95 * dimAlpha,
-    });
-  } else {
-    const mark = Math.max(plank + 2, Math.min(bw, bh) * 0.28);
-    graphics.rect(bx + bw / 2 - mark / 2, by + bh / 2 - mark / 2, mark, mark).fill({
-      color: doorColor,
-      alpha: 0.92 * dimAlpha,
-    });
-  }
-
-  if (preview) {
-    graphics.rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2).stroke({
-      color: doorColor,
-      alpha: 0.55 * dimAlpha,
-      width: 2,
-    });
-  }
-}
-
 function drawDungeonTiles(graphics, dungeon, renderIndex, range, cellSize, isGmMode, highlightedRoomId = null) {
   graphics.clear();
   if (!dungeon) return;
 
   const revealedSet = new Set(dungeon.visibleRoomIds || []);
   const roomCellToRoom = renderIndex?.roomCellToRoom || new Map();
-  const linkedDoors = dungeon.linkedDoors || {};
 
   for (const chunkKey of chunkKeysForRange(range)) {
     const entries = renderIndex?.tileChunks?.get(chunkKey) || [];
     for (const { key, x, y, tile } of entries) {
       if (!isCellInRange(x, y, range)) continue;
+      if (tile.tile_type !== "floor") continue; // skip legacy door tiles and unknown types
       const bounds = cellBounds(x, y, cellSize);
       const room_ = roomCellToRoom.get(key);
 
-      let revealed;
-      if (room_) {
-        // Floor tile: visible if its room is in visibleRoomIds
-        revealed = revealedSet.has(room_.room_id);
-      } else if (tile.tile_type === "door") {
-        // Door tile: visible if at least one linked room is visible
-        const link = linkedDoors[key];
-        revealed = Array.isArray(link) && link.some((rid) => revealedSet.has(rid));
-      } else {
-        // Unanalyzed tile with no room: always show
-        revealed = true;
-      }
-
+      const revealed = room_ ? revealedSet.has(room_.room_id) : true;
       const showInNormalMode = revealed || isGmMode;
       if (!showInNormalMode) continue;
 
       const dimAlpha = !revealed && isGmMode ? 0.55 : 1;
-
-      if (tile.tile_type === "floor") {
-        graphics
-          .rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2)
-          .fill({ color: 0x2d1f12, alpha: 0.82 * dimAlpha });
-      } else if (tile.tile_type === "door") {
-        drawDoorTile(graphics, bounds, tile, inferDoorPassageAxis(dungeon, roomCellToRoom, x, y), dimAlpha);
-      }
+      graphics
+        .rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2)
+        .fill({ color: 0x2d1f12, alpha: 0.82 * dimAlpha });
     }
   }
 
@@ -501,7 +418,7 @@ function drawDungeonIssues(graphics, dungeon, range, cellSize) {
   }
 }
 
-function drawDungeonPreview(graphics, previewCells, cellSize, dungeon) {
+function drawDungeonPreview(graphics, previewCells, cellSize) {
   graphics.clear();
   if (!previewCells?.size) return;
 
@@ -512,13 +429,6 @@ function drawDungeonPreview(graphics, previewCells, cellSize, dungeon) {
         .rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2)
         .fill({ color: 0x0b0704, alpha: 0.94 })
         .stroke({ color: 0x82d9df, alpha: 0.26, width: 1 });
-      continue;
-    }
-
-    if (cell.tileType === "door") {
-      drawDoorTile(graphics, bounds, { tile_type: "door", door_open: false }, inferDoorPassageAxis(dungeon, new Map(), cell.x, cell.y), 1, {
-        preview: true,
-      });
       continue;
     }
 
@@ -582,11 +492,230 @@ function movementStateNumber(movementState, key, fallback = 0) {
 
 function dungeonBlocksCell(dungeon, x, y) {
   if (!dungeon || !dungeon.tiles) return false;
-  const key = `${x},${y}`;
-  const tile = dungeon.tiles[key];
-  if (!tile) return true; // void/unknown
-  if (tile.tile_type === "door" && !tile.door_open) return true; // closed door
-  return false;
+  return !dungeon.tiles[dungeonTileKey(x, y)]; // void/unknown blocks
+}
+
+function isDungeonCellVisibleToPlayers(dungeon, renderIndex, x, y) {
+  if (!dungeon?.tiles) return true;
+  const key = dungeonTileKey(x, y);
+  if (!dungeon.tiles[key]) return false;
+  const visibleRoomIds = new Set(dungeon.visibleRoomIds || []);
+  const room = renderIndex?.roomCellToRoom?.get(key);
+  if (room) return visibleRoomIds.has(room.room_id);
+  return true; // unanalyzed floor: always show
+}
+
+function canonicalEdgeKey(ax, ay, bx, by) {
+  if (bx === ax + 1) return `${ax},${ay},e`;
+  if (bx === ax - 1) return `${bx},${ay},e`;
+  if (by === ay + 1) return `${ax},${ay},s`;
+  if (by === ay - 1) return `${ax},${by},s`;
+  throw new Error(`Cells ${ax},${ay} and ${bx},${by} are not adjacent`);
+}
+
+function edgeHasAnyWall(dungeon, ax, ay, bx, by) {
+  return !!dungeon?.walls?.[canonicalEdgeKey(ax, ay, bx, by)];
+}
+
+function wallBlocksOrthogonal(dungeon, ax, ay, bx, by) {
+  const wall = dungeon?.walls?.[canonicalEdgeKey(ax, ay, bx, by)];
+  if (!wall) return false;
+  return wall.wall_type === "wall" || !wall.door_open;
+}
+
+function diagonalTouchesAnyWall(dungeon, ax, ay, bx, by) {
+  return (
+    edgeHasAnyWall(dungeon, ax, ay, bx, ay) ||
+    edgeHasAnyWall(dungeon, ax, ay, ax, by) ||
+    edgeHasAnyWall(dungeon, bx, by, ax, by) ||
+    edgeHasAnyWall(dungeon, bx, by, bx, ay)
+  );
+}
+
+function wallStrokeWidths(cellSize) {
+  const outer = Math.max(7, Math.min(14, Math.round(cellSize * 0.12)));
+  return {
+    outer,
+    inner: Math.max(3, Math.min(6, Math.round(outer * 0.46))),
+    doorFrame: Math.max(4, Math.min(8, Math.round(cellSize * 0.07))),
+  };
+}
+
+function wallEdgeOrientation(edge) {
+  return edge?.side === "e" ? WALL_EDGE_VERTICAL : WALL_EDGE_HORIZONTAL;
+}
+
+function wallEdgeLine(edge) {
+  return edge?.side === "e" ? edge.x : edge.y;
+}
+
+function snapToNearestEdge(worldX, worldY, cellSize, lock = null) {
+  const step = mapStep(cellSize);
+  const gridX = worldX - MAP_VIEWPORT_PADDING;
+  const gridY = worldY - MAP_VIEWPORT_PADDING;
+  const cx = Math.floor(gridX / step);
+  const cy = Math.floor(gridY / step);
+  const offsetX = gridX - cx * step;
+  const offsetY = gridY - cy * step;
+  const dE = Math.abs(cellSize - offsetX);
+  const dW = Math.abs(offsetX);
+  const dS = Math.abs(cellSize - offsetY);
+  const dN = Math.abs(offsetY);
+  const lockedLine = Number.isInteger(lock?.line) ? lock.line : null;
+  if (lock?.orientation === WALL_EDGE_VERTICAL) {
+    const x = lockedLine ?? (dE <= dW ? cx : cx - 1);
+    return { x, y: cy, side: "e" };
+  }
+  if (lock?.orientation === WALL_EDGE_HORIZONTAL) {
+    const y = lockedLine ?? (dS <= dN ? cy : cy - 1);
+    return { x: cx, y, side: "s" };
+  }
+  const min = Math.min(dE, dW, dS, dN);
+  if (min === dE) return { x: cx, y: cy, side: "e" };
+  if (min === dW) return { x: cx - 1, y: cy, side: "e" };
+  if (min === dS) return { x: cx, y: cy, side: "s" };
+  return { x: cx, y: cy - 1, side: "s" };
+}
+
+function wallStrokeSegmentEdges(previous, edge) {
+  if (!previous || previous.side !== edge.side) {
+    return [edge];
+  }
+  if (edge.side === "e" && previous.x === edge.x) {
+    const direction = previous.y <= edge.y ? 1 : -1;
+    const edges = [];
+    for (let y = previous.y; ; y += direction) {
+      edges.push({ x: edge.x, y, side: "e" });
+      if (y === edge.y) break;
+    }
+    return edges;
+  }
+  if (edge.side === "s" && previous.y === edge.y) {
+    const direction = previous.x <= edge.x ? 1 : -1;
+    const edges = [];
+    for (let x = previous.x; ; x += direction) {
+      edges.push({ x, y: edge.y, side: "s" });
+      if (x === edge.x) break;
+    }
+    return edges;
+  }
+  return [edge];
+}
+
+function buildWallRenderIndex(walls) {
+  const chunks = new Map();
+  for (const [key, wall] of Object.entries(walls || {})) {
+    const parts = key.split(",");
+    const x = parseInt(parts[0], 10);
+    const y = parseInt(parts[1], 10);
+    const side = parts[2];
+    const chunkKey = chunkKeyForCell(x, y);
+    const current = chunks.get(chunkKey) || [];
+    current.push({ key, x, y, side, wall });
+    chunks.set(chunkKey, current);
+  }
+  return chunks;
+}
+
+function drawEdgeWall(graphics, wall, x1, y1, x2, y2, side, cellSize) {
+  const widths = wallStrokeWidths(cellSize);
+  if (wall.wall_type === "wall") {
+    graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: 0x140904, width: widths.outer });
+    graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: 0x8a5628, alpha: 0.9, width: widths.inner });
+    return;
+  }
+  // Door
+  const isEast = side === "e";
+  const totalLen = isEast ? y2 - y1 : x2 - x1;
+  const gapSize = Math.max(4, Math.min(totalLen * 0.45, cellSize * 0.38));
+  const halfGap = gapSize / 2;
+  const midCoord = isEast ? (y1 + y2) / 2 : (x1 + x2) / 2;
+  const frameColor = 0x3a2510;
+  const panelColor = 0xd4a254;
+  const panelDark = 0x8a5a26;
+  const panelW = Math.max(widths.doorFrame, Math.round(cellSize * 0.16));
+
+  if (isEast) {
+    if (midCoord - halfGap > y1) graphics.moveTo(x1, y1).lineTo(x1, midCoord - halfGap).stroke({ color: frameColor, width: widths.doorFrame });
+    if (midCoord + halfGap < y2) graphics.moveTo(x1, midCoord + halfGap).lineTo(x1, y2).stroke({ color: frameColor, width: widths.doorFrame });
+    if (wall.door_open) {
+      graphics.rect(x1 - panelW, y1, panelW, Math.round(gapSize)).fill({ color: panelDark });
+      graphics.rect(x1 - panelW + 1, y1 + 1, Math.max(1, panelW - 2), Math.max(1, Math.round(gapSize) - 2)).fill({ color: panelColor, alpha: 0.9 });
+    } else {
+      graphics.rect(x1 - panelW / 2, midCoord - halfGap, panelW, gapSize).fill({ color: panelDark });
+      graphics.rect(x1 - panelW / 2 + 1, midCoord - halfGap + 1, Math.max(1, panelW - 2), Math.max(1, gapSize - 2)).fill({ color: panelColor, alpha: 0.9 });
+    }
+  } else {
+    if (midCoord - halfGap > x1) graphics.moveTo(x1, y1).lineTo(midCoord - halfGap, y1).stroke({ color: frameColor, width: widths.doorFrame });
+    if (midCoord + halfGap < x2) graphics.moveTo(midCoord + halfGap, y1).lineTo(x2, y1).stroke({ color: frameColor, width: widths.doorFrame });
+    if (wall.door_open) {
+      graphics.rect(x1, y1 - panelW, Math.round(gapSize), panelW).fill({ color: panelDark });
+      graphics.rect(x1 + 1, y1 - panelW + 1, Math.max(1, Math.round(gapSize) - 2), Math.max(1, panelW - 2)).fill({ color: panelColor, alpha: 0.9 });
+    } else {
+      graphics.rect(midCoord - halfGap, y1 - panelW / 2, gapSize, panelW).fill({ color: panelDark });
+      graphics.rect(midCoord - halfGap + 1, y1 - panelW / 2 + 1, Math.max(1, gapSize - 2), Math.max(1, panelW - 2)).fill({ color: panelColor, alpha: 0.9 });
+    }
+  }
+}
+
+function drawWallEdges(graphics, dungeon, wallRenderIndex, renderIndex, range, cellSize, isGmMode) {
+  graphics.clear();
+  if (!dungeon?.walls) return;
+
+  const step = mapStep(cellSize);
+  const padding = MAP_VIEWPORT_PADDING;
+  const halfGap = Math.floor(MAP_GRID_GAP / 2);
+  const revealedSet = new Set(dungeon.visibleRoomIds || []);
+  const roomCellToRoom = renderIndex?.roomCellToRoom || new Map();
+  const edgeRange = {
+    ...range,
+    minX: range.minX - 1,
+    minY: range.minY - 1,
+  };
+
+  for (const chunkKey of chunkKeysForRange(edgeRange)) {
+    const entries = wallRenderIndex?.get(chunkKey) || [];
+    for (const { x, y, side, wall } of entries) {
+      if (!isCellInRange(x, y, edgeRange)) continue;
+      if (!isGmMode) {
+        const roomA = roomCellToRoom.get(`${x},${y}`);
+        const visA = roomA && revealedSet.has(roomA.room_id);
+        const bx = side === "e" ? x + 1 : x;
+        const by = side === "s" ? y + 1 : y;
+        const roomB = roomCellToRoom.get(`${bx},${by}`);
+        const visB = roomB && revealedSet.has(roomB.room_id);
+        if (!visA && !visB) continue;
+      }
+      if (side === "e") {
+        const ex = padding + (x + 1) * step - halfGap;
+        drawEdgeWall(graphics, wall, ex, padding + y * step, ex, padding + y * step + cellSize, "e", cellSize);
+      } else {
+        const sy = padding + (y + 1) * step - halfGap;
+        drawEdgeWall(graphics, wall, padding + x * step, sy, padding + x * step + cellSize, sy, "s", cellSize);
+      }
+    }
+  }
+}
+
+function drawWallEdgePreview(graphics, edges, wallPalette, cellSize) {
+  graphics.clear();
+  if (!edges?.length) return;
+  const step = mapStep(cellSize);
+  const padding = MAP_VIEWPORT_PADDING;
+  const halfGap = Math.floor(MAP_GRID_GAP / 2);
+  const color = wallPalette === "erase" ? 0xff5555 : wallPalette === "door" ? 0xe8c070 : 0x9ab0c0;
+  const widths = wallStrokeWidths(cellSize);
+  const lineWidth = wallPalette === "door" ? widths.doorFrame : widths.outer;
+
+  for (const { x, y, side } of edges) {
+    if (side === "e") {
+      const ex = padding + (x + 1) * step - halfGap;
+      graphics.moveTo(ex, padding + y * step).lineTo(ex, padding + y * step + cellSize).stroke({ color, alpha: 0.7, width: lineWidth });
+    } else {
+      const sy = padding + (y + 1) * step - halfGap;
+      graphics.moveTo(padding + x * step, sy).lineTo(padding + x * step + cellSize, sy).stroke({ color, alpha: 0.7, width: lineWidth });
+    }
+  }
 }
 
 function getReachableMovementCells(room, selectedEntity, movementState, blockingByPosition, dungeon) {
@@ -644,6 +773,12 @@ function getReachableMovementCells(room, selectedEntity, movementState, blocking
       }
 
       const isDiagonal = dx !== 0 && dy !== 0;
+      if (isDiagonal) {
+        if (diagonalTouchesAnyWall(dungeon, current.x, current.y, nextX, nextY)) continue;
+      } else if (wallBlocksOrthogonal(dungeon, current.x, current.y, nextX, nextY)) {
+        continue;
+      }
+
       const stepCost = isDiagonal ? (current.parity === 0 ? 1 : 2) : 1;
       const nextCost = current.cost + stepCost;
       if (nextCost > maxRemaining) {
@@ -693,20 +828,52 @@ function countReachableByKind(reachableCells, kind) {
   return count;
 }
 
-function drawMoveHighlights(graphics, room, cellSize, mapMode, selectedEntity, busy, hoverCell, blockingByPosition, reachableCells) {
+function drawMoveHighlights(
+  graphics,
+  room,
+  dungeon,
+  renderIndex,
+  cellSize,
+  mapMode,
+  selectedEntity,
+  busy,
+  hoverCell,
+  blockingByPosition,
+  reachableCells,
+  camera,
+  viewport,
+) {
   graphics.clear();
 
   if (mapMode === "idle" || !selectedEntity || busy) {
     return;
   }
 
-  const contentSize = mapContentSize(room, cellSize);
   const isRepositionMode = mapMode === "reposition" || mapMode === "gm-reposition";
+  const usesDungeonGrid = Boolean(dungeon?.tiles);
   if (isRepositionMode) {
-    graphics
-      .rect(10, 10, contentSize.width - 20, contentSize.height - 20)
-      .fill({ color: 0x82d9df, alpha: 0.035 })
-      .stroke({ color: 0x82d9df, alpha: 0.32, width: 2 });
+    if (usesDungeonGrid) {
+      const range = visibleCellRange(camera, viewport, cellSize);
+      for (const chunkKey of chunkKeysForRange(range)) {
+        const entries = renderIndex?.tileChunks?.get(chunkKey) || [];
+        for (const { x, y } of entries) {
+          if (!isCellInRange(x, y, range) || dungeonBlocksCell(dungeon, x, y)) continue;
+          if (!isDungeonCellVisibleToPlayers(dungeon, renderIndex, x, y)) continue;
+          if (blockingByPosition.has(positionKey(x, y))) continue;
+          const bounds = cellBounds(x, y, cellSize);
+          graphics
+            .rect(bounds.x, bounds.y, bounds.width, bounds.height)
+            .fill({ color: 0x82d9df, alpha: 0.055 })
+            .stroke({ color: 0x82d9df, alpha: 0.2, width: 1 });
+        }
+      }
+    } else {
+      const contentSize = mapContentSize(room, cellSize);
+      graphics
+        .rect(10, 10, contentSize.width - 20, contentSize.height - 20)
+        .fill({ color: 0x82d9df, alpha: 0.035 })
+        .stroke({ color: 0x82d9df, alpha: 0.32, width: 2 });
+    }
   } else {
     for (const cell of reachableCells.values()) {
       const bounds = cellBounds(cell.x, cell.y, cellSize);
@@ -721,7 +888,12 @@ function drawMoveHighlights(graphics, room, cellSize, mapMode, selectedEntity, b
   const hoverKey = hoverCell ? positionKey(hoverCell.x, hoverCell.y) : "";
   const hoverInfo = reachableCells.get(hoverKey);
   const canHoverReposition =
-    isRepositionMode && hoverCell && !blockingByPosition.has(positionKey(hoverCell.x, hoverCell.y));
+    isRepositionMode &&
+    hoverCell &&
+    !blockingByPosition.has(positionKey(hoverCell.x, hoverCell.y)) &&
+    (!usesDungeonGrid ||
+      (!dungeonBlocksCell(dungeon, hoverCell.x, hoverCell.y) &&
+        isDungeonCellVisibleToPlayers(dungeon, renderIndex, hoverCell.x, hoverCell.y)));
   if (hoverInfo || canHoverReposition) {
     const bounds = cellBounds(hoverCell.x, hoverCell.y, cellSize);
     const isDash = hoverInfo?.kind === "dash";
@@ -852,6 +1024,7 @@ function drawStaticMapLayer(
   const range = visibleCellRange(camera, viewport, cellSize);
   drawGrid(layers.terrain, room, cellSize, { unbounded, camera, viewport });
   drawDungeonTiles(layers.dungeonTiles, dungeon, renderIndex, range, cellSize, isGmDungeonMode, highlightedRoomId);
+  drawWallEdges(layers.dungeonWalls, dungeon, renderIndex?.wallChunks, renderIndex, range, cellSize, isGmDungeonMode);
   drawDungeonIssues(layers.dungeonIssues, dungeon, range, cellSize);
   renderPixi(renderer);
 }
@@ -864,13 +1037,37 @@ function drawDungeonPreviewLayer(renderer, previewCells, cellSize, dungeon) {
   renderPixi(renderer);
 }
 
-function drawHighlightsLayer(renderer, room, cellSize, mapMode, selectedEntity, busy, hoverCell, blockingByPosition, reachableCells) {
+function drawWallEdgePreviewLayer(renderer, edges, wallPalette, cellSize) {
+  if (!renderer) {
+    return;
+  }
+  drawWallEdgePreview(renderer.layers.wallPreview, edges, wallPalette, cellSize);
+  renderPixi(renderer);
+}
+
+function drawHighlightsLayer(
+  renderer,
+  room,
+  dungeon,
+  renderIndex,
+  cellSize,
+  mapMode,
+  selectedEntity,
+  busy,
+  hoverCell,
+  blockingByPosition,
+  reachableCells,
+  camera,
+  viewport,
+) {
   if (!renderer) {
     return;
   }
   drawMoveHighlights(
     renderer.layers.highlights,
     room,
+    dungeon,
+    renderIndex,
     cellSize,
     mapMode,
     selectedEntity,
@@ -878,16 +1075,44 @@ function drawHighlightsLayer(renderer, room, cellSize, mapMode, selectedEntity, 
     hoverCell,
     blockingByPosition,
     reachableCells,
+    camera,
+    viewport,
   );
   renderPixi(renderer);
 }
 
-function drawUnitsLayer(renderer, placedEntities, selectedId, activeTurnId, cellSize) {
+function drawSelectionLayer(renderer, firstCell, secondCell, cellSize) {
+  if (!renderer) {
+    return;
+  }
+  const layer = renderer.layers.selection;
+  layer.clear();
+  if (firstCell && secondCell) {
+    const minX = Math.min(firstCell.x, secondCell.x);
+    const maxX = Math.max(firstCell.x, secondCell.x);
+    const minY = Math.min(firstCell.y, secondCell.y);
+    const maxY = Math.max(firstCell.y, secondCell.y);
+    const topLeft = cellBounds(minX, minY, cellSize);
+    const bottomRight = cellBounds(maxX, maxY, cellSize);
+    const x = topLeft.x;
+    const y = topLeft.y;
+    const width = bottomRight.x + bottomRight.width - topLeft.x;
+    const height = bottomRight.y + bottomRight.height - topLeft.y;
+    layer
+      .rect(x, y, width, height)
+      .fill({ color: 0x82d9df, alpha: 0.08 })
+      .stroke({ color: 0x82d9df, alpha: 0.72, width: 2 });
+  }
+  renderPixi(renderer);
+}
+
+function drawUnitsLayer(renderer, placedEntities, selectedId, selectedUnitIds, activeTurnId, cellSize) {
   if (!renderer) {
     return;
   }
   const { PIXI, layers, textures } = renderer;
   clearLayer(layers.units);
+  const selectedSet = new Set(selectedUnitIds || []);
 
   [...placedEntities]
     .sort((first, second) => Number(second.is_down) - Number(first.is_down))
@@ -897,7 +1122,7 @@ function drawUnitsLayer(renderer, placedEntities, selectedId, activeTurnId, cell
         layers.units,
         entity,
         {
-          isSelected: entity.instance_id === selectedId,
+          isSelected: entity.instance_id === selectedId || selectedSet.has(entity.instance_id),
           isActive: entity.instance_id === activeTurnId,
         },
         cellSize,
@@ -917,14 +1142,21 @@ function BattleMapSurface({
   mapMode = "idle",
   movementState = null,
   dungeon = null,
+  gmDungeonInteractionMode = "draw",
   gmDungeonPalette = "floor",
   gmDungeonTool = "brush",
+  gmDungeonDrawSubmode = "terrain",
+  gmDungeonWallPalette = "wall",
+  selectedUnitIds = [],
   highlightedRoomId = null,
   drawPulse,
   busy,
   onSelect,
+  onSelectionChange,
+  onGroupMove,
   onMoveToCell,
   onTileEdit,
+  onWallEdit,
   onUnitContextMenu,
   onUnitDoubleClick,
 }) {
@@ -935,6 +1167,9 @@ function BattleMapSurface({
   const pointersRef = useRef(new Map());
   const lastUnitClickRef = useRef(null);
   const brushStrokeRef = useRef(null); // { palette, cells: Set<"x,y"> }
+  const wallStrokeRef = useRef(null);
+  const selectionDragRef = useRef(null);
+  const groupDragRef = useRef(null);
   const dungeonPreviewRef = useRef(new Map());
   const dungeonPreviewFrameRef = useRef(null);
   const cellSizeRef = useRef(MAP_ZOOM.defaultSize);
@@ -1059,8 +1294,11 @@ function BattleMapSurface({
         const layers = {
           terrain: new PIXI.Graphics(),
           dungeonTiles: new PIXI.Graphics(),
+          dungeonWalls: new PIXI.Graphics(),
           dungeonIssues: new PIXI.Graphics(),
           dungeonPreview: new PIXI.Graphics(),
+          wallPreview: new PIXI.Graphics(),
+          selection: new PIXI.Graphics(),
           highlights: new PIXI.Graphics(),
           units: new PIXI.Container(),
           effects: new PIXI.Container(),
@@ -1069,8 +1307,11 @@ function BattleMapSurface({
         world.addChild(
           layers.terrain,
           layers.dungeonTiles,
+          layers.dungeonWalls,
           layers.dungeonIssues,
           layers.dungeonPreview,
+          layers.wallPreview,
+          layers.selection,
           layers.highlights,
           layers.units,
           layers.effects,
@@ -1160,7 +1401,8 @@ function BattleMapSurface({
   useEffect(() => {
     dungeonPreviewRef.current.clear();
     drawDungeonPreviewLayer(rendererRef.current, dungeonPreviewRef.current, cellSize, dungeon);
-  }, [pixiReady, dungeonRenderKey, mapMode]);
+    drawWallEdgePreviewLayer(rendererRef.current, [], gmDungeonWallPalette, cellSize);
+  }, [pixiReady, dungeonRenderKey, mapMode, gmDungeonWallPalette, cellSize]);
 
   useEffect(() => {
     drawDungeonPreviewLayer(rendererRef.current, dungeonPreviewRef.current, cellSize, dungeon);
@@ -1181,6 +1423,8 @@ function BattleMapSurface({
     drawHighlightsLayer(
       rendererRef.current,
       room,
+      dungeon,
+      renderIndex,
       cellSize,
       mapMode,
       selectedEntity,
@@ -1188,11 +1432,15 @@ function BattleMapSurface({
       hoverCell,
       blockingByPosition,
       reachableCells,
+      camera,
+      viewportRef.current,
     );
   }, [
     pixiReady,
     room.columns,
     room.rows,
+    dungeon,
+    renderIndex,
     cellSize,
     mapMode,
     selectedEntity,
@@ -1200,11 +1448,13 @@ function BattleMapSurface({
     hoverCell,
     blockingByPosition,
     reachableCells,
+    camera.x,
+    camera.y,
   ]);
 
   useEffect(() => {
-    drawUnitsLayer(rendererRef.current, placedEntities, selectedId, activeTurnId, cellSize);
-  }, [pixiReady, textureVersion, placedEntities, selectedId, activeTurnId, cellSize]);
+    drawUnitsLayer(rendererRef.current, placedEntities, selectedId, selectedUnitIds, activeTurnId, cellSize);
+  }, [pixiReady, textureVersion, placedEntities, selectedId, selectedUnitIds, activeTurnId, cellSize]);
 
   useEffect(() => {
     const renderer = rendererRef.current;
@@ -1352,6 +1602,78 @@ function BattleMapSurface({
     renderDungeonPreviewSoon();
   }
 
+  function orderedSelectionIds(ids) {
+    const idSet = new Set(ids);
+    return [
+      ...placedEntities.map((entity) => entity.instance_id).filter((instanceId) => idSet.has(instanceId)),
+      ...ids.filter((instanceId) => !placedEntities.some((entity) => entity.instance_id === instanceId)),
+    ];
+  }
+
+  function currentSelectionIds() {
+    if ((mapMode === "gm-dungeon" && gmDungeonInteractionMode === "select") || mapMode === "gm-reposition") {
+      return selectedUnitIds || [];
+    }
+    return selectedId ? [selectedId] : [];
+  }
+
+  function applyUnitSelection(targetId, event) {
+    const current = currentSelectionIds();
+    let nextIds;
+    let primaryId = targetId;
+    if (isSubtractiveSelect(event)) {
+      nextIds = current.filter((instanceId) => instanceId !== targetId);
+      primaryId = nextIds[0] || "";
+    } else if (isAdditiveSelect(event)) {
+      nextIds = current.includes(targetId)
+        ? current.filter((instanceId) => instanceId !== targetId)
+        : [...current, targetId];
+      primaryId = targetId;
+    } else {
+      nextIds = [targetId];
+    }
+    onSelectionChange?.(orderedSelectionIds(nextIds), { primaryId });
+  }
+
+  function applyRectangleSelection(firstCell, secondCell, event) {
+    const rectIds = entityIdsInRect(placedEntities, firstCell, secondCell);
+    const current = currentSelectionIds();
+    let nextIds;
+    if (isSubtractiveSelect(event)) {
+      const removeSet = new Set(rectIds);
+      nextIds = current.filter((instanceId) => !removeSet.has(instanceId));
+    } else if (isAdditiveSelect(event)) {
+      nextIds = [...current, ...rectIds.filter((instanceId) => !current.includes(instanceId))];
+    } else {
+      nextIds = rectIds;
+    }
+    onSelectionChange?.(orderedSelectionIds(nextIds), { primaryId: nextIds[0] || "" });
+  }
+
+  function selectedGroupPositions() {
+    const selectedSet = new Set(currentSelectionIds());
+    return placedEntities
+      .filter((entity) => selectedSet.has(entity.instance_id))
+      .map((entity) => ({
+        instanceId: entity.instance_id,
+        x: entity.grid_x,
+        y: entity.grid_y,
+      }));
+  }
+
+  function isVisibleWalkableRepositionCell(cell) {
+    if (!cell) {
+      return false;
+    }
+    if (!usesDungeonGrid) {
+      return true;
+    }
+    return (
+      !dungeonBlocksCell(dungeon, cell.x, cell.y) &&
+      isDungeonCellVisibleToPlayers(dungeon, renderIndex, cell.x, cell.y)
+    );
+  }
+
   function handleWheel(event) {
     event.preventDefault();
     const surface = surfaceRef.current;
@@ -1394,6 +1716,7 @@ function BattleMapSurface({
     if (captureImmediately) {
       surfaceRef.current?.setPointerCapture?.(pointerId);
       panRef.current.captured = true;
+      setIsPanning(true);
     }
   }
 
@@ -1424,6 +1747,48 @@ function BattleMapSurface({
     brushStrokeRef.current.previewKeys?.add(key);
     dungeonPreviewRef.current.set(key, { x: cell.x, y: cell.y, tileType: brushStrokeRef.current.palette });
     renderDungeonPreviewSoon();
+  }
+
+  function edgeFromPointer(event, stroke = null) {
+    const metrics = viewportMetricsOf(surfaceRef.current);
+    viewportRef.current = metrics;
+    const point = pointerPointOf(event);
+    const worldX = point.x - metrics.left - cameraRef.current.x;
+    const worldY = point.y - metrics.top - cameraRef.current.y;
+    return snapToNearestEdge(
+      worldX,
+      worldY,
+      cellSizeRef.current,
+      stroke ? { orientation: stroke.orientation, line: stroke.line } : null,
+    );
+  }
+
+  function addWallStrokeEdge(edge) {
+    const stroke = wallStrokeRef.current;
+    if (!edge || !stroke) return;
+    let changed = false;
+    for (const segmentEdge of wallStrokeSegmentEdges(stroke.lastEdge, edge)) {
+      const key = edgeKey(segmentEdge);
+      if (stroke.edges.has(key)) {
+        continue;
+      }
+      stroke.edges.set(key, segmentEdge);
+      changed = true;
+    }
+    stroke.lastEdge = edge;
+    if (changed) {
+      drawWallEdgePreviewLayer(rendererRef.current, [...stroke.edges.values()], stroke.palette, cellSizeRef.current);
+    }
+  }
+
+  async function flushWallStroke() {
+    const stroke = wallStrokeRef.current;
+    wallStrokeRef.current = null;
+    drawWallEdgePreviewLayer(rendererRef.current, [], gmDungeonWallPalette, cellSizeRef.current);
+    if (!stroke || stroke.edges.size === 0) return;
+    const edges = [...stroke.edges.values()];
+    if (!onWallEdit) return;
+    await onWallEdit(stroke.palette, edges);
   }
 
   async function flushBrushStroke() {
@@ -1460,11 +1825,39 @@ function BattleMapSurface({
     const cell = cellFromPointer(event);
     const isLeftMouse = pointerType !== "touch" && pointerButton === 0;
     const isMiddleMouse = pointerType !== "touch" && pointerButton === 1;
+    const isGmDungeonDrawMode = mapMode === "gm-dungeon" && gmDungeonInteractionMode === "draw";
+    const isGmDungeonWallDraw = isGmDungeonDrawMode && gmDungeonDrawSubmode === "walls";
+    const isGmDungeonSelectMode = mapMode === "gm-dungeon" && gmDungeonInteractionMode === "select";
+    const isGmDungeonDragMode = mapMode === "gm-dungeon" && gmDungeonInteractionMode === "drag";
+    const isMultiSelectMode = isGmDungeonSelectMode || mapMode === "gm-reposition";
 
-    // In GM Dungeon mode, left click starts a brush stroke
-    if (mapMode === "gm-dungeon" && !busy && (isLeftMouse || pointerType === "touch") && cell) {
+    if (isGmDungeonDragMode && !busy && (isMiddleMouse || isLeftMouse || pointerType === "touch")) {
       event.preventDefault();
-      const mode = gmDungeonTool === "rectangle" && gmDungeonPalette !== "door" ? "rectangle" : "brush";
+      beginPan(event, { captureImmediately: true });
+      return;
+    }
+
+    // In GM Dungeon wall draw mode, left click starts an edge stroke.
+    if (isGmDungeonWallDraw && !busy && (isLeftMouse || pointerType === "touch")) {
+      event.preventDefault();
+      const firstEdge = edgeFromPointer(event);
+      wallStrokeRef.current = {
+        pointerId,
+        palette: gmDungeonWallPalette,
+        edges: new Map(),
+        orientation: wallEdgeOrientation(firstEdge),
+        line: wallEdgeLine(firstEdge),
+        lastEdge: null,
+      };
+      addWallStrokeEdge(firstEdge);
+      surfaceRef.current?.setPointerCapture?.(pointerId);
+      return;
+    }
+
+    // In GM Dungeon terrain draw mode, left click starts a brush stroke.
+    if (isGmDungeonDrawMode && gmDungeonDrawSubmode === "terrain" && !busy && (isLeftMouse || pointerType === "touch") && cell) {
+      event.preventDefault();
+      const mode = gmDungeonTool === "rectangle" ? "rectangle" : "brush";
       brushStrokeRef.current = {
         palette: gmDungeonPalette,
         mode,
@@ -1479,6 +1872,35 @@ function BattleMapSurface({
       }
       surfaceRef.current?.setPointerCapture?.(pointerId);
       return;
+    }
+
+    if (isMultiSelectMode && !busy && (isLeftMouse || pointerType === "touch") && cell) {
+      const occupant = getTopSelectableEntity(getEntitiesAtPosition(entitiesByPosition, cell));
+      const selectedSet = new Set(currentSelectionIds());
+      if (occupant && selectedSet.has(occupant.instance_id) && !isAdditiveSelect(event) && !isSubtractiveSelect(event)) {
+        groupDragRef.current = {
+          pointerId,
+          startX: point.x,
+          startY: point.y,
+          startCell: cell,
+          dragging: false,
+          positions: selectedGroupPositions(),
+        };
+        surfaceRef.current?.setPointerCapture?.(pointerId);
+        return;
+      }
+      if (!occupant) {
+        selectionDragRef.current = {
+          pointerId,
+          startX: point.x,
+          startY: point.y,
+          startCell: cell,
+          currentCell: cell,
+          dragging: false,
+        };
+        surfaceRef.current?.setPointerCapture?.(pointerId);
+        return;
+      }
     }
 
     const blocking = cell ? blockingByPosition.has(positionKey(cell.x, cell.y)) : false;
@@ -1532,6 +1954,36 @@ function BattleMapSurface({
       return;
     }
 
+    const groupDrag = groupDragRef.current;
+    if (groupDrag && groupDrag.pointerId === pointerId) {
+      const moved = Math.hypot(point.x - groupDrag.startX, point.y - groupDrag.startY);
+      if (moved >= MAP_DRAG_THRESHOLD) {
+        groupDrag.dragging = true;
+        setIsPanning(true);
+      }
+      updateHoverCell(event);
+      return;
+    }
+
+    const selectionDrag = selectionDragRef.current;
+    if (selectionDrag && selectionDrag.pointerId === pointerId) {
+      const moved = Math.hypot(point.x - selectionDrag.startX, point.y - selectionDrag.startY);
+      const cell = cellFromPointer(event);
+      selectionDrag.currentCell = cell || selectionDrag.currentCell;
+      if (moved >= MAP_DRAG_THRESHOLD) {
+        selectionDrag.dragging = true;
+        drawSelectionLayer(rendererRef.current, selectionDrag.startCell, selectionDrag.currentCell, cellSizeRef.current);
+      }
+      updateHoverCell(event);
+      return;
+    }
+
+    if (mapMode === "gm-dungeon" && wallStrokeRef.current?.pointerId === pointerId) {
+      addWallStrokeEdge(edgeFromPointer(event, wallStrokeRef.current));
+      updateHoverCell(event);
+      return;
+    }
+
     // Brush drag in GM Dungeon mode
     if (mapMode === "gm-dungeon" && brushStrokeRef.current) {
       const cell = cellFromPointer(event);
@@ -1573,11 +2025,56 @@ function BattleMapSurface({
     const pointerId = pointerIdOf(event);
     const pointerButton = pointerButtonOf(event);
 
+    if (mapMode === "gm-dungeon" && wallStrokeRef.current?.pointerId === pointerId) {
+      flushWallStroke();
+      surfaceRef.current?.releasePointerCapture?.(pointerId);
+      return;
+    }
+
     // Flush brush stroke in GM Dungeon mode
     if (mapMode === "gm-dungeon" && brushStrokeRef.current) {
       flushBrushStroke();
       surfaceRef.current?.releasePointerCapture?.(pointerId);
       return;
+    }
+
+    const groupDrag = groupDragRef.current;
+    if (groupDrag && groupDrag.pointerId === pointerId) {
+      groupDragRef.current = null;
+      setIsPanning(false);
+      surfaceRef.current?.releasePointerCapture?.(pointerId);
+      if (groupDrag.dragging) {
+        const targetCell = cellFromPointer(event);
+        if (targetCell) {
+          const deltaX = targetCell.x - groupDrag.startCell.x;
+          const deltaY = targetCell.y - groupDrag.startCell.y;
+          if ((deltaX !== 0 || deltaY !== 0) && groupDrag.positions.length) {
+            const placements = groupDrag.positions.map((position) => ({
+              instanceId: position.instanceId,
+              x: position.x + deltaX,
+              y: position.y + deltaY,
+            }));
+            if (mapMode !== "gm-reposition" || placements.every((placement) => isVisibleWalkableRepositionCell(placement))) {
+              onGroupMove?.(placements);
+            }
+          }
+        }
+      }
+      return;
+    }
+
+    const selectionDrag = selectionDragRef.current;
+    if (selectionDrag && selectionDrag.pointerId === pointerId) {
+      selectionDragRef.current = null;
+      surfaceRef.current?.releasePointerCapture?.(pointerId);
+      drawSelectionLayer(rendererRef.current, null, null, cellSizeRef.current);
+      if (selectionDrag.dragging) {
+        applyRectangleSelection(selectionDrag.startCell, selectionDrag.currentCell, event);
+        return;
+      } else if (mapMode === "gm-dungeon" && gmDungeonInteractionMode === "select") {
+        onSelectionChange?.([], { primaryId: "" });
+        return;
+      }
     }
 
     const pan = panRef.current;
@@ -1606,11 +2103,15 @@ function BattleMapSurface({
     }
 
     const cellEntities = getEntitiesAtPosition(entitiesByPosition, clickCell);
-    const selectedOccupant = selectedEntity
-      ? cellEntities.find((entity) => entity.instance_id === selectedEntity.instance_id)
+    const currentSelection = currentSelectionIds();
+    const selectedSet = new Set(currentSelection);
+    const selectedOccupant = selectedSet.size
+      ? cellEntities.find((entity) => selectedSet.has(entity.instance_id))
       : null;
     const blockingOccupant = getBlockingEntity(cellEntities);
     const occupant = getTopSelectableEntity(cellEntities);
+    const isGmDungeonSelectMode = mapMode === "gm-dungeon" && gmDungeonInteractionMode === "select";
+    const isMultiSelectMode = isGmDungeonSelectMode || mapMode === "gm-reposition";
 
     if (occupant) {
       const now = Date.now();
@@ -1631,15 +2132,15 @@ function BattleMapSurface({
             time: now,
           };
 
-      if (mapMode !== "gm-reposition" && isDoubleClick && onUnitDoubleClick?.(occupant.instance_id)) {
+      if (!isMultiSelectMode && isDoubleClick && onUnitDoubleClick?.(occupant.instance_id)) {
         return;
       }
     } else {
       lastUnitClickRef.current = null;
     }
 
-    if (mapMode === "gm-reposition" && occupant) {
-      onSelect(occupant.instance_id, { preserveMapMode: true });
+    if (isMultiSelectMode && occupant) {
+      applyUnitSelection(occupant.instance_id, event);
       return;
     }
 
@@ -1647,7 +2148,17 @@ function BattleMapSurface({
       onSelect(selectedOccupant.instance_id);
       return;
     }
-    if ((mapMode === "reposition" || mapMode === "gm-reposition") && selectedEntity && !busy && !blockingOccupant) {
+    const canSingleReposition =
+      mapMode !== "gm-reposition" ||
+      (currentSelection.length === 1 && currentSelection[0] === selectedEntity?.instance_id);
+    if (
+      (mapMode === "reposition" || mapMode === "gm-reposition") &&
+      selectedEntity &&
+      !busy &&
+      !blockingOccupant &&
+      canSingleReposition &&
+      isVisibleWalkableRepositionCell(clickCell)
+    ) {
       onMoveToCell(clickCell.x, clickCell.y, { mode: "reposition" });
       return;
     }
@@ -1773,6 +2284,7 @@ function BattleMapSurface({
   const zoomPercent = Math.round((cellSize / MAP_ZOOM.defaultSize) * 100);
   const reachableNormalCount = countReachableByKind(reachableCells, "normal");
   const reachableDashCount = countReachableByKind(reachableCells, "dash");
+  const surfaceClassName = `battle-map-surface ${isPanning ? "battle-map-surface-panning" : ""}`.trim();
 
   return (
     <div className="map-viewport-shell">
@@ -1797,7 +2309,7 @@ function BattleMapSurface({
       </div>
       <div
         ref={surfaceRef}
-        className={`battle-map-surface ${isPanning ? "battle-map-surface-panning" : ""}`.trim()}
+        className={surfaceClassName}
         role="region"
         aria-label="Battle map viewport"
         data-cell-size={cellSize}
@@ -1805,6 +2317,8 @@ function BattleMapSurface({
         data-camera-y={camera.y}
         data-pixi-ready={pixiReady ? "true" : "false"}
         data-map-mode={mapMode}
+        data-gm-interaction-mode={mapMode === "gm-dungeon" ? gmDungeonInteractionMode : mapMode === "gm-reposition" ? "select" : ""}
+        data-selected-unit-ids={(selectedUnitIds || []).join(",")}
         data-reachable-normal={reachableNormalCount}
         data-reachable-dash={reachableDashCount}
         data-draw-pulse-entity-id={drawPulse?.entityId || ""}

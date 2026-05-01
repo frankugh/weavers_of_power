@@ -26,6 +26,14 @@ class PositionRequest(BaseModel):
     y: int
 
 
+class EntityPlacementRequest(PositionRequest):
+    instanceId: str
+
+
+class BatchPositionsRequest(BaseModel):
+    placements: list[EntityPlacementRequest] = Field(default_factory=list)
+
+
 class MoveRequest(PositionRequest):
     dash: bool = False
 
@@ -87,9 +95,22 @@ class DungeonTilesRequest(BaseModel):
     cells: list[list[int]]
 
 
-class DungeonOpenDoorRequest(BaseModel):
+class DungeonEdgeRequest(BaseModel):
     x: int
     y: int
+    side: str
+
+
+class DungeonWallsRequest(BaseModel):
+    wallType: str
+    edges: list[DungeonEdgeRequest]
+
+
+class DungeonDoorStateRequest(BaseModel):
+    x: int
+    y: int
+    side: str
+    open: bool
 
 
 class DungeonSettingsRequest(BaseModel):
@@ -98,14 +119,6 @@ class DungeonSettingsRequest(BaseModel):
 
 class DungeonRoomRevealedRequest(BaseModel):
     revealed: bool
-
-
-class DungeonCropRequest(BaseModel):
-    minX: int
-    minY: int
-    columns: int = Field(ge=1)
-    rows: int = Field(ge=1)
-    confirmUnitUnplace: bool = False
 
 
 def register_battle_api(api_app, context: BattleSessionContext) -> None:
@@ -196,6 +209,17 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/position")
     def move_entity_position(sid: str, instance_id: str, request: PositionRequest):
         return run_mutation(sid, lambda session: session.set_entity_position(instance_id, request.x, request.y))
+
+    @api_app.post("/api/battle/sessions/{sid}/entities/positions")
+    def move_entity_positions(sid: str, request: BatchPositionsRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.set_entity_positions([placement.model_dump() for placement in request.placements]),
+        )
+
+    @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/copy")
+    def copy_entity(sid: str, instance_id: str):
+        return run_mutation(sid, lambda session: session.copy_entity(instance_id))
 
     @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/move")
     def move_entity_with_movement(sid: str, instance_id: str, request: MoveRequest):
@@ -307,13 +331,24 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
             lambda session: session.edit_dungeon_tiles(request.tileType, request.cells),
         )
 
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/walls")
+    def edit_dungeon_walls(sid: str, request: DungeonWallsRequest):
+        edges = [{"x": e.x, "y": e.y, "side": e.side} for e in request.edges]
+        return run_mutation(
+            sid,
+            lambda session: session.edit_dungeon_walls(request.wallType, edges),
+        )
+
     @api_app.post("/api/battle/sessions/{sid}/dungeon/analyze")
     def analyze_dungeon(sid: str):
         return run_mutation(sid, lambda session: session.analyze_dungeon())
 
-    @api_app.post("/api/battle/sessions/{sid}/dungeon/doors/open")
-    def open_door(sid: str, request: DungeonOpenDoorRequest):
-        return run_mutation(sid, lambda session: session.open_door(request.x, request.y))
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/doors/state")
+    def set_door_state(sid: str, request: DungeonDoorStateRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.set_door_state(request.x, request.y, request.side, request.open),
+        )
 
     @api_app.post("/api/battle/sessions/{sid}/dungeon/settings")
     def dungeon_settings(sid: str, request: DungeonSettingsRequest):
@@ -322,16 +357,3 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.post("/api/battle/sessions/{sid}/dungeon/rooms/{room_id}/revealed")
     def room_revealed(sid: str, room_id: str, request: DungeonRoomRevealedRequest):
         return run_mutation(sid, lambda session: session.set_room_revealed(room_id, request.revealed))
-
-    @api_app.post("/api/battle/sessions/{sid}/dungeon/crop")
-    def crop_dungeon(sid: str, request: DungeonCropRequest):
-        return run_mutation(
-            sid,
-            lambda session: session.crop_dungeon(
-                request.minX,
-                request.minY,
-                request.columns,
-                request.rows,
-                confirm_unit_unplace=request.confirmUnitUnplace,
-            ),
-        )

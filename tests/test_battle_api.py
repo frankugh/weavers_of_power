@@ -110,6 +110,75 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(missing_tile.status_code, 400)
         self.assertIn("not walkable", missing_tile.json()["detail"])
 
+    def test_batch_position_endpoint_moves_group_atomically_and_undoes_once(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        first_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()["selectedId"]
+        second_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()["selectedId"]
+        blocker_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "guard"}).json()["selectedId"]
+        self.client.post(f"/api/battle/sessions/{sid}/entities/{first_id}/position", json={"x": 0, "y": 0})
+        self.client.post(f"/api/battle/sessions/{sid}/entities/{second_id}/position", json={"x": 1, "y": 0})
+        self.client.post(f"/api/battle/sessions/{sid}/entities/{blocker_id}/position", json={"x": 3, "y": 0})
+        before = self.client.get(f"/api/battle/sessions/{sid}").json()
+
+        blocked = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/positions",
+            json={
+                "placements": [
+                    {"instanceId": first_id, "x": 1, "y": 0},
+                    {"instanceId": second_id, "x": 3, "y": 0},
+                ],
+            },
+        )
+        self.assertEqual(blocked.status_code, 400)
+        unchanged = self.client.get(f"/api/battle/sessions/{sid}").json()
+        positions = {enemy["instance_id"]: (enemy["grid_x"], enemy["grid_y"]) for enemy in unchanged["enemies"]}
+        self.assertEqual(positions[first_id], (0, 0))
+        self.assertEqual(positions[second_id], (1, 0))
+        self.assertEqual(unchanged["undoDepth"], before["undoDepth"])
+
+        moved = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/positions",
+            json={
+                "placements": [
+                    {"instanceId": first_id, "x": 1, "y": 0},
+                    {"instanceId": second_id, "x": 0, "y": 0},
+                ],
+            },
+        )
+        self.assertEqual(moved.status_code, 200)
+        moved_payload = moved.json()
+        self.assertEqual(moved_payload["undoDepth"], before["undoDepth"] + 1)
+        moved_positions = {enemy["instance_id"]: (enemy["grid_x"], enemy["grid_y"]) for enemy in moved_payload["enemies"]}
+        self.assertEqual(moved_positions[first_id], (1, 0))
+        self.assertEqual(moved_positions[second_id], (0, 0))
+
+        undone = self.client.post(f"/api/battle/sessions/{sid}/undo").json()
+        undone_positions = {enemy["instance_id"]: (enemy["grid_x"], enemy["grid_y"]) for enemy in undone["enemies"]}
+        self.assertEqual(undone_positions[first_id], (0, 0))
+        self.assertEqual(undone_positions[second_id], (1, 0))
+
+    def test_copy_endpoint_creates_fresh_enemy_and_is_undoable(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        added = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        source_id = added["selectedId"]
+        before = self.client.get(f"/api/battle/sessions/{sid}").json()
+        source = next(enemy for enemy in before["enemies"] if enemy["instance_id"] == source_id)
+
+        copied = self.client.post(f"/api/battle/sessions/{sid}/entities/{source_id}/copy")
+
+        self.assertEqual(copied.status_code, 200)
+        payload = copied.json()
+        self.assertEqual(payload["undoDepth"], before["undoDepth"] + 1)
+        self.assertEqual(len(payload["enemies"]), len(before["enemies"]) + 1)
+        copy = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == payload["selectedId"])
+        self.assertNotEqual(copy["instance_id"], source_id)
+        self.assertEqual(copy["template_id"], source["template_id"])
+        self.assertEqual((copy["grid_x"], copy["grid_y"]), (source["grid_x"] + 1, source["grid_y"]))
+        self.assertEqual(payload["order"], [source_id, copy["instance_id"]])
+
+        undone = self.client.post(f"/api/battle/sessions/{sid}/undo").json()
+        self.assertEqual([enemy["instance_id"] for enemy in undone["enemies"]], [source_id])
+
     def test_start_encounter_endpoint_activates_highest_initiative_unit(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         first_enemy = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
@@ -515,7 +584,7 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(custom_response.status_code, 200)
         self.assertTrue(any(enemy["name"] == "Shade" for enemy in custom_response.json()["enemies"]))
 
-    def test_position_endpoint_validates_map_state_and_crop_confirms_unplace(self) -> None:
+    def test_position_endpoint_validates_map_state(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         first = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
         first_id = first["selectedId"]
@@ -538,22 +607,8 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(occupied_response.status_code, 400)
         self.assertIn("occupied", occupied_response.json()["detail"])
 
-        crop_warning = self.client.post(
-            f"/api/battle/sessions/{sid}/dungeon/crop",
-            json={"minX": 0, "minY": 0, "columns": 1, "rows": 1},
-        )
-        self.assertEqual(crop_warning.status_code, 400)
-        self.assertIn("Crop would unplace", crop_warning.json()["detail"])
-
-        crop_confirm = self.client.post(
-            f"/api/battle/sessions/{sid}/dungeon/crop",
-            json={"minX": 0, "minY": 0, "columns": 1, "rows": 1, "confirmUnitUnplace": True},
-        )
-        self.assertEqual(crop_confirm.status_code, 200)
-        unplaced_second = next(enemy for enemy in crop_confirm.json()["enemies"] if enemy["instance_id"] == second_id)
-        self.assertIsNone(unplaced_second["grid_x"])
-        self.assertIsNone(unplaced_second["grid_y"])
-
+        # Down units don't block — second can stack on the cell where first is downed
+        self.client.post(f"/api/battle/sessions/{sid}/select", json={"instanceId": first_id})
         down_response = self.client.post(
             f"/api/battle/sessions/{sid}/attack",
             json={"damage": 999},

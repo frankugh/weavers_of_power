@@ -118,6 +118,93 @@ class BattleSessionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not walkable|outside"):
             session.set_entity_position(second_id, 99, 0)
 
+    def test_set_entity_positions_moves_group_atomically(self) -> None:
+        session = self.context.create_session("map-group-position")
+        session.add_enemy_from_template("goblin")
+        first_id = session.selected_id
+        session.add_enemy_from_template("bandit")
+        second_id = session.selected_id
+        session.add_enemy_from_template("guard")
+        blocker_id = session.selected_id
+
+        session.set_entity_position(first_id, 0, 0)
+        session.set_entity_position(second_id, 1, 0)
+        session.set_entity_position(blocker_id, 2, 0)
+
+        with self.assertRaisesRegex(ValueError, "occupied"):
+            session.set_entity_positions([
+                {"instanceId": first_id, "x": 1, "y": 0},
+                {"instanceId": second_id, "x": 2, "y": 0},
+            ])
+        self.assertEqual((session.state.enemies[first_id].grid_x, session.state.enemies[first_id].grid_y), (0, 0))
+        self.assertEqual((session.state.enemies[second_id].grid_x, session.state.enemies[second_id].grid_y), (1, 0))
+
+        session.set_entity_position(blocker_id, 3, 0)
+        session.set_entity_positions([
+            {"instanceId": first_id, "x": 1, "y": 0},
+            {"instanceId": second_id, "x": 0, "y": 0},
+        ])
+
+        self.assertEqual((session.state.enemies[first_id].grid_x, session.state.enemies[first_id].grid_y), (1, 0))
+        self.assertEqual((session.state.enemies[second_id].grid_x, session.state.enemies[second_id].grid_y), (0, 0))
+        self.assertEqual(session.selected_id, first_id)
+        self.assertIn("Repositioned 2 units", session.combat_log[0])
+
+    def test_copy_entity_creates_fresh_premade_enemy_next_to_source(self) -> None:
+        session = self.context.create_session("copy-premade")
+        session.add_enemy_from_template("goblin")
+        source_id = session.selected_id
+        source = session.state.enemies[source_id]
+        source.toughness_current = 1
+
+        session.copy_entity(source_id)
+
+        copy_id = session.selected_id
+        copy = session.state.enemies[copy_id]
+        self.assertNotEqual(copy_id, source_id)
+        self.assertEqual(copy.template_id, source.template_id)
+        self.assertEqual(copy.name, "Goblin 2")
+        self.assertEqual((copy.grid_x, copy.grid_y), (source.grid_x + 1, source.grid_y))
+        self.assertEqual(copy.toughness_current, copy.toughness_max)
+        self.assertEqual(session.order, [source_id, copy_id])
+
+    def test_copy_entity_creates_fresh_custom_enemy_with_core_deck(self) -> None:
+        session = self.context.create_session("copy-custom")
+        deck_id = next(iter(self.context.decks.keys()))
+        session.add_custom_enemy(
+            name="Custom Brute",
+            toughness=12,
+            armor=2,
+            magic_armor=1,
+            power=4,
+            movement=5,
+            core_deck_id=deck_id,
+        )
+        source_id = session.selected_id
+        source = session.state.enemies[source_id]
+        source.toughness_current = 3
+        source.armor_current = 0
+        source.magic_armor_current = 0
+
+        session.copy_entity(source_id)
+
+        copy = session.state.enemies[session.selected_id]
+        self.assertEqual(copy.template_id, "custom")
+        self.assertEqual(copy.name, "Custom Brute 2")
+        self.assertEqual(copy.core_deck_id, deck_id)
+        self.assertEqual((copy.toughness_current, copy.toughness_max), (12, 12))
+        self.assertEqual((copy.armor_current, copy.armor_max), (2, 2))
+        self.assertEqual((copy.magic_armor_current, copy.magic_armor_max), (1, 1))
+        self.assertEqual(copy.power_base, 4)
+        self.assertEqual(copy.movement, 5)
+
+    def test_copy_entity_rejects_players(self) -> None:
+        session = self.context.create_session("copy-player")
+        session.add_player(name="Hero")
+
+        with self.assertRaisesRegex(ValueError, "Players cannot be copied"):
+            session.copy_entity(session.selected_id)
+
     def test_active_unit_can_spend_movement_pool_across_multiple_moves_and_dash(self) -> None:
         session = self.context.create_session("movement-pool")
         session.add_enemy_from_template("bandit")
@@ -225,7 +312,9 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_movement_pathing_blocks_living_units_but_not_down_units(self) -> None:
         session = self.context.create_session("movement-blockers")
-        session.crop_dungeon(0, 0, 3, 3, confirm_unit_unplace=True)
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[x, y] for x in range(3) for y in range(3)])
+        session.analyze_dungeon()
         session.add_enemy_from_template("bandit")
         mover_id = session.selected_id
         session.add_enemy_from_template("goblin")
@@ -328,28 +417,13 @@ class BattleSessionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not walkable"):
             session.move_entity_with_movement(entity_id, -2, 3)
 
-    def test_crop_removes_tiles_without_shifting_and_confirms_unit_unplace(self) -> None:
-        session = self.context.create_session("sparse-crop")
-        session.edit_dungeon_tiles("floor", [[-1, 0]])
-        session.add_player()
-        player_id = session.selected_id
-        session.set_entity_position(player_id, 4, 3)
-
-        with self.assertRaisesRegex(ValueError, "Crop would unplace"):
-            session.crop_dungeon(-1, 0, 2, 2)
-
-        session.crop_dungeon(-1, 0, 2, 2, confirm_unit_unplace=True)
-
-        self.assertIn("-1,0", session.dungeon.tiles)
-        self.assertIn("0,0", session.dungeon.tiles)
-        self.assertNotIn("1,0", session.dungeon.tiles)
-        self.assertIsNone(session.state.enemies[player_id].grid_x)
-        self.assertEqual(session.snapshot()["dungeon"]["extents"]["minX"], -1)
-
     def test_auto_place_uses_walkable_sparse_dungeon_tiles(self) -> None:
         session = self.context.create_session("sparse-auto-place")
 
-        session.crop_dungeon(0, 0, 1, 1, confirm_unit_unplace=True)
+        # Reduce to a single cell at (0,0)
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[0, 0]])
+        session.analyze_dungeon()
         session.add_player()
         first_id = session.selected_id
 
@@ -364,7 +438,10 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_auto_place_leaves_units_unplaced_when_room_is_full(self) -> None:
         session = self.context.create_session("map-full")
-        session.crop_dungeon(0, 0, 3, 3, confirm_unit_unplace=True)
+        # Clear default 10x7 grid, then paint a 3x3 room (9 cells max capacity)
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[x, y] for x in range(3) for y in range(3)])
+        session.analyze_dungeon()
 
         for _ in range(10):
             session.add_player()
@@ -1126,6 +1203,282 @@ class BattleSessionTests(unittest.TestCase):
 
         reloaded = self.context.load_session("init-flag")
         self.assertTrue(reloaded.encounter_started)
+
+
+class WallEdgeDoorTests(unittest.TestCase):
+    """Tests for the edge-based wall/door system."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        saves_dir = Path(self.temp_dir.name) / "saves"
+        self.context = BattleSessionContext(root=PROJECT_ROOT, saves_dir=saves_dir)
+
+    def _make_dungeon(self, sid: str, cells: list) -> "BattleSession":
+        session = self.context.create_session(sid)
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", cells)
+        session.analyze_dungeon()
+        return session
+
+    # ------------------------------------------------------------------ rooms
+
+    def test_adjacent_floor_cells_without_edge_are_one_room(self) -> None:
+        session = self._make_dungeon("no-wall", [[0, 0], [1, 0]])
+        self.assertEqual(len(session.dungeon.rooms), 1)
+
+    def test_wall_edge_splits_adjacent_cells_into_two_rooms(self) -> None:
+        session = self._make_dungeon("wall-split", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("wall", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        self.assertEqual(len(session.dungeon.rooms), 2)
+
+    def test_door_edge_splits_rooms_even_when_open(self) -> None:
+        session = self._make_dungeon("door-split", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        # even with door_open=False by default, there are two rooms
+        self.assertEqual(len(session.dungeon.rooms), 2)
+        # manually set door open and re-analyze — still two rooms
+        session.dungeon.walls["0,0,e"].door_open = True
+        session.analyze_dungeon()
+        self.assertEqual(len(session.dungeon.rooms), 2)
+
+    def test_door_edge_links_two_different_rooms(self) -> None:
+        session = self._make_dungeon("door-link", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        link = session.dungeon.linked_doors.get("0,0,e")
+        self.assertIsNotNone(link)
+        self.assertEqual(len(link), 2)
+        self.assertNotEqual(link[0], link[1])
+
+    def test_door_without_two_rooms_emits_unlinked_issue(self) -> None:
+        session = self._make_dungeon("door-unlinked", [[0, 0]])
+        # door on east edge but no floor tile to the east
+        session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        issue_types = [i.issue_type for i in session.dungeon.issues]
+        self.assertIn("unlinkedDoor", issue_types)
+
+    # ------------------------------------------------------------------ movement
+
+    def test_wall_edge_blocks_orthogonal_movement(self) -> None:
+        session = self._make_dungeon("wall-block", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("wall", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.add_enemy_from_template("goblin")
+        mover_id = session.selected_id
+        entity = session.state.enemies[mover_id]
+        entity.grid_x, entity.grid_y = 0, 0
+        entity.movement = 10
+        session.active_turn_id = mover_id
+        session._reset_movement_state(mover_id)
+        with self.assertRaises(Exception):
+            session.move_entity_with_movement(mover_id, 1, 0)
+
+    def test_closed_door_blocks_orthogonal_movement(self) -> None:
+        session = self._make_dungeon("door-closed-block", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.add_enemy_from_template("goblin")
+        mover_id = session.selected_id
+        entity = session.state.enemies[mover_id]
+        entity.grid_x, entity.grid_y = 0, 0
+        entity.movement = 10
+        session.active_turn_id = mover_id
+        session._reset_movement_state(mover_id)
+        with self.assertRaises(Exception):
+            session.move_entity_with_movement(mover_id, 1, 0)
+
+    def test_open_door_allows_orthogonal_movement(self) -> None:
+        session = self._make_dungeon("door-open-pass", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.dungeon.walls["0,0,e"].door_open = True
+        session.add_enemy_from_template("goblin")
+        mover_id = session.selected_id
+        entity = session.state.enemies[mover_id]
+        entity.grid_x, entity.grid_y = 0, 0
+        entity.movement = 10
+        session.active_turn_id = mover_id
+        session._reset_movement_state(mover_id)
+        session.move_entity_with_movement(mover_id, 1, 0)
+        self.assertEqual((entity.grid_x, entity.grid_y), (1, 0))
+
+    def test_diagonal_blocked_by_open_door_edge(self) -> None:
+        """Open door on an orthogonal passage blocks diagonal through that corner.
+
+        Door at '0,0,e'. Movement=1 means only a single diagonal step (cost 1) to (1,1)
+        is affordable; alternate 2-step routes (0,0)→(1,0)→(1,1) cost 2 and are out of
+        budget. So (1,1) becomes unreachable when that diagonal is blocked.
+        """
+        session = self._make_dungeon(
+            "diag-door-block",
+            [[0, 0], [1, 0], [0, 1], [1, 1]],
+        )
+        session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.dungeon.walls["0,0,e"].door_open = True
+        session.add_enemy_from_template("goblin")
+        mover_id = session.selected_id
+        entity = session.state.enemies[mover_id]
+        entity.grid_x, entity.grid_y = 0, 0
+        entity.movement = 1   # only 1 step budget: diagonal (cost 1) or orthogonal (cost 1)
+        session.active_turn_id = mover_id
+        session._reset_movement_state(mover_id)
+        # diagonal (0,0)→(1,1): horizontal leg 0,0,e has open door → _edge_has_any_wall=True → blocked
+        # alternate path via (1,0) or (0,1) costs 2 → out of budget (movement=1)
+        with self.assertRaises(Exception):
+            session.move_entity_with_movement(mover_id, 1, 1)
+
+    def test_diagonal_blocked_by_wall_edge(self) -> None:
+        """Wall at '0,0,s' blocks the diagonal (0,0)→(1,1); movement=1 keeps alternate routes out of budget."""
+        session = self._make_dungeon(
+            "diag-wall-block",
+            [[0, 0], [1, 0], [0, 1], [1, 1]],
+        )
+        session.edit_dungeon_walls("wall", [{"x": 0, "y": 0, "side": "s"}])
+        session.analyze_dungeon()
+        session.add_enemy_from_template("goblin")
+        mover_id = session.selected_id
+        entity = session.state.enemies[mover_id]
+        entity.grid_x, entity.grid_y = 0, 0
+        entity.movement = 1   # budget too small for 2-step alternate routes
+        session.active_turn_id = mover_id
+        session._reset_movement_state(mover_id)
+        # diagonal (0,0)→(1,1): south leg 0,0,s has wall → blocked
+        with self.assertRaises(Exception):
+            session.move_entity_with_movement(mover_id, 1, 1)
+
+    def test_diagonal_blocked_by_target_corner_wall_edge(self) -> None:
+        session = self._make_dungeon("diag-target-wall-block", [[0, 0], [1, 1]])
+        session.edit_dungeon_walls("wall", [{"x": 0, "y": 1, "side": "e"}])
+        session.analyze_dungeon()
+        session.add_enemy_from_template("goblin")
+        mover_id = session.selected_id
+        entity = session.state.enemies[mover_id]
+        entity.grid_x, entity.grid_y = 0, 0
+        entity.movement = 10
+        session.active_turn_id = mover_id
+        session._reset_movement_state(mover_id)
+
+        with self.assertRaisesRegex(Exception, "not reachable"):
+            session.move_entity_with_movement(mover_id, 1, 1, dash=True)
+
+    # ------------------------------------------------------------------ edit_dungeon_walls
+
+    def test_edit_dungeon_walls_creates_and_erases_edges(self) -> None:
+        session = self._make_dungeon("wall-edit", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("wall", [{"x": 0, "y": 0, "side": "e"}])
+        self.assertIn("0,0,e", session.dungeon.walls)
+        self.assertEqual(session.dungeon.walls["0,0,e"].wall_type, "wall")
+
+        session.edit_dungeon_walls("erase", [{"x": 0, "y": 0, "side": "e"}])
+        self.assertNotIn("0,0,e", session.dungeon.walls)
+
+    def test_wall_normalizes_west_side_to_canonical_key(self) -> None:
+        session = self._make_dungeon("wall-normalize", [[0, 0], [1, 0]])
+        # west edge of (1,0) == east edge of (0,0)
+        session.edit_dungeon_walls("wall", [{"x": 1, "y": 0, "side": "w"}])
+        self.assertIn("0,0,e", session.dungeon.walls)
+
+    def test_void_tile_edit_removes_orphan_door_but_keeps_wall_with_one_neighbor(self) -> None:
+        session = self._make_dungeon("wall-cleanup", [[0, 0], [1, 0], [2, 0]])
+        # wall between (0,0) and (1,0); door between (1,0) and (2,0)
+        session.edit_dungeon_walls("wall", [{"x": 0, "y": 0, "side": "e"}])
+        session.edit_dungeon_walls("door", [{"x": 1, "y": 0, "side": "e"}])
+        # remove (1,0) → door at 1,0,e loses both neighbors, wall at 0,0,e keeps (0,0)
+        session.edit_dungeon_tiles("void", [[1, 0]])
+        self.assertIn("0,0,e", session.dungeon.walls)     # wall kept — (0,0) still exists
+        self.assertNotIn("1,0,e", session.dungeon.walls)  # door removed — (2,0) has no (1,0)
+
+    # ------------------------------------------------------------------ set_door_state
+
+    def test_open_door_reveals_linked_room(self) -> None:
+        session = self._make_dungeon("door-reveal", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.dungeon.fog_of_war_enabled = True
+
+        session.add_player()
+        player_id = session.selected_id
+        player = session.state.enemies[player_id]
+        player.grid_x, player.grid_y = 0, 0
+        player.room_id = next(
+            r.room_id for r in session.dungeon.rooms if any(tuple(c) == (0, 0) for c in r.cells)
+        )
+        session.dungeon.revealed_room_ids = [player.room_id]
+
+        session.set_door_state(0, 0, "e", True)
+
+        self.assertTrue(session.dungeon.walls["0,0,e"].door_open)
+        link = session.dungeon.linked_doors["0,0,e"]
+        other_room = link[1] if link[0] == player.room_id else link[0]
+        self.assertIn(other_room, session.dungeon.revealed_room_ids)
+
+    def test_close_door_does_not_conceal_room(self) -> None:
+        session = self._make_dungeon("door-close", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+
+        session.add_player()
+        player_id = session.selected_id
+        player = session.state.enemies[player_id]
+        player.grid_x, player.grid_y = 0, 0
+        player.room_id = next(
+            r.room_id for r in session.dungeon.rooms if any(tuple(c) == (0, 0) for c in r.cells)
+        )
+        link = session.dungeon.linked_doors["0,0,e"]
+        other_room = link[1] if link[0] == player.room_id else link[0]
+        session.dungeon.revealed_room_ids = [player.room_id, other_room]
+        session.dungeon.walls["0,0,e"].door_open = True
+
+        session.set_door_state(0, 0, "e", False)
+
+        self.assertFalse(session.dungeon.walls["0,0,e"].door_open)
+        self.assertIn(other_room, session.dungeon.revealed_room_ids)  # not removed
+
+    def test_set_door_state_rejects_non_adjacent_unit(self) -> None:
+        session = self._make_dungeon(
+            "door-adj",
+            [[0, 0], [1, 0], [2, 0]],
+        )
+        session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+
+        session.add_player()
+        player_id = session.selected_id
+        player = session.state.enemies[player_id]
+        player.grid_x, player.grid_y = 2, 0
+        player.room_id = next(
+            r.room_id for r in session.dungeon.rooms if any(tuple(c) == (2, 0) for c in r.cells)
+        )
+
+        with self.assertRaises(Exception):
+            session.set_door_state(0, 0, "e", True)
+
+    # ------------------------------------------------------------------ persistence
+
+    def test_walls_persist_across_save_and_load(self) -> None:
+        session = self._make_dungeon("wall-persist", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.autosave()
+
+        reloaded = self.context.load_session("wall-persist")
+        self.assertIn("0,0,e", reloaded.dungeon.walls)
+        self.assertEqual(reloaded.dungeon.walls["0,0,e"].wall_type, "door")
+        self.assertFalse(reloaded.dungeon.walls["0,0,e"].door_open)
+        self.assertIn("0,0,e", reloaded.dungeon.linked_doors)
+
+    def test_snapshot_includes_walls(self) -> None:
+        session = self._make_dungeon("snap-walls", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("wall", [{"x": 0, "y": 0, "side": "e"}])
+        snap = session.snapshot()
+        self.assertIn("walls", snap["dungeon"])
+        self.assertIn("0,0,e", snap["dungeon"]["walls"])
+        self.assertEqual(snap["dungeon"]["walls"]["0,0,e"]["wall_type"], "wall")
 
 
 if __name__ == "__main__":
