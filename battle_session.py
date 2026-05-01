@@ -1268,6 +1268,25 @@ class BattleSession:
             e = self.state.enemies.get(iid)
             if e:
                 self._add_log(f"{e.name} joins from a revealed room.")
+        if added:
+            for iid in added:
+                entity = self.state.enemies.get(iid)
+                if entity and entity.initiative_total is None:
+                    roll = self._rng.randint(1, 6)
+                    entity.initiative_roll = roll
+                    entity.initiative_total = roll + entity.initiative_modifier
+                    entity.initiative_mode = "normal"
+            original_order = {iid: i for i, iid in enumerate(self.order)}
+            self.order = [
+                iid for iid, _, _ in sorted(
+                    [
+                        (iid, self.state.enemies[iid].initiative_total or 0, self.state.enemies[iid].initiative_modifier)
+                        for iid in self.order
+                        if iid in self.state.enemies
+                    ],
+                    key=lambda x: (-x[1], -x[2], original_order.get(x[0], 9999)),
+                )
+            ]
         for instance_id in self.order:
             entity = self.state.enemies.get(instance_id)
             if not entity or not self._can_take_turn(entity):
@@ -1291,6 +1310,13 @@ class BattleSession:
         )
         if target_round is None:
             raise BattleSessionError("Cannot roll initiative during an active encounter round.")
+
+        added = self.flush_pending_encounter_rooms()
+        for iid in added:
+            e = self.state.enemies.get(iid)
+            if e:
+                self._add_log(f"{e.name} joins from a revealed room.")
+
         if not self.order:
             raise BattleSessionError("No units to roll initiative for.")
 
