@@ -29,10 +29,6 @@ LOG_LIMIT = 30
 UNDO_LIMIT = 20
 ROOM_DEFAULT_COLUMNS = 10
 ROOM_DEFAULT_ROWS = 7
-ROOM_MIN_COLUMNS = 3
-ROOM_MIN_ROWS = 3
-ROOM_MAX_COLUMNS = 99
-ROOM_MAX_ROWS = 99
 SUPPORTED_QUICK_ATTACK_MODIFIERS: dict[str, AttackMod] = {
     "stab": "stab",
     "pierce": "pierce",
@@ -290,10 +286,8 @@ class BattleSession:
             loaded_log,
             loaded_dungeon,
         ) = restore_state_from_payload(payload)
-        self.room_columns, self.room_rows = self._normalized_room_size(
-            loaded_room.get("columns", ROOM_DEFAULT_COLUMNS),
-            loaded_room.get("rows", ROOM_DEFAULT_ROWS),
-        )
+        self.room_columns = int(loaded_room.get("columns", ROOM_DEFAULT_COLUMNS) or ROOM_DEFAULT_COLUMNS)
+        self.room_rows = int(loaded_room.get("rows", ROOM_DEFAULT_ROWS) or ROOM_DEFAULT_ROWS)
 
         for enemy in enemies:
             self._migrate_template_deck_state(enemy)
@@ -322,19 +316,17 @@ class BattleSession:
         if load_undo_stack:
             self.undo_stack = [dict(entry) for entry in payload.get("undo_stack", [])][-UNDO_LIMIT:]
             self.redo_stack = [dict(entry) for entry in payload.get("redo_stack", [])][-UNDO_LIMIT:]
+        entities = list(self.state.enemies.values())
+        if loaded_dungeon is not None:
+            self.dungeon = loaded_dungeon
+            dungeon_analyze(self.dungeon, entities)
+        else:
+            self.dungeon = DungeonState()
         if position_payload_present:
             self._clear_out_of_bounds_positions()
         else:
             self._auto_place_unplaced_entities()
         self._ensure_selected()
-
-        entities = list(self.state.enemies.values())
-        if loaded_dungeon is not None:
-            self.dungeon = loaded_dungeon
-            # Re-link doors (transient field not persisted)
-            dungeon_analyze(self.dungeon, entities)
-        else:
-            self.dungeon = migrate_to_dungeon(self.room_columns, self.room_rows, entities)
 
     def _build_payload(self, *, include_undo_stack: bool = True) -> dict:
         return make_save_payload(
@@ -537,6 +529,41 @@ class BattleSession:
     # Dungeon management
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _tile_key_to_xy(key: str) -> tuple[int, int]:
+        x, y = key.split(",", 1)
+        return int(x), int(y)
+
+    def _dungeon_extents(self) -> dict:
+        points: list[tuple[int, int]] = []
+        if self.dungeon:
+            for key in self.dungeon.tiles.keys():
+                points.append(self._tile_key_to_xy(key))
+        for entity in self.state.enemies.values():
+            if self._has_position(entity):
+                points.append((int(entity.grid_x), int(entity.grid_y)))
+        if not points:
+            return {
+                "minX": 0,
+                "minY": 0,
+                "maxX": -1,
+                "maxY": -1,
+                "width": 0,
+                "height": 0,
+            }
+        min_x = min(x for x, _y in points)
+        max_x = max(x for x, _y in points)
+        min_y = min(y for _x, y in points)
+        max_y = max(y for _x, y in points)
+        return {
+            "minX": min_x,
+            "minY": min_y,
+            "maxX": max_x,
+            "maxY": max_y,
+            "width": max_x - min_x + 1,
+            "height": max_y - min_y + 1,
+        }
+
     def _dungeon_snapshot(self) -> Optional[dict]:
         if self.dungeon is None:
             return None
@@ -597,6 +624,7 @@ class BattleSession:
             "fogOfWarEnabled": ds.fog_of_war_enabled,
             "currentPcRoomIds": pc_room_ids,
             "visibleRoomIds": visible_ordered,
+            "extents": self._dungeon_extents(),
             "issues": issues_out,
             "analysisVersion": ds.analysis_version,
             "renderVersion": ds.render_version,
@@ -627,10 +655,7 @@ class BattleSession:
 
     def analyze_dungeon(self) -> None:
         if self.dungeon is None:
-            self.dungeon = migrate_to_dungeon(
-                self.room_columns, self.room_rows, list(self.state.enemies.values())
-            )
-            return
+            self.dungeon = DungeonState()
         dungeon_analyze(self.dungeon, list(self.state.enemies.values()))
         self.autosave()
 
@@ -725,9 +750,59 @@ class BattleSession:
         self.dungeon.render_version += 1
         self.autosave()
 
+    def crop_dungeon(
+        self,
+        min_x: int,
+        min_y: int,
+        columns: int,
+        rows: int,
+        *,
+        confirm_unit_unplace: bool = False,
+    ) -> None:
+        if self.dungeon is None:
+            raise BattleSessionError("No dungeon loaded")
+        min_x = int(min_x)
+        min_y = int(min_y)
+        columns = int(columns)
+        rows = int(rows)
+        if columns < 1 or rows < 1:
+            raise BattleSessionError("Crop width and height must be at least 1")
+        max_x = min_x + columns - 1
+        max_y = min_y + rows - 1
+
+        out_of_crop = [
+            entity
+            for entity in self.state.enemies.values()
+            if self._has_position(entity)
+            and not (min_x <= int(entity.grid_x) <= max_x and min_y <= int(entity.grid_y) <= max_y)
+        ]
+        if out_of_crop and not confirm_unit_unplace:
+            names = ", ".join(entity.name for entity in out_of_crop[:4])
+            suffix = f" and {len(out_of_crop) - 4} more" if len(out_of_crop) > 4 else ""
+            raise BattleSessionError(f"Crop would unplace {len(out_of_crop)} unit(s): {names}{suffix}")
+
+        self.dungeon.tiles = {
+            key: tile
+            for key, tile in self.dungeon.tiles.items()
+            if min_x <= self._tile_key_to_xy(key)[0] <= max_x
+            and min_y <= self._tile_key_to_xy(key)[1] <= max_y
+        }
+        for entity in out_of_crop:
+            self._set_position(entity, None, None)
+        dungeon_analyze(self.dungeon, list(self.state.enemies.values()))
+        valid_room_ids = {room.room_id for room in self.dungeon.rooms}
+        self.dungeon.revealed_room_ids = [
+            room_id for room_id in self.dungeon.revealed_room_ids if room_id in valid_room_ids
+        ]
+        self.dungeon.pending_encounter_room_ids = [
+            room_id for room_id in self.dungeon.pending_encounter_room_ids if room_id in valid_room_ids
+        ]
+        self._add_log(f"Dungeon cropped to {columns}x{rows} at ({min_x}, {min_y})")
+        self.autosave()
+
     def _dungeon_blocks_cell(self, x: int, y: int) -> bool:
         """Return True if the dungeon makes cell (x,y) impassable."""
-        if self.dungeon is None or not self.dungeon.tiles:
+        if self.dungeon is None:
             return False
         key = f"{x},{y}"
         tile = self.dungeon.tiles.get(key)
@@ -737,37 +812,15 @@ class BattleSession:
             return True   # closed door
         return False
 
-    def set_room_size(self, columns: int, rows: int, *, auto_place_out_of_bounds: bool = False) -> None:
-        next_columns, next_rows = self._normalized_room_size(columns, rows)
-        out_of_bounds = [
-            entity
-            for entity in self.state.enemies.values()
-            if self._has_position(entity)
-            and not self._position_in_bounds_for_room(entity.grid_x, entity.grid_y, next_columns, next_rows)
-        ]
-        if out_of_bounds and not auto_place_out_of_bounds:
-            names = ", ".join(entity.name for entity in out_of_bounds[:4])
-            suffix = f" and {len(out_of_bounds) - 4} more" if len(out_of_bounds) > 4 else ""
-            raise BattleSessionError(f"Resize would move {len(out_of_bounds)} unit(s): {names}{suffix}")
+    def _uses_sparse_dungeon_grid(self) -> bool:
+        return self.dungeon is not None
 
-        self.room_columns = next_columns
-        self.room_rows = next_rows
-        if out_of_bounds:
-            for entity in out_of_bounds:
-                self._set_position(entity, None, None)
-            self._auto_place_unplaced_entities([entity.instance_id for entity in out_of_bounds])
-
-        # Extend dungeon tiles to cover any newly added cells (fill with floor)
-        if self.dungeon:
-            for x in range(next_columns):
-                for y in range(next_rows):
-                    key = f"{x},{y}"
-                    if key not in self.dungeon.tiles:
-                        self.dungeon.tiles[key] = Tile(tile_type="floor")
-            self.dungeon.render_version += 1
-
-        self._add_log(f"Battle map resized to {self.room_columns}x{self.room_rows}")
-        self.autosave()
+    def _position_is_walkable(self, x: Optional[int], y: Optional[int]) -> bool:
+        if x is None or y is None:
+            return False
+        if self._uses_sparse_dungeon_grid():
+            return not self._dungeon_blocks_cell(int(x), int(y))
+        return self._position_in_bounds_for_room(x, y, self.room_columns, self.room_rows)
 
     def set_entity_position(self, instance_id: str, x: int, y: int) -> None:
         entity = self.state.enemies.get(instance_id)
@@ -777,6 +830,8 @@ class BattleSession:
         y = int(y)
         if not self._position_in_bounds(x, y):
             raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is outside the battle map")
+        if not self._position_is_walkable(x, y):
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is not walkable")
         occupying = self._entity_at_position(x, y, exclude_id=instance_id, blocking_only=True)
         if occupying:
             raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is occupied by {occupying.name}")
@@ -792,13 +847,15 @@ class BattleSession:
             raise BattleSessionError(f"Entity '{instance_id}' does not exist")
         if self.active_turn_id != instance_id:
             raise BattleSessionError("Only the active unit can use Move.")
-        if not self._has_position(entity) or not self._position_in_bounds(entity.grid_x, entity.grid_y):
+        if not self._has_position(entity) or not self._position_is_walkable(entity.grid_x, entity.grid_y):
             raise BattleSessionError(f"{entity.name} must be on the battle map to move")
 
         x = int(x)
         y = int(y)
         if not self._position_in_bounds(x, y):
             raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is outside the battle map")
+        if not self._position_is_walkable(x, y):
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is not walkable")
         occupying = self._entity_at_position(x, y, exclude_id=instance_id, blocking_only=True)
         if occupying:
             raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is occupied by {occupying.name}")
@@ -960,19 +1017,22 @@ class BattleSession:
                 f"{c[0]},{c[1]}": r.room_id
                 for r in self.dungeon.rooms for c in r.cells
             }
+            has_pc_room = False
             for e in self.state.enemies.values():
                 if self.is_player(e) and e.grid_x is not None:
                     rid = _cell_to_room.get(f"{e.grid_x},{e.grid_y}")
+                    has_pc_room = has_pc_room or bool(rid)
                     if rid and rid not in self.dungeon.revealed_room_ids:
                         self.dungeon.revealed_room_ids.append(rid)
-            _visible_ids = set(self.dungeon.revealed_room_ids)
-            self.order = [
-                iid for iid in self.order
-                if (ent := self.state.enemies.get(iid)) and (
-                    self.is_player(ent)
-                    or (ent.grid_x is not None and _cell_to_room.get(f"{ent.grid_x},{ent.grid_y}") in _visible_ids)
-                )
-            ]
+            if has_pc_room or self.dungeon.revealed_room_ids:
+                _visible_ids = set(self.dungeon.revealed_room_ids)
+                self.order = [
+                    iid for iid in self.order
+                    if (ent := self.state.enemies.get(iid)) and (
+                        self.is_player(ent)
+                        or (ent.grid_x is not None and _cell_to_room.get(f"{ent.grid_x},{ent.grid_y}") in _visible_ids)
+                    )
+                ]
 
         self.turn_skip_notice = []
         for instance_id in self.order:
@@ -1669,18 +1729,6 @@ class BattleSession:
             self._add_log(f"{entity.name} takes {start_log.dot_damage} DOT")
 
     @staticmethod
-    def _normalized_room_size(columns: int, rows: int) -> tuple[int, int]:
-        columns = int(columns)
-        rows = int(rows)
-        if columns < ROOM_MIN_COLUMNS or columns > ROOM_MAX_COLUMNS:
-            raise BattleSessionError(
-                f"columns must be between {ROOM_MIN_COLUMNS} and {ROOM_MAX_COLUMNS}"
-            )
-        if rows < ROOM_MIN_ROWS or rows > ROOM_MAX_ROWS:
-            raise BattleSessionError(f"rows must be between {ROOM_MIN_ROWS} and {ROOM_MAX_ROWS}")
-        return columns, rows
-
-    @staticmethod
     def _has_position(entity: EnemyInstance) -> bool:
         return getattr(entity, "grid_x", None) is not None and getattr(entity, "grid_y", None) is not None
 
@@ -1706,6 +1754,10 @@ class BattleSession:
             entity.room_id = self._room_id_for_position(entity.grid_x, entity.grid_y)
 
     def _position_in_bounds(self, x: Optional[int], y: Optional[int]) -> bool:
+        if x is None or y is None:
+            return False
+        if self._uses_sparse_dungeon_grid():
+            return True
         return self._position_in_bounds_for_room(x, y, self.room_columns, self.room_rows)
 
     @staticmethod
@@ -1721,7 +1773,7 @@ class BattleSession:
 
     def _clear_out_of_bounds_positions(self) -> None:
         for entity in self.state.enemies.values():
-            if self._has_position(entity) and not self._position_in_bounds(entity.grid_x, entity.grid_y):
+            if self._has_position(entity) and not self._position_is_walkable(entity.grid_x, entity.grid_y):
                 self._set_position(entity, None, None)
 
     def _entity_at_position(
@@ -1757,6 +1809,20 @@ class BattleSession:
         return not BattleSession.is_down(entity)
 
     def _candidate_positions(self) -> list[tuple[int, int]]:
+        if self._uses_sparse_dungeon_grid():
+            positions: list[tuple[int, int]] = []
+            for key, tile in self.dungeon.tiles.items():
+                x, y = self._tile_key_to_xy(key)
+                if tile.tile_type == "door" and not tile.door_open:
+                    continue
+                positions.append((x, y))
+            extents = self._dungeon_extents()
+            center_x = (extents["minX"] + extents["maxX"]) / 2
+            center_y = (extents["minY"] + extents["maxY"]) / 2
+            return sorted(
+                positions,
+                key=lambda pos: (abs(pos[0] - center_x) + abs(pos[1] - center_y), pos[1], pos[0]),
+            )
         center_x = (self.room_columns - 1) / 2
         center_y = (self.room_rows - 1) / 2
         positions = [
@@ -1777,7 +1843,7 @@ class BattleSession:
         return None
 
     def _auto_place_entity(self, entity: EnemyInstance) -> bool:
-        if self._has_position(entity) and self._position_in_bounds(entity.grid_x, entity.grid_y):
+        if self._has_position(entity) and self._position_is_walkable(entity.grid_x, entity.grid_y):
             return True
         position = self._first_free_position(exclude_id=entity.instance_id)
         if position is None:
@@ -1790,7 +1856,7 @@ class BattleSession:
         ids = instance_ids if instance_ids is not None else self._ordered_enemy_ids()
         for instance_id in ids:
             entity = self.state.enemies.get(instance_id)
-            if entity and not (self._has_position(entity) and self._position_in_bounds(entity.grid_x, entity.grid_y)):
+            if entity and not (self._has_position(entity) and self._position_is_walkable(entity.grid_x, entity.grid_y)):
                 self._auto_place_entity(entity)
 
     def _ordered_enemy_ids(self) -> list[str]:

@@ -6,10 +6,6 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from battle_session import (
-    ROOM_MAX_COLUMNS,
-    ROOM_MAX_ROWS,
-    ROOM_MIN_COLUMNS,
-    ROOM_MIN_ROWS,
     BattleSessionContext,
     BattleSessionError,
 )
@@ -25,15 +21,9 @@ class OrderRequest(BaseModel):
     direction: Literal[-1, 1]
 
 
-class RoomRequest(BaseModel):
-    columns: int = Field(ge=ROOM_MIN_COLUMNS, le=ROOM_MAX_COLUMNS)
-    rows: int = Field(ge=ROOM_MIN_ROWS, le=ROOM_MAX_ROWS)
-    autoPlaceOutOfBounds: bool = False
-
-
 class PositionRequest(BaseModel):
-    x: int = Field(ge=0)
-    y: int = Field(ge=0)
+    x: int
+    y: int
 
 
 class MoveRequest(PositionRequest):
@@ -110,6 +100,14 @@ class DungeonRoomRevealedRequest(BaseModel):
     revealed: bool
 
 
+class DungeonCropRequest(BaseModel):
+    minX: int
+    minY: int
+    columns: int = Field(ge=1)
+    rows: int = Field(ge=1)
+    confirmUnitUnplace: bool = False
+
+
 def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def load_session_or_400(sid: str):
         try:
@@ -155,17 +153,6 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.post("/api/battle/sessions/{sid}/order")
     def move_entity(sid: str, request: OrderRequest):
         return run_mutation(sid, lambda session: session.move_in_order(request.instanceId, request.direction))
-
-    @api_app.post("/api/battle/sessions/{sid}/room")
-    def resize_room(sid: str, request: RoomRequest):
-        return run_mutation(
-            sid,
-            lambda session: session.set_room_size(
-                request.columns,
-                request.rows,
-                auto_place_out_of_bounds=request.autoPlaceOutOfBounds,
-            ),
-        )
 
     @api_app.post("/api/battle/sessions/{sid}/enemies")
     def add_enemy(sid: str, request: AddEnemyRequest):
@@ -335,3 +322,16 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.post("/api/battle/sessions/{sid}/dungeon/rooms/{room_id}/revealed")
     def room_revealed(sid: str, room_id: str, request: DungeonRoomRevealedRequest):
         return run_mutation(sid, lambda session: session.set_room_revealed(room_id, request.revealed))
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/crop")
+    def crop_dungeon(sid: str, request: DungeonCropRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.crop_dungeon(
+                request.minX,
+                request.minY,
+                request.columns,
+                request.rows,
+                confirm_unit_unplace=request.confirmUnitUnplace,
+            ),
+        )

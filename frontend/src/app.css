@@ -754,6 +754,17 @@ button:disabled {
   border-radius: 9px;
 }
 
+.dungeon-tools-panel {
+  width: 150px;
+}
+
+.dungeon-tools-title {
+  color: var(--muted);
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 .unplaced-strip {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -2157,6 +2168,15 @@ button.draw-card:hover {
   gap: 14px;
 }
 
+.error-banner {
+  padding: 9px 10px;
+  border: 1px solid rgba(209, 106, 87, 0.36);
+  border-radius: 8px;
+  background: rgba(209, 106, 87, 0.12);
+  color: #f0b0a4;
+  font-size: 0.78rem;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2895,6 +2915,11 @@ button.draw-card:hover {
 .dungeon-palette-btn:hover {
   border-color: var(--line-strong);
   color: var(--text);
+}
+
+.dungeon-palette-btn:disabled {
+  opacity: 0.42;
+  cursor: default;
 }
 
 .dungeon-palette-btn.active {

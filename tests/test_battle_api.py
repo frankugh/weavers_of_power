@@ -52,28 +52,10 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(get_response.json()["round"], 1)
         self.assertEqual(get_response.json()["room"], {"columns": 10, "rows": 7})
 
-    def test_room_endpoint_accepts_large_maps_with_guardrail(self) -> None:
-        snapshot = self.client.post("/api/battle/sessions").json()
-        sid = snapshot["sid"]
-
-        large_response = self.client.post(
-            f"/api/battle/sessions/{sid}/room",
-            json={"columns": 99, "rows": 99},
-        )
-        self.assertEqual(large_response.status_code, 200)
-        self.assertEqual(large_response.json()["room"], {"columns": 99, "rows": 99})
-
-        too_large_response = self.client.post(
-            f"/api/battle/sessions/{sid}/room",
-            json={"columns": 100, "rows": 99},
-        )
-        self.assertEqual(too_large_response.status_code, 422)
-
     def test_restricted_move_endpoint_tracks_pool_and_position_repositions_freely(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         added = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
         entity_id = added["selectedId"]
-        self.client.post(f"/api/battle/sessions/{sid}/room", json={"columns": 20, "rows": 20})
         self.client.post(f"/api/battle/sessions/{sid}/entities/{entity_id}/position", json={"x": 0, "y": 0})
         self.client.post(f"/api/battle/sessions/{sid}/turn/next")
         self.client.post(f"/api/battle/sessions/{sid}/round/start")  # single unit wraps
@@ -86,6 +68,10 @@ class BattleApiTests(unittest.TestCase):
         repositioned = self.client.post(f"/api/battle/sessions/{sid}/entities/{entity_id}/position", json={"x": 5, "y": 0})
         self.assertEqual(repositioned.status_code, 200)
         self.assertEqual(repositioned.json()["movementState"]["movementUsed"], 2)
+        self.client.post(
+            f"/api/battle/sessions/{sid}/dungeon/tiles",
+            json={"tileType": "floor", "cells": [[10, 0]]},
+        )
 
         dash_required = self.client.post(f"/api/battle/sessions/{sid}/entities/{entity_id}/move", json={"x": 10, "y": 0})
         self.assertEqual(dash_required.status_code, 400)
@@ -98,6 +84,31 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(dashed.status_code, 200)
         self.assertEqual(dashed.json()["movementState"]["movementUsed"], 7)
         self.assertTrue(dashed.json()["movementState"]["dashUsed"])
+
+    def test_position_endpoint_accepts_negative_sparse_floor(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        added = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        entity_id = added["selectedId"]
+        tile_response = self.client.post(
+            f"/api/battle/sessions/{sid}/dungeon/tiles",
+            json={"tileType": "floor", "cells": [[-1, 0]]},
+        )
+        self.assertEqual(tile_response.status_code, 200)
+
+        positioned = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{entity_id}/position",
+            json={"x": -1, "y": 0},
+        )
+        self.assertEqual(positioned.status_code, 200)
+        moved = next(enemy for enemy in positioned.json()["enemies"] if enemy["instance_id"] == entity_id)
+        self.assertEqual((moved["grid_x"], moved["grid_y"]), (-1, 0))
+
+        missing_tile = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{entity_id}/position",
+            json={"x": -2, "y": 0},
+        )
+        self.assertEqual(missing_tile.status_code, 400)
+        self.assertIn("not walkable", missing_tile.json()["detail"])
 
     def test_start_encounter_endpoint_activates_highest_initiative_unit(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
@@ -504,7 +515,7 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(custom_response.status_code, 200)
         self.assertTrue(any(enemy["name"] == "Shade" for enemy in custom_response.json()["enemies"]))
 
-    def test_room_and_position_endpoints_validate_map_state(self) -> None:
+    def test_position_endpoint_validates_map_state_and_crop_confirms_unplace(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         first = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
         first_id = first["selectedId"]
@@ -527,19 +538,21 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(occupied_response.status_code, 400)
         self.assertIn("occupied", occupied_response.json()["detail"])
 
-        resize_warning = self.client.post(
-            f"/api/battle/sessions/{sid}/room",
-            json={"columns": 3, "rows": 3},
+        crop_warning = self.client.post(
+            f"/api/battle/sessions/{sid}/dungeon/crop",
+            json={"minX": 0, "minY": 0, "columns": 1, "rows": 1},
         )
-        self.assertEqual(resize_warning.status_code, 400)
-        self.assertIn("Resize would move", resize_warning.json()["detail"])
+        self.assertEqual(crop_warning.status_code, 400)
+        self.assertIn("Crop would unplace", crop_warning.json()["detail"])
 
-        resize_confirm = self.client.post(
-            f"/api/battle/sessions/{sid}/room",
-            json={"columns": 3, "rows": 3, "autoPlaceOutOfBounds": True},
+        crop_confirm = self.client.post(
+            f"/api/battle/sessions/{sid}/dungeon/crop",
+            json={"minX": 0, "minY": 0, "columns": 1, "rows": 1, "confirmUnitUnplace": True},
         )
-        self.assertEqual(resize_confirm.status_code, 200)
-        self.assertEqual(resize_confirm.json()["room"], {"columns": 3, "rows": 3})
+        self.assertEqual(crop_confirm.status_code, 200)
+        unplaced_second = next(enemy for enemy in crop_confirm.json()["enemies"] if enemy["instance_id"] == second_id)
+        self.assertIsNone(unplaced_second["grid_x"])
+        self.assertIsNone(unplaced_second["grid_y"])
 
         down_response = self.client.post(
             f"/api/battle/sessions/{sid}/attack",

@@ -4,16 +4,20 @@ import {
   MAP_ZOOM,
   cellBounds,
   cellToWorld,
+  centerCameraOnExtents,
   centerCameraOnCell,
   clampCamera,
+  clampCellSize,
   clientPointToCell,
   mapContentSize,
+  visibleCellRange,
   sameCell,
   zoomCameraAt,
 } from "./mapGeometry.js";
 
 const VIEWPORT_FALLBACK = { left: 0, top: 0, width: 800, height: 500 };
 const UNIT_DOUBLE_CLICK_MS = 320;
+const DUNGEON_CHUNK_SIZE = 32;
 
 function pointerTypeOf(event) {
   return event.pointerType || event.nativeEvent?.pointerType || "mouse";
@@ -57,7 +61,10 @@ function getEntityInitial(entity) {
   return (entity?.name || "?").trim().charAt(0).toUpperCase() || "?";
 }
 
-function hasGridPosition(entity, room) {
+function hasGridPosition(entity, room, dungeon = null) {
+  if (dungeon?.tiles) {
+    return Number.isInteger(entity?.grid_x) && Number.isInteger(entity?.grid_y);
+  }
   return (
     Number.isInteger(entity?.grid_x) &&
     Number.isInteger(entity?.grid_y) &&
@@ -113,7 +120,87 @@ function clearLayer(layer) {
   children.forEach((child) => child.destroy({ children: true }));
 }
 
-function drawGrid(graphics, room, cellSize) {
+function chunkCoord(value) {
+  return Math.floor(value / DUNGEON_CHUNK_SIZE);
+}
+
+function chunkKeyForCell(x, y) {
+  return `${chunkCoord(x)},${chunkCoord(y)}`;
+}
+
+function chunkKeysForRange(range) {
+  const keys = [];
+  const minChunkX = chunkCoord(range.minX);
+  const maxChunkX = chunkCoord(range.maxX);
+  const minChunkY = chunkCoord(range.minY);
+  const maxChunkY = chunkCoord(range.maxY);
+  for (let cy = minChunkY; cy <= maxChunkY; cy += 1) {
+    for (let cx = minChunkX; cx <= maxChunkX; cx += 1) {
+      keys.push(`${cx},${cy}`);
+    }
+  }
+  return keys;
+}
+
+function isCellInRange(x, y, range) {
+  return x >= range.minX && x <= range.maxX && y >= range.minY && y <= range.maxY;
+}
+
+function buildDungeonRenderIndex(dungeon) {
+  const tileChunks = new Map();
+  const roomCellToRoom = new Map();
+  const roomCellChunks = new Map();
+
+  for (const [key, tile] of Object.entries(dungeon?.tiles || {})) {
+    const [x, y] = key.split(",").map(Number);
+    const chunkKey = chunkKeyForCell(x, y);
+    const entry = { key, x, y, tile };
+    const current = tileChunks.get(chunkKey) || [];
+    current.push(entry);
+    tileChunks.set(chunkKey, current);
+  }
+
+  for (const room of dungeon?.rooms || []) {
+    for (const cell of room.cells || []) {
+      const x = Number(cell[0]);
+      const y = Number(cell[1]);
+      const key = `${x},${y}`;
+      roomCellToRoom.set(key, room);
+      const chunkKey = chunkKeyForCell(x, y);
+      const current = roomCellChunks.get(chunkKey) || [];
+      current.push({ x, y, room });
+      roomCellChunks.set(chunkKey, current);
+    }
+  }
+
+  return { tileChunks, roomCellToRoom, roomCellChunks };
+}
+
+function drawGrid(graphics, room, cellSize, { unbounded = false, camera = { x: 0, y: 0 }, viewport = VIEWPORT_FALLBACK } = {}) {
+  if (unbounded) {
+    const range = visibleCellRange(camera, viewport, cellSize);
+    const step = cellSize + 2;
+    const left = range.worldLeft - step;
+    const top = range.worldTop - step;
+    const width = range.worldRight - range.worldLeft + step * 2;
+    const height = range.worldBottom - range.worldTop + step * 2;
+
+    graphics.clear();
+    graphics.rect(left, top, width, height).fill({ color: 0x070503, alpha: 0.9 });
+    for (let x = range.minX; x <= range.maxX + 1; x += 1) {
+      const lineX = 10 + x * step - (x > 0 ? 1 : 0);
+      graphics.moveTo(lineX, top);
+      graphics.lineTo(lineX, top + height);
+    }
+    for (let y = range.minY; y <= range.maxY + 1; y += 1) {
+      const lineY = 10 + y * step - (y > 0 ? 1 : 0);
+      graphics.moveTo(left, lineY);
+      graphics.lineTo(left + width, lineY);
+    }
+    graphics.stroke({ color: 0x513a23, alpha: 0.52, width: 1 });
+    return;
+  }
+
   const contentSize = mapContentSize(room, cellSize);
   const gridWidth = contentSize.width - 20;
   const gridHeight = contentSize.height - 20;
@@ -246,60 +333,58 @@ function drawDoorTile(graphics, bounds, tile, passageAxis, dimAlpha, { preview =
   }
 }
 
-function drawDungeonTiles(graphics, dungeon, room, cellSize, isGmMode, highlightedRoomId = null) {
+function drawDungeonTiles(graphics, dungeon, renderIndex, range, cellSize, isGmMode, highlightedRoomId = null) {
   graphics.clear();
   if (!dungeon) return;
 
   const revealedSet = new Set(dungeon.visibleRoomIds || []);
-  const roomCellToRoom = new Map();
-  for (const r of dungeon.rooms || []) {
-    for (const cell of r.cells || []) {
-      roomCellToRoom.set(`${cell[0]},${cell[1]}`, r);
-    }
-  }
-
+  const roomCellToRoom = renderIndex?.roomCellToRoom || new Map();
   const linkedDoors = dungeon.linkedDoors || {};
 
-  for (const [key, tile] of Object.entries(dungeon.tiles || {})) {
-    const [x, y] = key.split(",").map(Number);
-    const bounds = cellBounds(x, y, cellSize);
-    const room_ = roomCellToRoom.get(key);
+  for (const chunkKey of chunkKeysForRange(range)) {
+    const entries = renderIndex?.tileChunks?.get(chunkKey) || [];
+    for (const { key, x, y, tile } of entries) {
+      if (!isCellInRange(x, y, range)) continue;
+      const bounds = cellBounds(x, y, cellSize);
+      const room_ = roomCellToRoom.get(key);
 
-    let revealed;
-    if (room_) {
-      // Floor tile: visible if its room is in visibleRoomIds
-      revealed = revealedSet.has(room_.room_id);
-    } else if (tile.tile_type === "door") {
-      // Door tile: visible if at least one linked room is visible
-      const link = linkedDoors[key];
-      revealed = Array.isArray(link) && link.some((rid) => revealedSet.has(rid));
-    } else {
-      // Unanalyzed tile with no room: always show
-      revealed = true;
-    }
+      let revealed;
+      if (room_) {
+        // Floor tile: visible if its room is in visibleRoomIds
+        revealed = revealedSet.has(room_.room_id);
+      } else if (tile.tile_type === "door") {
+        // Door tile: visible if at least one linked room is visible
+        const link = linkedDoors[key];
+        revealed = Array.isArray(link) && link.some((rid) => revealedSet.has(rid));
+      } else {
+        // Unanalyzed tile with no room: always show
+        revealed = true;
+      }
 
-    const showInNormalMode = revealed || isGmMode;
-    if (!showInNormalMode) continue;
+      const showInNormalMode = revealed || isGmMode;
+      if (!showInNormalMode) continue;
 
-    const dimAlpha = !revealed && isGmMode ? 0.55 : 1;
+      const dimAlpha = !revealed && isGmMode ? 0.55 : 1;
 
-    if (tile.tile_type === "floor") {
-      graphics
-        .rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2)
-        .fill({ color: 0x2d1f12, alpha: 0.82 * dimAlpha });
-    } else if (tile.tile_type === "door") {
-      drawDoorTile(graphics, bounds, tile, inferDoorPassageAxis(dungeon, roomCellToRoom, x, y), dimAlpha);
+      if (tile.tile_type === "floor") {
+        graphics
+          .rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2)
+          .fill({ color: 0x2d1f12, alpha: 0.82 * dimAlpha });
+      } else if (tile.tile_type === "door") {
+        drawDoorTile(graphics, bounds, tile, inferDoorPassageAxis(dungeon, roomCellToRoom, x, y), dimAlpha);
+      }
     }
   }
 
   // In GM mode: grey overlay for hidden rooms (distinct from void)
   if (isGmMode) {
-    for (const r of dungeon.rooms || []) {
-      if (revealedSet.has(r.room_id)) continue;
-      for (const cell of r.cells || []) {
-        const tileKey = `${cell[0]},${cell[1]}`;
+    for (const chunkKey of chunkKeysForRange(range)) {
+      const entries = renderIndex?.roomCellChunks?.get(chunkKey) || [];
+      for (const { x, y, room } of entries) {
+        if (!isCellInRange(x, y, range) || revealedSet.has(room.room_id)) continue;
+        const tileKey = `${x},${y}`;
         if (!dungeon.tiles?.[tileKey]) continue;
-        const bounds = cellBounds(cell[0], cell[1], cellSize);
+        const bounds = cellBounds(x, y, cellSize);
         graphics.rect(bounds.x, bounds.y, bounds.width, bounds.height).fill({ color: 0x9fb0b8, alpha: 0.28 });
       }
     }
@@ -307,10 +392,11 @@ function drawDungeonTiles(graphics, dungeon, room, cellSize, isGmMode, highlight
 
   // Highlighted room border
   if (highlightedRoomId) {
-    for (const r of dungeon.rooms || []) {
-      if (r.room_id !== highlightedRoomId) continue;
-      for (const cell of r.cells || []) {
-        const bounds = cellBounds(cell[0], cell[1], cellSize);
+    for (const chunkKey of chunkKeysForRange(range)) {
+      const entries = renderIndex?.roomCellChunks?.get(chunkKey) || [];
+      for (const { x, y, room } of entries) {
+        if (!isCellInRange(x, y, range) || room.room_id !== highlightedRoomId) continue;
+        const bounds = cellBounds(x, y, cellSize);
         graphics
           .rect(bounds.x, bounds.y, bounds.width, bounds.height)
           .stroke({ color: 0xd8b66a, alpha: 0.9, width: 2 });
@@ -319,12 +405,13 @@ function drawDungeonTiles(graphics, dungeon, room, cellSize, isGmMode, highlight
   }
 }
 
-function drawDungeonIssues(graphics, dungeon, cellSize) {
+function drawDungeonIssues(graphics, dungeon, range, cellSize) {
   graphics.clear();
   if (!dungeon) return;
 
   for (const issue of dungeon.issues || []) {
     if (issue.x == null || issue.y == null) continue;
+    if (!isCellInRange(issue.x, issue.y, range)) continue;
     const bounds = cellBounds(issue.x, issue.y, cellSize);
     const issueDoorType = issue.issue_type === "unlinkedDoor" || issue.issue_type === "ambiguousDoor";
     const color = issueDoorType ? 0xf0b040 : 0xf04040;
@@ -424,7 +511,8 @@ function dungeonBlocksCell(dungeon, x, y) {
 
 function getReachableMovementCells(room, selectedEntity, movementState, blockingByPosition, dungeon) {
   const reachable = new Map();
-  if (!hasGridPosition(selectedEntity, room)) {
+  const usesDungeonGrid = Boolean(dungeon?.tiles);
+  if (!hasGridPosition(selectedEntity, room, dungeon)) {
     return reachable;
   }
 
@@ -465,7 +553,7 @@ function getReachableMovementCells(room, selectedEntity, movementState, blocking
     for (const [dx, dy] of directions) {
       const nextX = current.x + dx;
       const nextY = current.y + dy;
-      if (nextX < 0 || nextY < 0 || nextX >= room.columns || nextY >= room.rows) {
+      if (!usesDungeonGrid && (nextX < 0 || nextY < 0 || nextX >= room.columns || nextY >= room.rows)) {
         continue;
       }
       if (blockingByPosition.has(positionKey(nextX, nextY))) {
@@ -664,15 +752,27 @@ function renderPixi(renderer) {
   renderer.app.render();
 }
 
-function drawStaticMapLayer(renderer, room, dungeon, mapMode, cellSize, highlightedRoomId = null) {
+function drawStaticMapLayer(
+  renderer,
+  room,
+  dungeon,
+  renderIndex,
+  mapMode,
+  cellSize,
+  camera,
+  viewport,
+  highlightedRoomId = null,
+) {
   if (!renderer) {
     return;
   }
   const { layers } = renderer;
   const isGmDungeonMode = mapMode === "gm-dungeon";
-  drawGrid(layers.terrain, room, cellSize);
-  drawDungeonTiles(layers.dungeonTiles, dungeon, room, cellSize, isGmDungeonMode, highlightedRoomId);
-  drawDungeonIssues(layers.dungeonIssues, dungeon, cellSize);
+  const unbounded = Boolean(dungeon?.tiles);
+  const range = visibleCellRange(camera, viewport, cellSize);
+  drawGrid(layers.terrain, room, cellSize, { unbounded, camera, viewport });
+  drawDungeonTiles(layers.dungeonTiles, dungeon, renderIndex, range, cellSize, isGmDungeonMode, highlightedRoomId);
+  drawDungeonIssues(layers.dungeonIssues, dungeon, range, cellSize);
   renderPixi(renderer);
 }
 
@@ -738,6 +838,7 @@ function BattleMapSurface({
   movementState = null,
   dungeon = null,
   gmDungeonPalette = "floor",
+  gmDungeonTool = "brush",
   highlightedRoomId = null,
   drawPulse,
   busy,
@@ -759,15 +860,23 @@ function BattleMapSurface({
   const cellSizeRef = useRef(MAP_ZOOM.defaultSize);
   const cameraRef = useRef({ x: 0, y: 0 });
   const viewportRef = useRef(VIEWPORT_FALLBACK);
+  const usesDungeonGrid = Boolean(dungeon?.tiles);
 
   const [cellSize, setCellSize] = useState(MAP_ZOOM.defaultSize);
-  const [camera, setCamera] = useState(() => clampCamera({ x: 0, y: 0 }, VIEWPORT_FALLBACK, room, MAP_ZOOM.defaultSize));
+  const [camera, setCamera] = useState(() =>
+    clampCamera({ x: 0, y: 0 }, VIEWPORT_FALLBACK, room, MAP_ZOOM.defaultSize, { unbounded: Boolean(dungeon?.tiles) }),
+  );
   const [hoverCell, setHoverCell] = useState(null);
   const [isPanning, setIsPanning] = useState(false);
   const [pixiReady, setPixiReady] = useState(false);
   const [textureVersion, setTextureVersion] = useState(0);
 
-  const placedEntities = useMemo(() => entities.filter((entity) => hasGridPosition(entity, room)), [entities, room.columns, room.rows]);
+  const dungeonRenderKey = dungeon ? `${dungeon.analysisVersion ?? 0}:${dungeon.renderVersion ?? 0}` : "none";
+  const renderIndex = useMemo(() => buildDungeonRenderIndex(dungeon), [dungeonRenderKey, dungeon]);
+  const placedEntities = useMemo(
+    () => entities.filter((entity) => hasGridPosition(entity, room, dungeon)),
+    [entities, room.columns, room.rows, dungeon],
+  );
   const entitiesByPosition = useMemo(() => {
     const next = new Map();
     placedEntities.forEach((entity) => {
@@ -793,7 +902,6 @@ function BattleMapSurface({
         : new Map(),
     [room.columns, room.rows, selectedEntity, movementState, blockingByPosition, mapMode, dungeon],
   );
-  const dungeonRenderKey = dungeon ? `${dungeon.analysisVersion ?? 0}:${dungeon.renderVersion ?? 0}` : "none";
 
   useEffect(() => {
     cellSizeRef.current = cellSize;
@@ -812,7 +920,7 @@ function BattleMapSurface({
     function updateViewport() {
       const metrics = viewportMetricsOf(surface);
       viewportRef.current = metrics;
-      setCamera((current) => clampCamera(current, metrics, room, cellSizeRef.current));
+      setCamera((current) => clampCamera(current, metrics, room, cellSizeRef.current, { unbounded: usesDungeonGrid }));
     }
 
     updateViewport();
@@ -825,11 +933,11 @@ function BattleMapSurface({
 
     window.addEventListener("resize", updateViewport);
     return () => window.removeEventListener("resize", updateViewport);
-  }, [room.columns, room.rows]);
+  }, [room.columns, room.rows, usesDungeonGrid]);
 
   useEffect(() => {
-    setCamera((current) => clampCamera(current, viewportRef.current, room, cellSizeRef.current));
-  }, [room.columns, room.rows]);
+    setCamera((current) => clampCamera(current, viewportRef.current, room, cellSizeRef.current, { unbounded: usesDungeonGrid }));
+  }, [room.columns, room.rows, usesDungeonGrid]);
 
   useEffect(() => {
     if (import.meta.env.MODE === "test") {
@@ -949,12 +1057,25 @@ function BattleMapSurface({
       return;
     }
     renderer.world.position.set(camera.x, camera.y);
+    if (usesDungeonGrid) {
+      drawStaticMapLayer(renderer, room, dungeon, renderIndex, mapMode, cellSize, camera, viewportRef.current, highlightedRoomId);
+    }
     renderPixi(renderer);
-  }, [pixiReady, camera.x, camera.y]);
+  }, [pixiReady, camera.x, camera.y, usesDungeonGrid]);
 
   useEffect(() => {
-    drawStaticMapLayer(rendererRef.current, room, dungeon, mapMode, cellSize, highlightedRoomId);
-  }, [pixiReady, room.columns, room.rows, dungeonRenderKey, mapMode, cellSize, highlightedRoomId]);
+    drawStaticMapLayer(
+      rendererRef.current,
+      room,
+      dungeon,
+      renderIndex,
+      mapMode,
+      cellSize,
+      cameraRef.current,
+      viewportRef.current,
+      highlightedRoomId,
+    );
+  }, [pixiReady, room.columns, room.rows, dungeonRenderKey, mapMode, cellSize, highlightedRoomId, renderIndex]);
 
   useEffect(() => {
     dungeonPreviewRef.current.clear();
@@ -1086,7 +1207,9 @@ function BattleMapSurface({
     const surface = surfaceRef.current;
     const metrics = viewportMetricsOf(surface);
     viewportRef.current = metrics;
-    return clientPointToCell(pointerPointOf(event), metrics, cameraRef.current, room, cellSizeRef.current);
+    return clientPointToCell(pointerPointOf(event), metrics, cameraRef.current, room, cellSizeRef.current, {
+      unbounded: usesDungeonGrid,
+    });
   }
 
   function updateHoverCell(event) {
@@ -1095,7 +1218,7 @@ function BattleMapSurface({
   }
 
   function applyCamera(nextCamera) {
-    setCamera(clampCamera(nextCamera, viewportRef.current, room, cellSizeRef.current));
+    setCamera(clampCamera(nextCamera, viewportRef.current, room, cellSizeRef.current, { unbounded: usesDungeonGrid }));
   }
 
   function renderDungeonPreviewSoon() {
@@ -1117,6 +1240,38 @@ function BattleMapSurface({
     renderDungeonPreviewSoon();
   }
 
+  function rectangleCells(first, second) {
+    if (!first || !second) return [];
+    const minX = Math.min(first.x, second.x);
+    const maxX = Math.max(first.x, second.x);
+    const minY = Math.min(first.y, second.y);
+    const maxY = Math.max(first.y, second.y);
+    const cells = [];
+    for (let y = minY; y <= maxY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        cells.push({ x, y });
+      }
+    }
+    return cells;
+  }
+
+  function replaceStrokePreview(cells) {
+    const stroke = brushStrokeRef.current;
+    if (!stroke) return;
+    for (const key of stroke.previewKeys || []) {
+      dungeonPreviewRef.current.delete(key);
+    }
+    stroke.cells = new Set();
+    stroke.previewKeys = new Set();
+    cells.forEach((cell) => {
+      const key = `${cell.x},${cell.y}`;
+      stroke.cells.add(key);
+      stroke.previewKeys.add(key);
+      dungeonPreviewRef.current.set(key, { x: cell.x, y: cell.y, tileType: stroke.palette });
+    });
+    renderDungeonPreviewSoon();
+  }
+
   function handleWheel(event) {
     event.preventDefault();
     const surface = surfaceRef.current;
@@ -1133,6 +1288,7 @@ function BattleMapSurface({
         x: event.clientX - metrics.left,
         y: event.clientY - metrics.top,
       },
+      { unbounded: usesDungeonGrid },
     );
 
     cellSizeRef.current = nextZoom.cellSize;
@@ -1185,6 +1341,7 @@ function BattleMapSurface({
     const key = `${cell.x},${cell.y}`;
     if (brushStrokeRef.current.cells.has(key)) return;
     brushStrokeRef.current.cells.add(key);
+    brushStrokeRef.current.previewKeys?.add(key);
     dungeonPreviewRef.current.set(key, { x: cell.x, y: cell.y, tileType: brushStrokeRef.current.palette });
     renderDungeonPreviewSoon();
   }
@@ -1227,8 +1384,19 @@ function BattleMapSurface({
     // In GM Dungeon mode, left click starts a brush stroke
     if (mapMode === "gm-dungeon" && !busy && (isLeftMouse || pointerType === "touch") && cell) {
       event.preventDefault();
-      brushStrokeRef.current = { palette: gmDungeonPalette, cells: new Set() };
-      paintBrushCell(cell);
+      const mode = gmDungeonTool === "rectangle" && gmDungeonPalette !== "door" ? "rectangle" : "brush";
+      brushStrokeRef.current = {
+        palette: gmDungeonPalette,
+        mode,
+        anchor: cell,
+        cells: new Set(),
+        previewKeys: new Set(),
+      };
+      if (mode === "rectangle") {
+        replaceStrokePreview([cell]);
+      } else {
+        paintBrushCell(cell);
+      }
       surfaceRef.current?.setPointerCapture?.(pointerId);
       return;
     }
@@ -1272,6 +1440,7 @@ function BattleMapSurface({
           x: (first.x + second.x) / 2 - metrics.left,
           y: (first.y + second.y) / 2 - metrics.top,
         },
+        { unbounded: usesDungeonGrid },
       );
 
       event.preventDefault();
@@ -1286,7 +1455,11 @@ function BattleMapSurface({
     // Brush drag in GM Dungeon mode
     if (mapMode === "gm-dungeon" && brushStrokeRef.current) {
       const cell = cellFromPointer(event);
-      paintBrushCell(cell);
+      if (brushStrokeRef.current.mode === "rectangle") {
+        replaceStrokePreview(rectangleCells(brushStrokeRef.current.anchor, cell));
+      } else {
+        paintBrushCell(cell);
+      }
       updateHoverCell(event);
       return;
     }
@@ -1432,7 +1605,15 @@ function BattleMapSurface({
   function handleZoomOut() {
     const metrics = viewportMetricsOf(surfaceRef.current);
     viewportRef.current = metrics;
-    const nextZoom = zoomCameraAt(cameraRef.current, metrics, room, cellSizeRef.current, cellSizeRef.current - MAP_ZOOM.step);
+    const nextZoom = zoomCameraAt(
+      cameraRef.current,
+      metrics,
+      room,
+      cellSizeRef.current,
+      cellSizeRef.current - MAP_ZOOM.step,
+      undefined,
+      { unbounded: usesDungeonGrid },
+    );
     cellSizeRef.current = nextZoom.cellSize;
     cameraRef.current = nextZoom.camera;
     setCellSize(nextZoom.cellSize);
@@ -1442,7 +1623,15 @@ function BattleMapSurface({
   function handleZoomIn() {
     const metrics = viewportMetricsOf(surfaceRef.current);
     viewportRef.current = metrics;
-    const nextZoom = zoomCameraAt(cameraRef.current, metrics, room, cellSizeRef.current, cellSizeRef.current + MAP_ZOOM.step);
+    const nextZoom = zoomCameraAt(
+      cameraRef.current,
+      metrics,
+      room,
+      cellSizeRef.current,
+      cellSizeRef.current + MAP_ZOOM.step,
+      undefined,
+      { unbounded: usesDungeonGrid },
+    );
     cellSizeRef.current = nextZoom.cellSize;
     cameraRef.current = nextZoom.camera;
     setCellSize(nextZoom.cellSize);
@@ -1452,7 +1641,15 @@ function BattleMapSurface({
   function handleZoomReset() {
     const metrics = viewportMetricsOf(surfaceRef.current);
     viewportRef.current = metrics;
-    const nextZoom = zoomCameraAt(cameraRef.current, metrics, room, cellSizeRef.current, MAP_ZOOM.defaultSize);
+    const nextZoom = zoomCameraAt(
+      cameraRef.current,
+      metrics,
+      room,
+      cellSizeRef.current,
+      MAP_ZOOM.defaultSize,
+      undefined,
+      { unbounded: usesDungeonGrid },
+    );
     cellSizeRef.current = nextZoom.cellSize;
     cameraRef.current = nextZoom.camera;
     setCellSize(nextZoom.cellSize);
@@ -1460,16 +1657,37 @@ function BattleMapSurface({
   }
 
   function handleCenterSelected() {
-    if (!hasGridPosition(selectedEntity, room)) {
+    if (!hasGridPosition(selectedEntity, room, dungeon)) {
       return;
     }
     const metrics = viewportMetricsOf(surfaceRef.current);
     viewportRef.current = metrics;
-    const nextCamera = centerCameraOnCell({ x: selectedEntity.grid_x, y: selectedEntity.grid_y }, metrics, room, cellSizeRef.current);
+    const nextCamera = centerCameraOnCell({ x: selectedEntity.grid_x, y: selectedEntity.grid_y }, metrics, room, cellSizeRef.current, {
+      unbounded: usesDungeonGrid,
+    });
     if (nextCamera) {
       cameraRef.current = nextCamera;
       setCamera(nextCamera);
     }
+  }
+
+  function handleFitDungeon() {
+    const metrics = viewportMetricsOf(surfaceRef.current);
+    viewportRef.current = metrics;
+    const extents = dungeon?.extents;
+    let nextCellSize = cellSizeRef.current;
+    if (extents && Number(extents.width) > 0 && Number(extents.height) > 0) {
+      const widthCells = Number(extents.width);
+      const heightCells = Number(extents.height);
+      const fitWidth = Math.floor((metrics.width - 34 - Math.max(0, widthCells - 1) * 2) / widthCells);
+      const fitHeight = Math.floor((metrics.height - 34 - Math.max(0, heightCells - 1) * 2) / heightCells);
+      nextCellSize = clampCellSize(Math.min(MAP_ZOOM.defaultSize, fitWidth, fitHeight));
+    }
+    const nextCamera = centerCameraOnExtents(extents, metrics, nextCellSize, { unbounded: true });
+    cellSizeRef.current = nextCellSize;
+    cameraRef.current = nextCamera;
+    setCellSize(nextCellSize);
+    setCamera(nextCamera);
   }
 
   const zoomPercent = Math.round((cellSize / MAP_ZOOM.defaultSize) * 100);
@@ -1491,6 +1709,11 @@ function BattleMapSurface({
         <button type="button" className="map-control-button map-control-center" aria-label="Center selected unit" onClick={handleCenterSelected}>
           Center
         </button>
+        {usesDungeonGrid ? (
+          <button type="button" className="map-control-button map-control-center" aria-label="Fit dungeon map" onClick={handleFitDungeon}>
+            Fit
+          </button>
+        ) : null}
       </div>
       <div
         ref={surfaceRef}

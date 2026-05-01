@@ -30,15 +30,6 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(snapshot["order"], [])
         self.assertEqual(snapshot["room"], {"columns": 10, "rows": 7})
 
-    def test_room_size_allows_large_maps_with_guardrail(self) -> None:
-        session = self.context.create_session("large-map")
-
-        session.set_room_size(99, 99)
-
-        self.assertEqual(session.snapshot()["room"], {"columns": 99, "rows": 99})
-        with self.assertRaisesRegex(ValueError, "between 3 and 99"):
-            session.set_room_size(100, 99)
-
     def test_added_units_are_auto_placed_on_the_battle_map(self) -> None:
         session = self.context.create_session("map-placement")
 
@@ -124,7 +115,7 @@ class BattleSessionTests(unittest.TestCase):
         session.set_entity_position(second_id, 0, 0)
         moved_second = session.state.enemies[second_id]
         self.assertEqual((moved_second.grid_x, moved_second.grid_y), (0, 0))
-        with self.assertRaisesRegex(ValueError, "outside"):
+        with self.assertRaisesRegex(ValueError, "not walkable|outside"):
             session.set_entity_position(second_id, 99, 0)
 
     def test_active_unit_can_spend_movement_pool_across_multiple_moves_and_dash(self) -> None:
@@ -150,7 +141,6 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_movement_rejects_non_active_and_over_double_pool_moves(self) -> None:
         session = self.context.create_session("movement-limits")
-        session.set_room_size(20, 20)
         session.add_enemy_from_template("goblin")
         first_id = session.selected_id
         session.add_enemy_from_template("bandit")
@@ -163,7 +153,7 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(session.active_turn_id, second_id)
         with self.assertRaisesRegex(ValueError, "Only the active"):
             session.move_entity_with_movement(first_id, 1, 0)
-        with self.assertRaisesRegex(ValueError, "not reachable|not have enough"):
+        with self.assertRaisesRegex(ValueError, "not reachable|not have enough|not walkable"):
             session.move_entity_with_movement(second_id, 13, 1, dash=True)
 
     def test_diagonal_movement_cost_parity_continues_across_moves(self) -> None:
@@ -235,7 +225,7 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_movement_pathing_blocks_living_units_but_not_down_units(self) -> None:
         session = self.context.create_session("movement-blockers")
-        session.set_room_size(3, 3)
+        session.crop_dungeon(0, 0, 3, 3, confirm_unit_unplace=True)
         session.add_enemy_from_template("bandit")
         mover_id = session.selected_id
         session.add_enemy_from_template("goblin")
@@ -296,27 +286,85 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual((down.grid_x, down.grid_y), (4, 3))
         self.assertEqual((player.grid_x, player.grid_y), (4, 3))
 
-    def test_resize_warns_then_auto_places_out_of_bounds_units(self) -> None:
-        session = self.context.create_session("map-resize")
-        session.add_enemy_from_template("goblin")
+    def test_sparse_dungeon_negative_tiles_persist_and_accept_units(self) -> None:
+        session = self.context.create_session("sparse-negative")
+        session.edit_dungeon_tiles("floor", [[-2, 0]])
+        session.add_player()
+        player_id = session.selected_id
+
+        session.set_entity_position(player_id, -2, 0)
+        snapshot = session.snapshot()
+
+        self.assertIn("-2,0", snapshot["dungeon"]["tiles"])
+        self.assertEqual(snapshot["dungeon"]["extents"]["minX"], -2)
+        self.assertEqual((session.state.enemies[player_id].grid_x, session.state.enemies[player_id].grid_y), (-2, 0))
+
+        self.context._sessions.pop("sparse-negative", None)
+        reloaded = self.context.load_session("sparse-negative")
+        self.assertIn("-2,0", reloaded.dungeon.tiles)
+        self.assertEqual((reloaded.state.enemies[player_id].grid_x, reloaded.state.enemies[player_id].grid_y), (-2, 0))
+
+    def test_void_remains_absent_and_sparse_area_is_not_filled(self) -> None:
+        session = self.context.create_session("sparse-void")
+
+        session.edit_dungeon_tiles("void", [[1, 1]])
+
+        self.assertNotIn("1,1", session.dungeon.tiles)
+        self.assertNotIn("11,8", session.dungeon.tiles)
+
+    def test_sparse_dungeon_movement_uses_explicit_walkable_tiles(self) -> None:
+        session = self.context.create_session("sparse-movement")
+        session.edit_dungeon_tiles("floor", [[-1, 3]])
+        session.add_enemy_from_template("bandit")
+        entity_id = session.selected_id
+        session.set_entity_position(entity_id, 0, 3)
+        session.next_turn()
+        session.start_new_round()
+
+        session.move_entity_with_movement(entity_id, -1, 3)
+
+        moved = session.state.enemies[entity_id]
+        self.assertEqual((moved.grid_x, moved.grid_y), (-1, 3))
+        with self.assertRaisesRegex(ValueError, "not walkable"):
+            session.move_entity_with_movement(entity_id, -2, 3)
+
+    def test_crop_removes_tiles_without_shifting_and_confirms_unit_unplace(self) -> None:
+        session = self.context.create_session("sparse-crop")
+        session.edit_dungeon_tiles("floor", [[-1, 0]])
+        session.add_player()
+        player_id = session.selected_id
+        session.set_entity_position(player_id, 4, 3)
+
+        with self.assertRaisesRegex(ValueError, "Crop would unplace"):
+            session.crop_dungeon(-1, 0, 2, 2)
+
+        session.crop_dungeon(-1, 0, 2, 2, confirm_unit_unplace=True)
+
+        self.assertIn("-1,0", session.dungeon.tiles)
+        self.assertIn("0,0", session.dungeon.tiles)
+        self.assertNotIn("1,0", session.dungeon.tiles)
+        self.assertIsNone(session.state.enemies[player_id].grid_x)
+        self.assertEqual(session.snapshot()["dungeon"]["extents"]["minX"], -1)
+
+    def test_auto_place_uses_walkable_sparse_dungeon_tiles(self) -> None:
+        session = self.context.create_session("sparse-auto-place")
+
+        session.crop_dungeon(0, 0, 1, 1, confirm_unit_unplace=True)
+        session.add_player()
         first_id = session.selected_id
-        session.set_entity_position(first_id, 9, 6)
 
-        with self.assertRaisesRegex(ValueError, "Resize would move"):
-            session.set_room_size(3, 3)
+        self.assertEqual((session.state.enemies[first_id].grid_x, session.state.enemies[first_id].grid_y), (0, 0))
 
-        session.set_room_size(3, 3, auto_place_out_of_bounds=True)
-        moved = session.state.enemies[first_id]
+        session.edit_dungeon_tiles("void", [[0, 0]])
+        session.add_player()
+        second_id = session.selected_id
 
-        self.assertEqual(session.snapshot()["room"], {"columns": 3, "rows": 3})
-        self.assertIsNotNone(moved.grid_x)
-        self.assertIsNotNone(moved.grid_y)
-        self.assertLess(moved.grid_x, 3)
-        self.assertLess(moved.grid_y, 3)
+        self.assertIsNone(session.state.enemies[second_id].grid_x)
+        self.assertIsNone(session.state.enemies[second_id].grid_y)
 
     def test_auto_place_leaves_units_unplaced_when_room_is_full(self) -> None:
         session = self.context.create_session("map-full")
-        session.set_room_size(3, 3)
+        session.crop_dungeon(0, 0, 3, 3, confirm_unit_unplace=True)
 
         for _ in range(10):
             session.add_player()

@@ -74,7 +74,15 @@ export function cellBounds(x, y, cellSize = MAP_ZOOM.defaultSize, gap = MAP_GRID
   };
 }
 
-export function worldToCell(worldX, worldY, room, cellSize = MAP_ZOOM.defaultSize, gap = MAP_GRID_GAP, padding = MAP_VIEWPORT_PADDING) {
+export function worldToCell(
+  worldX,
+  worldY,
+  room,
+  cellSize = MAP_ZOOM.defaultSize,
+  gap = MAP_GRID_GAP,
+  padding = MAP_VIEWPORT_PADDING,
+  options = {},
+) {
   const step = mapStep(cellSize, gap);
   const gridX = worldX - padding;
   const gridY = worldY - padding;
@@ -84,24 +92,31 @@ export function worldToCell(worldX, worldY, room, cellSize = MAP_ZOOM.defaultSiz
   const offsetY = gridY - y * step;
   const cell = { x, y };
 
-  if (offsetX < 0 || offsetY < 0 || offsetX > cellSize || offsetY > cellSize || !isCellInsideRoom(cell, room)) {
+  const unbounded = Boolean(options.unbounded);
+  if (offsetX < 0 || offsetY < 0 || offsetX > cellSize || offsetY > cellSize || (!unbounded && !isCellInsideRoom(cell, room))) {
     return null;
   }
 
   return cell;
 }
 
-export function clientPointToCell(point, viewportRect, camera, room, cellSize = MAP_ZOOM.defaultSize) {
+export function clientPointToCell(point, viewportRect, camera, room, cellSize = MAP_ZOOM.defaultSize, options = {}) {
   const rectLeft = numberOr(viewportRect?.left, 0);
   const rectTop = numberOr(viewportRect?.top, 0);
   const worldX = numberOr(point?.x, 0) - rectLeft - numberOr(camera?.x, 0);
   const worldY = numberOr(point?.y, 0) - rectTop - numberOr(camera?.y, 0);
 
-  return worldToCell(worldX, worldY, room, cellSize);
+  return worldToCell(worldX, worldY, room, cellSize, MAP_GRID_GAP, MAP_VIEWPORT_PADDING, options);
 }
 
-export function clampCamera(camera, viewport, room, cellSize = MAP_ZOOM.defaultSize) {
+export function clampCamera(camera, viewport, room, cellSize = MAP_ZOOM.defaultSize, options = {}) {
   const viewportSize = normalizeViewportSize(viewport);
+  if (options.unbounded) {
+    return {
+      x: numberOr(camera?.x, 0),
+      y: numberOr(camera?.y, 0),
+    };
+  }
   const contentSize = mapContentSize(room, cellSize);
 
   function clampAxis(value, viewportLength, contentLength) {
@@ -117,7 +132,7 @@ export function clampCamera(camera, viewport, room, cellSize = MAP_ZOOM.defaultS
   };
 }
 
-export function zoomCameraAt(camera, viewport, room, oldCellSize, nextCellSize, anchor) {
+export function zoomCameraAt(camera, viewport, room, oldCellSize, nextCellSize, anchor, options = {}) {
   const viewportSize = normalizeViewportSize(viewport);
   const clampedNextSize = clampCellSize(nextCellSize);
   const oldStep = mapStep(oldCellSize);
@@ -133,13 +148,13 @@ export function zoomCameraAt(camera, viewport, room, oldCellSize, nextCellSize, 
 
   return {
     cellSize: clampedNextSize,
-    camera: clampCamera(nextCamera, viewportSize, room, clampedNextSize),
+    camera: clampCamera(nextCamera, viewportSize, room, clampedNextSize, options),
   };
 }
 
-export function centerCameraOnCell(cell, viewport, room, cellSize = MAP_ZOOM.defaultSize) {
+export function centerCameraOnCell(cell, viewport, room, cellSize = MAP_ZOOM.defaultSize, options = {}) {
   const viewportSize = normalizeViewportSize(viewport);
-  if (!isCellInsideRoom(cell, room)) {
+  if (!options.unbounded && !isCellInsideRoom(cell, room)) {
     return null;
   }
 
@@ -153,7 +168,39 @@ export function centerCameraOnCell(cell, viewport, room, cellSize = MAP_ZOOM.def
     viewportSize,
     room,
     cellSize,
+    options,
   );
+}
+
+export function visibleCellRange(camera, viewport, cellSize = MAP_ZOOM.defaultSize, gap = MAP_GRID_GAP, padding = MAP_VIEWPORT_PADDING) {
+  const viewportSize = normalizeViewportSize(viewport);
+  const step = mapStep(cellSize, gap);
+  const worldLeft = -numberOr(camera?.x, 0);
+  const worldTop = -numberOr(camera?.y, 0);
+  const worldRight = worldLeft + viewportSize.width;
+  const worldBottom = worldTop + viewportSize.height;
+
+  return {
+    minX: Math.floor((worldLeft - padding) / step) - 1,
+    maxX: Math.floor((worldRight - padding) / step) + 1,
+    minY: Math.floor((worldTop - padding) / step) - 1,
+    maxY: Math.floor((worldBottom - padding) / step) + 1,
+    worldLeft,
+    worldTop,
+    worldRight,
+    worldBottom,
+  };
+}
+
+export function centerCameraOnExtents(extents, viewport, cellSize = MAP_ZOOM.defaultSize, options = {}) {
+  if (!extents || Number(extents.width) <= 0 || Number(extents.height) <= 0) {
+    return centerCameraOnCell({ x: 0, y: 0 }, viewport, { columns: 1, rows: 1 }, cellSize, { ...options, unbounded: true });
+  }
+  const centerCell = {
+    x: (Number(extents.minX) + Number(extents.maxX)) / 2,
+    y: (Number(extents.minY) + Number(extents.maxY)) / 2,
+  };
+  return centerCameraOnCell(centerCell, viewport, { columns: 1, rows: 1 }, cellSize, { ...options, unbounded: true });
 }
 
 export function sameCell(first, second) {

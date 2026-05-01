@@ -65,6 +65,29 @@ function buildSnapshot(overrides = {}) {
   };
 }
 
+function buildDungeon(overrides = {}) {
+  return {
+    tiles: {
+      "0,0": { tile_type: "floor", door_open: false },
+      "1,0": { tile_type: "floor", door_open: false },
+      "0,1": { tile_type: "floor", door_open: false },
+      "1,1": { tile_type: "floor", door_open: false },
+    },
+    rooms: [{ room_id: "room-1", cells: [[0, 0], [1, 0], [0, 1], [1, 1]] }],
+    revealedRoomIds: ["room-1"],
+    pendingEncounterRoomIds: [],
+    fogOfWarEnabled: false,
+    currentPcRoomIds: [],
+    visibleRoomIds: ["room-1"],
+    issues: [],
+    analysisVersion: 1,
+    renderVersion: 1,
+    linkedDoors: {},
+    extents: { minX: 0, minY: 0, maxX: 1, maxY: 1, width: 2, height: 2 },
+    ...overrides,
+  };
+}
+
 function buildMovementState(overrides = {}) {
   return {
     entityId: "enemy-1",
@@ -209,6 +232,36 @@ function pointerDragFromCell(x, y, deltaX, deltaY, options = {}) {
     buttons: 0,
     clientX: point.clientX + deltaX,
     clientY: point.clientY + deltaY,
+  });
+}
+
+function pointerDragBetweenCells(startX, startY, endX, endY, options = {}) {
+  const viewport = getMapViewport();
+  const start = mapPointForCell(viewport, startX, startY);
+  const end = mapPointForCell(viewport, endX, endY);
+  const pointerId = options.pointerId || 1;
+  const button = options.button ?? 0;
+  const buttons = options.buttons ?? 1;
+
+  fireEvent.pointerDown(viewport, {
+    pointerId,
+    pointerType: "mouse",
+    button,
+    buttons,
+    ...start,
+  });
+  fireEvent.pointerMove(viewport, {
+    pointerId,
+    pointerType: "mouse",
+    buttons,
+    ...end,
+  });
+  fireEvent.pointerUp(viewport, {
+    pointerId,
+    pointerType: "mouse",
+    button,
+    buttons: 0,
+    ...end,
   });
 }
 
@@ -2459,82 +2512,144 @@ describe("App", () => {
     expect(Number.parseInt(viewport.dataset.cellSize, 10)).toBeGreaterThan(MAP_ZOOM.defaultSize);
   });
 
-  it("shows a resize warning and can confirm auto-placement", async () => {
+  it("paints dungeon cells at negative coordinates after panning", async () => {
     const user = userEvent.setup();
-    const resizedSnapshot = buildSnapshot({
-      room: { columns: 3, rows: 3 },
-      enemies: [buildEnemy({ grid_x: 1, grid_y: 1 })],
-      combatLog: ["Battle map resized to 3x3"],
-    });
-
-    renderWithSnapshot(buildSnapshot(), {
+    const dungeon = buildDungeon();
+    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })] }), {
       extraFetch: (url, requestOptions) => {
-        if (url === "/api/battle/sessions/sid-123/room" && requestOptions?.method === "POST") {
-          const payload = JSON.parse(requestOptions.body);
-          if (!payload.autoPlaceOutOfBounds) {
-            return jsonResponse(
-              { detail: "Resize would move 1 unit(s): Goblin 1" },
-              { ok: false, status: 400, statusText: "Bad Request" },
-            );
-          }
-          return jsonResponse(resizedSnapshot);
+        if (url === "/api/battle/sessions/sid-123/dungeon/tiles" && requestOptions?.method === "POST") {
+          return jsonResponse(buildSnapshot({ dungeon }));
+        }
+        if (url === "/api/battle/sessions/sid-123/dungeon/analyze" && requestOptions?.method === "POST") {
+          return jsonResponse(buildSnapshot({ dungeon }));
         }
         return undefined;
       },
     });
 
-    await findMapToken("Goblin 1");
-    await user.click(screen.getByRole("button", { name: "Map size settings" }));
-    await user.clear(screen.getByLabelText("Map columns"));
-    await user.type(screen.getByLabelText("Map columns"), "3");
-    await user.clear(screen.getByLabelText("Map rows"));
-    await user.type(screen.getByLabelText("Map rows"), "3");
-    await user.click(screen.getByRole("button", { name: "Apply" }));
-
-    expect(await screen.findByText("Resize would move 1 unit(s): Goblin 1")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Auto-place and resize" }));
+    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    pointerDragFromCell(0, 0, 100, 0, { pointerId: 81, button: 1, buttons: 4 });
+    pointerClickMapCell(-1, 0, 82);
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
-        "/api/battle/sessions/sid-123/room",
+        "/api/battle/sessions/sid-123/dungeon/tiles",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ columns: 3, rows: 3, autoPlaceOutOfBounds: true }),
+          body: JSON.stringify({ tileType: "floor", cells: [[-1, 0]] }),
         }),
       );
     });
-    expect(await screen.findByText("3 x 3")).toBeInTheDocument();
   });
 
-  it("shows room validation errors from the API as readable text", async () => {
+  it("rectangle-paints floor cells but keeps doors brush-only", async () => {
     const user = userEvent.setup();
-
-    renderWithSnapshot(buildSnapshot(), {
+    const dungeon = buildDungeon();
+    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })] }), {
       extraFetch: (url, requestOptions) => {
-        if (url === "/api/battle/sessions/sid-123/room" && requestOptions?.method === "POST") {
-          return jsonResponse(
-            {
-              detail: [
-                {
-                  loc: ["body", "columns"],
-                  msg: "Input should be less than or equal to 30",
-                },
-              ],
-            },
-            { ok: false, status: 422, statusText: "Unprocessable Entity" },
-          );
+        if (url === "/api/battle/sessions/sid-123/dungeon/tiles" && requestOptions?.method === "POST") {
+          return jsonResponse(buildSnapshot({ dungeon }));
         }
         return undefined;
       },
     });
 
-    await findMapToken("Goblin 1");
-    await user.click(screen.getByRole("button", { name: "Map size settings" }));
-    await user.clear(screen.getByLabelText("Map columns"));
-    await user.type(screen.getByLabelText("Map columns"), "60");
-    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(screen.getByRole("button", { name: "Rect" }));
+    pointerDragBetweenCells(0, 0, 1, 1, { pointerId: 91 });
 
-    expect(await screen.findByText("columns: Input should be less than or equal to 30")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/dungeon/tiles",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ tileType: "floor", cells: [[0, 0], [1, 0], [0, 1], [1, 1]] }),
+        }),
+      );
+    });
+
+    await user.click(screen.getByRole("button", { name: "Door" }));
+    expect(screen.getByRole("button", { name: "Rect" })).toBeDisabled();
+  });
+
+  it("confirms very large rectangle tile edits before posting", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon();
+    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })] }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/dungeon/tiles" && requestOptions?.method === "POST") {
+          return jsonResponse(buildSnapshot({ dungeon }));
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(screen.getByRole("button", { name: "Rect" }));
+    pointerDragBetweenCells(0, 0, 50, 49, { pointerId: 92 });
+
+    expect(await screen.findByText("Large tile edit")).toBeInTheDocument();
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      "/api/battle/sessions/sid-123/dungeon/tiles",
+      expect.anything(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Apply edit" }));
+
+    await waitFor(() => {
+      const tileCall = global.fetch.mock.calls.find(([url]) => url === "/api/battle/sessions/sid-123/dungeon/tiles");
+      expect(JSON.parse(tileCall[1].body).cells).toHaveLength(2550);
+    });
+  });
+
+  it("shows crop warning and confirms unit unplace from dungeon tools", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon();
+    const cropCalls = [];
+    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 1, grid_y: 1 })] }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/dungeon/crop" && requestOptions?.method === "POST") {
+          const payload = JSON.parse(requestOptions.body);
+          cropCalls.push(payload);
+          if (!payload.confirmUnitUnplace) {
+            return jsonResponse(
+              { detail: "Crop would unplace 1 unit(s): Goblin 1" },
+              { ok: false, status: 400, statusText: "Bad Request" },
+            );
+          }
+          return jsonResponse(buildSnapshot({ dungeon }));
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(screen.getByRole("button", { name: "Dungeon tools" }));
+    await user.clear(screen.getByLabelText("Crop columns"));
+    await user.type(screen.getByLabelText("Crop columns"), "1");
+    await user.clear(screen.getByLabelText("Crop rows"));
+    await user.type(screen.getByLabelText("Crop rows"), "1");
+    await user.click(screen.getByRole("button", { name: "Crop" }));
+
+    const confirmCropButton = await screen.findByRole("button", { name: "Crop dungeon" });
+    await user.click(confirmCropButton);
+    expect(await screen.findByText("Crop would unplace 1 unit(s): Goblin 1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Unplace units and crop" }));
+
+    await waitFor(() => {
+      expect(cropCalls).toEqual([
+        { minX: 0, minY: 0, columns: 1, rows: 1, confirmUnitUnplace: false },
+        { minX: 0, minY: 0, columns: 1, rows: 1, confirmUnitUnplace: true },
+      ]);
+    });
+  });
+
+  it("does not show the legacy map size control outside GM Dungeon mode", async () => {
+    renderWithSnapshot(buildSnapshot());
+
+    await findMapToken("Goblin 1");
+    expect(screen.queryByRole("button", { name: "Map size settings" })).not.toBeInTheDocument();
+    expect(screen.queryByText("10 x 7")).not.toBeInTheDocument();
   });
 
   it("shows API errors from failed actions", async () => {

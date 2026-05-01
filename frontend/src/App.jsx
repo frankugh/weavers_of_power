@@ -26,16 +26,16 @@ const MAP_MODES = {
 };
 
 const GM_DUNGEON_PALETTES = ["floor", "void", "door"];
+const GM_DUNGEON_TOOLS = {
+  BRUSH: "brush",
+  RECTANGLE: "rectangle",
+};
+const RECTANGLE_PALETTES = new Set(["floor", "void"]);
+const RECTANGLE_CONFIRM_LIMIT = 2500;
 const DRAW_REVEAL_TIMING = {
   enterMs: 80,
   holdMs: 3200,
   settleMs: 900,
-};
-const ROOM_LIMITS = {
-  minColumns: 3,
-  maxColumns: 99,
-  minRows: 3,
-  maxRows: 99,
 };
 const EMPTY_ATTACK_FORM = {
   damage: 1,
@@ -170,7 +170,10 @@ function getEntityInitial(entity) {
   return (entity?.name || "?").trim().charAt(0).toUpperCase() || "?";
 }
 
-function hasGridPosition(entity, room) {
+function hasGridPosition(entity, room, dungeon = null) {
+  if (dungeon?.tiles) {
+    return Number.isInteger(entity?.grid_x) && Number.isInteger(entity?.grid_y);
+  }
   return (
     Number.isInteger(entity?.grid_x) &&
     Number.isInteger(entity?.grid_y) &&
@@ -201,8 +204,6 @@ function App() {
   const [templateSearch, setTemplateSearch] = useState("");
   const [templateCategory, setTemplateCategory] = useState("All");
   const [mapMode, setMapMode] = useState(MAP_MODES.IDLE);
-  const [roomForm, setRoomForm] = useState(DEFAULT_ROOM);
-  const [pendingRoomResize, setPendingRoomResize] = useState(null);
   const [pendingDashMove, setPendingDashMove] = useState(null);
   const [saveName, setSaveName] = useState("session");
   const [saves, setSaves] = useState([]);
@@ -234,7 +235,11 @@ function App() {
   const [initiativeModes, setInitiativeModes] = useState({});
   const [initiativeOpenReason, setInitiativeOpenReason] = useState("manual");
   const [gmDungeonPalette, setGmDungeonPalette] = useState("floor");
+  const [gmDungeonTool, setGmDungeonTool] = useState(GM_DUNGEON_TOOLS.BRUSH);
   const [highlightedRoomId, setHighlightedRoomId] = useState(null);
+  const [pendingLargeTileEdit, setPendingLargeTileEdit] = useState(null);
+  const [pendingDungeonCrop, setPendingDungeonCrop] = useState(null);
+  const [dungeonCropForm, setDungeonCropForm] = useState({ minX: 0, minY: 0, columns: 10, rows: 7 });
 
   useEffect(() => {
     if (!meta || customForm.coreDeckId || meta.decks.length === 0) {
@@ -242,16 +247,6 @@ function App() {
     }
     setCustomForm((current) => ({ ...current, coreDeckId: meta.decks[0].id }));
   }, [customForm.coreDeckId, meta]);
-
-  useEffect(() => {
-    if (!snapshot?.room) {
-      return;
-    }
-    setRoomForm({
-      columns: snapshot.room.columns || DEFAULT_ROOM.columns,
-      rows: snapshot.room.rows || DEFAULT_ROOM.rows,
-    });
-  }, [snapshot?.room?.columns, snapshot?.room?.rows]);
 
   useEffect(() => {
     setMapMode(MAP_MODES.IDLE);
@@ -427,6 +422,7 @@ function App() {
   const isPlayerSelected = Boolean(selectedEntity?.is_player);
   const selectedIsDown = Boolean(selectedEntity?.is_down);
   const movementState = snapshot?.movementState || null;
+  const dungeon = snapshot?.dungeon || null;
   const selectedIsActive = Boolean(selectedEntity && snapshot?.activeTurnId === selectedEntity.instance_id);
   const hasActiveTurn = Boolean(snapshot?.activeTurnId);
   const pendingNewRound = Boolean(snapshot?.pendingNewRound);
@@ -446,17 +442,35 @@ function App() {
     selectedEntity &&
       selectedIsActive &&
       !selectedIsDown &&
-      hasGridPosition(selectedEntity, room) &&
+      hasGridPosition(selectedEntity, room, dungeon) &&
       selectedMovementRemaining > 0,
   );
   const canReposition = Boolean(selectedEntity);
   const isGmRepositionMode = mapMode === MAP_MODES.GM_REPOSITION;
   const isGmDungeonMode = mapMode === MAP_MODES.GM_DUNGEON;
   const canUseGmReposition = orderedEnemies.length > 0;
-  const dungeon = snapshot?.dungeon || null;
   const fogOfWarEnabled = dungeon?.fogOfWarEnabled ?? true;
   const visibleRoomIds = new Set(dungeon?.visibleRoomIds || []);
   const revealedRoomIdSet = new Set(dungeon?.revealedRoomIds || []);
+
+  useEffect(() => {
+    const extents = dungeon?.extents;
+    if (!extents || Number(extents.width) <= 0 || Number(extents.height) <= 0) {
+      return;
+    }
+    setDungeonCropForm({
+      minX: Number(extents.minX) || 0,
+      minY: Number(extents.minY) || 0,
+      columns: Number(extents.width) || 1,
+      rows: Number(extents.height) || 1,
+    });
+  }, [dungeon?.extents?.minX, dungeon?.extents?.minY, dungeon?.extents?.width, dungeon?.extents?.height]);
+
+  useEffect(() => {
+    if (!RECTANGLE_PALETTES.has(gmDungeonPalette) && gmDungeonTool === GM_DUNGEON_TOOLS.RECTANGLE) {
+      setGmDungeonTool(GM_DUNGEON_TOOLS.BRUSH);
+    }
+  }, [gmDungeonPalette, gmDungeonTool]);
 
   function isEntityVisible(entity) {
     return !dungeon || !fogOfWarEnabled || entity.is_player || visibleRoomIds.has(entity.room_id);
@@ -546,8 +560,9 @@ function App() {
     setAddUnitTab("premade");
     setTemplateSearch("");
     setTemplateCategory("All");
-    setPendingRoomResize(null);
     setPendingDashMove(null);
+    setPendingLargeTileEdit(null);
+    setPendingDungeonCrop(null);
     setDrawDetail(null);
     setPreviewEntityId(null);
     setWoundNotice(null);
@@ -692,12 +707,25 @@ function App() {
     setMapMode(MAP_MODES.IDLE);
   }
 
-  async function submitTileEdit(tileType, cells) {
+  async function submitTileEdit(tileType, cells, options = {}) {
     if (!snapshot?.sid || cells.length === 0) return null;
+    if (!options.confirmed && cells.length > RECTANGLE_CONFIRM_LIMIT) {
+      setPendingLargeTileEdit({ tileType, cells, count: cells.length });
+      setModal("large-tile-edit-confirm");
+      return null;
+    }
     return applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/tiles`, {
       method: "POST",
       body: JSON.stringify({ tileType, cells }),
     });
+  }
+
+  async function confirmLargeTileEdit() {
+    if (!pendingLargeTileEdit) return;
+    const edit = pendingLargeTileEdit;
+    setPendingLargeTileEdit(null);
+    await submitTileEdit(edit.tileType, edit.cells, { confirmed: true });
+    closeModal();
   }
 
   async function submitAnalyzeDungeon() {
@@ -723,6 +751,45 @@ function App() {
       method: "POST",
       body: JSON.stringify({ revealed }),
     });
+  }
+
+  function openDungeonCropConfirm(event) {
+    event?.preventDefault?.();
+    setPendingDungeonCrop({ ...dungeonCropForm, unitWarning: "" });
+    setModal("dungeon-crop-confirm");
+  }
+
+  async function submitDungeonCrop(confirmUnitUnplace = false) {
+    if (!pendingDungeonCrop) return null;
+    setBusy(true);
+    setError("");
+    try {
+      const payload = await requestJson(`/api/battle/sessions/${snapshot.sid}/dungeon/crop`, {
+        method: "POST",
+        body: JSON.stringify({
+          minX: Number(pendingDungeonCrop.minX),
+          minY: Number(pendingDungeonCrop.minY),
+          columns: Number(pendingDungeonCrop.columns),
+          rows: Number(pendingDungeonCrop.rows),
+          confirmUnitUnplace,
+        }),
+      });
+      setSnapshot(payload);
+      setPendingDungeonCrop(null);
+      setModal(null);
+      setNotice("Dungeon cropped");
+      return payload;
+    } catch (requestError) {
+      if (!confirmUnitUnplace && requestError.message.includes("Crop would unplace")) {
+        setPendingDungeonCrop((current) => ({ ...current, unitWarning: requestError.message }));
+        setError("");
+      } else {
+        setError(requestError.message);
+      }
+      return null;
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleSelect(instanceId, options = {}) {
@@ -923,47 +990,6 @@ function App() {
       return;
     }
     await submitRestrictedMove(pendingDashMove.x, pendingDashMove.y, { dash: true });
-  }
-
-  function normalizeRoomFormValue(value, fallback) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
-  }
-
-  async function submitRoomResize(columns, rows, autoPlaceOutOfBounds = false) {
-    setBusy(true);
-    setError("");
-    try {
-      const payload = await requestJson(`/api/battle/sessions/${snapshot.sid}/room`, {
-        method: "POST",
-        body: JSON.stringify({ columns, rows, autoPlaceOutOfBounds }),
-      });
-      setSnapshot(payload);
-      setNotice(`Battle map set to ${payload.room.columns}x${payload.room.rows}`);
-      setPendingRoomResize(null);
-      setModal(null);
-      setMapMode(MAP_MODES.IDLE);
-      return payload;
-    } catch (requestError) {
-      if (!autoPlaceOutOfBounds && requestError.message.includes("Resize would move")) {
-        setPendingRoomResize({ columns, rows, message: requestError.message });
-        setModal("room-warning");
-        setNotice("");
-        setError("");
-      } else {
-        setError(requestError.message);
-      }
-      return null;
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleRoomSubmit(event) {
-    event.preventDefault();
-    const columns = normalizeRoomFormValue(roomForm.columns, room.columns);
-    const rows = normalizeRoomFormValue(roomForm.rows, room.rows);
-    await submitRoomResize(columns, rows, false);
   }
 
   async function handleDeleteEntity(instanceId) {
@@ -1363,8 +1389,6 @@ function App() {
           <section className="battle-stage">
             <BattleRoom
               room={room}
-              roomForm={roomForm}
-              setRoomForm={setRoomForm}
               entities={isGmDungeonMode ? orderedEnemies : orderedEnemies.filter(isEntityVisible)}
               selectedEntity={selectedEntity}
               selectedId={snapshot.selectedId}
@@ -1373,10 +1397,13 @@ function App() {
               movementState={movementState}
               dungeon={dungeon}
               gmDungeonPalette={gmDungeonPalette}
+              gmDungeonTool={gmDungeonTool}
               highlightedRoomId={isGmDungeonMode ? highlightedRoomId : null}
+              cropForm={dungeonCropForm}
+              setCropForm={setDungeonCropForm}
               drawPulse={drawReveal ? { entityId: drawReveal.entityId, key: drawReveal.key } : null}
               busy={busy}
-              onRoomSubmit={handleRoomSubmit}
+              onCropSubmit={openDungeonCropConfirm}
               onSelect={handleSelect}
               onMoveToCell={handleMoveSelectedToCell}
               onTileEdit={submitTileEdit}
@@ -1438,6 +1465,24 @@ function App() {
                       {p.charAt(0).toUpperCase() + p.slice(1)}
                     </button>
                   ))}
+                </div>
+                <div className="dungeon-toolbar-sep" />
+                <div className="dungeon-palette" aria-label="Dungeon paint tool">
+                  <button
+                    type="button"
+                    className={`dungeon-palette-btn${gmDungeonTool === GM_DUNGEON_TOOLS.BRUSH ? " active" : ""}`}
+                    onClick={() => setGmDungeonTool(GM_DUNGEON_TOOLS.BRUSH)}
+                  >
+                    Brush
+                  </button>
+                  <button
+                    type="button"
+                    className={`dungeon-palette-btn${gmDungeonTool === GM_DUNGEON_TOOLS.RECTANGLE ? " active" : ""}`}
+                    onClick={() => setGmDungeonTool(GM_DUNGEON_TOOLS.RECTANGLE)}
+                    disabled={!RECTANGLE_PALETTES.has(gmDungeonPalette)}
+                  >
+                    Rect
+                  </button>
                 </div>
                 <div className="dungeon-toolbar-sep" />
                 <button
@@ -2550,6 +2595,56 @@ function App() {
       </ModalShell>
 
       <ModalShell
+        open={modal === "large-tile-edit-confirm" && Boolean(pendingLargeTileEdit)}
+        title="Large tile edit"
+        onClose={closeModal}
+        closeOnOutsideClick={false}
+      >
+        <div className="panel-body modal-form">
+          <div className="subtle-copy">
+            This rectangle will update {pendingLargeTileEdit?.count || 0} dungeon cells.
+          </div>
+          <div className="modal-actions">
+            <button className="primary-button" type="button" onClick={confirmLargeTileEdit} disabled={busy}>
+              Apply edit
+            </button>
+            <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "dungeon-crop-confirm" && Boolean(pendingDungeonCrop)}
+        title="Crop dungeon"
+        subtitle="This removes dungeon tiles outside the crop area."
+        onClose={closeModal}
+        closeOnOutsideClick={false}
+      >
+        <div className="panel-body modal-form">
+          <div className="subtle-copy">
+            Crop to {pendingDungeonCrop?.columns || 0} x {pendingDungeonCrop?.rows || 0} from (
+            {pendingDungeonCrop?.minX || 0}, {pendingDungeonCrop?.minY || 0}).
+          </div>
+          {pendingDungeonCrop?.unitWarning ? <div className="error-banner">{pendingDungeonCrop.unitWarning}</div> : null}
+          <div className="modal-actions">
+            <button
+              className="primary-button danger-button"
+              type="button"
+              onClick={() => submitDungeonCrop(Boolean(pendingDungeonCrop?.unitWarning))}
+              disabled={busy}
+            >
+              {pendingDungeonCrop?.unitWarning ? "Unplace units and crop" : "Crop dungeon"}
+            </button>
+            <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
         open={modal === "new-session-confirm"}
         title="Confirm New Session"
         onClose={closeModal}
@@ -2581,34 +2676,6 @@ function App() {
             <DrawCardView entityName={drawDetail.entityName} items={drawDetail.items} kind={drawDetail.kind} />
           </div>
         ) : null}
-      </ModalShell>
-
-      <ModalShell
-        open={modal === "room-warning" && Boolean(pendingRoomResize)}
-        title="Resize battle map"
-        subtitle="Some units are outside the new dimensions."
-        onClose={closeModal}
-      >
-        <div className="panel-body modal-form">
-          <div className="subtle-copy">{pendingRoomResize?.message}</div>
-          <div className="modal-actions">
-            <button
-              className="primary-button"
-              type="button"
-              disabled={busy}
-              onClick={() =>
-                pendingRoomResize
-                  ? submitRoomResize(pendingRoomResize.columns, pendingRoomResize.rows, true)
-                  : null
-              }
-            >
-              Auto-place and resize
-            </button>
-            <button className="secondary-button" type="button" onClick={closeModal}>
-              Cancel
-            </button>
-          </div>
-        </div>
       </ModalShell>
 
       <ModalShell
@@ -2762,8 +2829,6 @@ function App() {
 
 function BattleRoom({
   room,
-  roomForm,
-  setRoomForm,
   entities,
   selectedEntity,
   selectedId,
@@ -2772,10 +2837,13 @@ function BattleRoom({
   movementState,
   dungeon,
   gmDungeonPalette,
+  gmDungeonTool,
   highlightedRoomId = null,
+  cropForm,
+  setCropForm,
   drawPulse,
   busy,
-  onRoomSubmit,
+  onCropSubmit,
   onSelect,
   onMoveToCell,
   onTileEdit,
@@ -2783,64 +2851,87 @@ function BattleRoom({
   onUnitDoubleClick,
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const isGmDungeonMode = mapMode === MAP_MODES.GM_DUNGEON;
   const placedEntities = useMemo(
-    () => entities.filter((entity) => hasGridPosition(entity, room)),
-    [entities, room.columns, room.rows],
+    () => entities.filter((entity) => hasGridPosition(entity, room, dungeon)),
+    [entities, room.columns, room.rows, dungeon],
   );
   const unplacedEntities = useMemo(
-    () => entities.filter((entity) => !hasGridPosition(entity, room)),
-    [entities, room.columns, room.rows],
+    () => entities.filter((entity) => !hasGridPosition(entity, room, dungeon)),
+    [entities, room.columns, room.rows, dungeon],
   );
-  async function handleSettingsSubmit(event) {
-    await onRoomSubmit(event);
+  async function handleCropSubmit(event) {
+    onCropSubmit(event);
     setSettingsOpen(false);
   }
 
+  const extents = dungeon?.extents;
+  const extentsLabel = extents && Number(extents.width) > 0
+    ? `Ext ${extents.width} x ${extents.height}`
+    : "Ext empty";
+
   return (
     <div className="battle-map">
-      <div className="map-settings">
-        <button
-          className="map-settings-trigger"
-          type="button"
-          aria-expanded={settingsOpen}
-          aria-label="Map size settings"
-          onClick={() => setSettingsOpen((current) => !current)}
-        >
-          {room.columns} x {room.rows}
-        </button>
+      {isGmDungeonMode ? (
+        <div className="map-settings">
+          <button
+            className="map-settings-trigger"
+            type="button"
+            aria-expanded={settingsOpen}
+            aria-label="Dungeon tools"
+            onClick={() => setSettingsOpen((current) => !current)}
+          >
+            {extentsLabel}
+          </button>
 
-        {settingsOpen ? (
-          <form className="map-settings-panel" onSubmit={handleSettingsSubmit}>
-            <label className="map-size-field">
-              <span>Rows</span>
-              <input
-                aria-label="Map rows"
-                type="number"
-                min={ROOM_LIMITS.minRows}
-                max={ROOM_LIMITS.maxRows}
-                value={roomForm.rows}
-                onChange={(event) => setRoomForm((current) => ({ ...current, rows: Number(event.target.value) }))}
-              />
-            </label>
-            <label className="map-size-field">
-              <span>Cols</span>
-              <input
-                aria-label="Map columns"
-                type="number"
-                min={ROOM_LIMITS.minColumns}
-                max={ROOM_LIMITS.maxColumns}
-                value={roomForm.columns}
-                onChange={(event) =>
-                  setRoomForm((current) => ({ ...current, columns: Number(event.target.value) }))
-                }
-              />
-            </label>
-            <button className="small-button map-settings-apply" type="submit" disabled={busy}>
-              Apply
-            </button>
-          </form>
-        ) : null}
-      </div>
+          {settingsOpen ? (
+            <form className="map-settings-panel dungeon-tools-panel" onSubmit={handleCropSubmit}>
+              <div className="dungeon-tools-title">Crop</div>
+              <label className="map-size-field">
+                <span>X</span>
+                <input
+                  aria-label="Crop min x"
+                  type="number"
+                  value={cropForm.minX}
+                  onChange={(event) => setCropForm((current) => ({ ...current, minX: Number(event.target.value) }))}
+                />
+              </label>
+              <label className="map-size-field">
+                <span>Y</span>
+                <input
+                  aria-label="Crop min y"
+                  type="number"
+                  value={cropForm.minY}
+                  onChange={(event) => setCropForm((current) => ({ ...current, minY: Number(event.target.value) }))}
+                />
+              </label>
+              <label className="map-size-field">
+                <span>Cols</span>
+                <input
+                  aria-label="Crop columns"
+                  type="number"
+                  min={1}
+                  value={cropForm.columns}
+                  onChange={(event) => setCropForm((current) => ({ ...current, columns: Number(event.target.value) }))}
+                />
+              </label>
+              <label className="map-size-field">
+                <span>Rows</span>
+                <input
+                  aria-label="Crop rows"
+                  type="number"
+                  min={1}
+                  value={cropForm.rows}
+                  onChange={(event) => setCropForm((current) => ({ ...current, rows: Number(event.target.value) }))}
+                />
+              </label>
+              <button className="small-button map-settings-apply" type="submit" disabled={busy}>
+                Crop
+              </button>
+            </form>
+          ) : null}
+        </div>
+      ) : null}
 
       <BattleMapSurface
         room={room}
@@ -2852,6 +2943,7 @@ function BattleRoom({
         movementState={movementState}
         dungeon={dungeon}
         gmDungeonPalette={gmDungeonPalette}
+        gmDungeonTool={gmDungeonTool}
         highlightedRoomId={highlightedRoomId}
         drawPulse={drawPulse}
         busy={busy}
