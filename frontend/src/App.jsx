@@ -32,6 +32,11 @@ const GM_DUNGEON_TOOLS = {
 };
 const RECTANGLE_PALETTES = new Set(["floor", "void"]);
 const RECTANGLE_CONFIRM_LIMIT = 2500;
+const DISPLAY_BRIGHTNESS_STORAGE_KEY = "weavers-display-brightness";
+const DISPLAY_BRIGHTNESS_DEFAULT = 115;
+const DISPLAY_BRIGHTNESS_MIN = 100;
+const DISPLAY_BRIGHTNESS_MAX = 160;
+const DISPLAY_BRIGHTNESS_STEP = 5;
 const DRAW_REVEAL_TIMING = {
   enterMs: 80,
   holdMs: 3200,
@@ -70,6 +75,26 @@ function setSidInUrl(sid) {
   params.set("sid", sid);
   const nextUrl = `${window.location.pathname}?${params.toString()}`;
   window.history.replaceState({}, "", nextUrl);
+}
+
+function clampDisplayBrightness(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return DISPLAY_BRIGHTNESS_DEFAULT;
+  }
+  return Math.max(DISPLAY_BRIGHTNESS_MIN, Math.min(DISPLAY_BRIGHTNESS_MAX, Math.round(numericValue)));
+}
+
+function getInitialDisplayBrightness() {
+  if (typeof window === "undefined") {
+    return DISPLAY_BRIGHTNESS_DEFAULT;
+  }
+  try {
+    const storedValue = window.localStorage.getItem(DISPLAY_BRIGHTNESS_STORAGE_KEY);
+    return storedValue == null ? DISPLAY_BRIGHTNESS_DEFAULT : clampDisplayBrightness(storedValue);
+  } catch {
+    return DISPLAY_BRIGHTNESS_DEFAULT;
+  }
 }
 
 function percent(current, max) {
@@ -192,6 +217,7 @@ function App() {
   const bootstrapped = useRef(false);
   const actionMenuRef = useRef(null);
   const unitContextMenuRef = useRef(null);
+  const repositionReturnModeRef = useRef(null);
 
   const [snapshot, setSnapshot] = useState(null);
   const [meta, setMeta] = useState(null);
@@ -240,6 +266,15 @@ function App() {
   const [pendingLargeTileEdit, setPendingLargeTileEdit] = useState(null);
   const [pendingDungeonCrop, setPendingDungeonCrop] = useState(null);
   const [dungeonCropForm, setDungeonCropForm] = useState({ minX: 0, minY: 0, columns: 10, rows: 7 });
+  const [displayBrightness, setDisplayBrightness] = useState(getInitialDisplayBrightness);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(DISPLAY_BRIGHTNESS_STORAGE_KEY, String(displayBrightness));
+    } catch {
+      // Local storage is a convenience only; the slider should keep working without it.
+    }
+  }, [displayBrightness]);
 
   useEffect(() => {
     if (!meta || customForm.coreDeckId || meta.decks.length === 0) {
@@ -860,7 +895,7 @@ function App() {
     }
     setUnitContextMenu(null);
     setActionMenuOpen(false);
-    setMapMode(MAP_MODES.IDLE);
+    setMapMode((m) => (m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
     setAttackForm(EMPTY_ATTACK_FORM);
     setModal("attack");
   }
@@ -872,7 +907,7 @@ function App() {
     }
     setUnitContextMenu(null);
     setActionMenuOpen(false);
-    setMapMode(MAP_MODES.IDLE);
+    setMapMode((m) => (m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
     setHealForm(EMPTY_HEAL_FORM);
     setModal("heal");
   }
@@ -884,7 +919,10 @@ function App() {
     }
     setUnitContextMenu(null);
     setActionMenuOpen(false);
-    setMapMode(MAP_MODES.REPOSITION);
+    setMapMode((current) => {
+      repositionReturnModeRef.current = current === MAP_MODES.GM_DUNGEON ? current : null;
+      return MAP_MODES.REPOSITION;
+    });
   }
 
   async function rollLootForEntity(instanceId) {
@@ -894,7 +932,7 @@ function App() {
     }
     setUnitContextMenu(null);
     setActionMenuOpen(false);
-    setMapMode(MAP_MODES.IDLE);
+    setMapMode((m) => (m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
     await handleRollLoot();
   }
 
@@ -965,7 +1003,12 @@ function App() {
       `Repositioned ${selectedEntity.name}`,
     );
     if (payload) {
-      setMapMode((current) => (current === MAP_MODES.GM_REPOSITION ? current : MAP_MODES.IDLE));
+      const returnMode = repositionReturnModeRef.current;
+      repositionReturnModeRef.current = null;
+      setMapMode((current) => {
+        if (current === MAP_MODES.GM_REPOSITION) return current;
+        return returnMode ?? MAP_MODES.IDLE;
+      });
     }
   }
 
@@ -1317,8 +1360,15 @@ function App() {
     );
   }
 
+  const displayBrightnessScale = displayBrightness / 100;
+  const displayBrightnessLift = Math.max(0, (displayBrightness - 100) / (DISPLAY_BRIGHTNESS_MAX - 100) * 0.22);
+  const displayBrightnessStyle = {
+    "--display-brightness": displayBrightnessScale.toFixed(2),
+    "--display-brightness-lift": displayBrightnessLift.toFixed(3),
+  };
+
   return (
-    <div className="shell">
+    <div className="shell" style={displayBrightnessStyle}>
       <div className="shell-noise" />
 
       <header className="topbar">
@@ -1341,6 +1391,19 @@ function App() {
         </div>
 
         <div className="menu-actions">
+          <label className="brightness-control">
+            <span>Light</span>
+            <input
+              aria-label="Display brightness"
+              type="range"
+              min={DISPLAY_BRIGHTNESS_MIN}
+              max={DISPLAY_BRIGHTNESS_MAX}
+              step={DISPLAY_BRIGHTNESS_STEP}
+              value={displayBrightness}
+              onChange={(event) => setDisplayBrightness(clampDisplayBrightness(event.target.value))}
+            />
+            <output>{displayBrightness}%</output>
+          </label>
           <button className="menu-button" onClick={requestNewSession} disabled={busy}>
             New
           </button>

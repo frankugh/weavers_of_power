@@ -146,6 +146,86 @@ function isCellInRange(x, y, range) {
   return x >= range.minX && x <= range.maxX && y >= range.minY && y <= range.maxY;
 }
 
+function calculateDungeonFitExtents(dungeon, roomIds) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  function includeCell(x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return;
+    }
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+
+  for (const room of dungeon?.rooms || []) {
+    if (!roomIds.has(room.room_id)) {
+      continue;
+    }
+    for (const cell of room.cells || []) {
+      includeCell(Number(cell[0]), Number(cell[1]));
+    }
+  }
+
+  Object.entries(dungeon?.linkedDoors || {}).forEach(([key, linkedRoomIds]) => {
+    if (!Array.isArray(linkedRoomIds) || !linkedRoomIds.some((roomId) => roomIds.has(roomId))) {
+      return;
+    }
+    const [x, y] = key.split(",").map(Number);
+    includeCell(x, y);
+  });
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    return null;
+  }
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: maxX - minX + 1,
+    height: maxY - minY + 1,
+  };
+}
+
+function getDungeonFitRoomIds(dungeon) {
+  const visibleRoomIds = new Set(dungeon?.visibleRoomIds || []);
+  if (!visibleRoomIds.size) {
+    return new Set();
+  }
+
+  const pcRoomIds = new Set((dungeon?.currentPcRoomIds || []).filter((roomId) => visibleRoomIds.has(roomId)));
+  if (!pcRoomIds.size) {
+    return visibleRoomIds;
+  }
+
+  const fitRoomIds = new Set(pcRoomIds);
+  Object.values(dungeon?.linkedDoors || {}).forEach((linkedRoomIds) => {
+    if (!Array.isArray(linkedRoomIds) || !linkedRoomIds.some((roomId) => pcRoomIds.has(roomId))) {
+      return;
+    }
+    linkedRoomIds.forEach((roomId) => {
+      if (visibleRoomIds.has(roomId)) {
+        fitRoomIds.add(roomId);
+      }
+    });
+  });
+  return fitRoomIds;
+}
+
+function getDungeonFitExtents(dungeon) {
+  const fitRoomIds = getDungeonFitRoomIds(dungeon);
+  if (!fitRoomIds.size) {
+    return null;
+  }
+  return calculateDungeonFitExtents(dungeon, fitRoomIds);
+}
+
 function buildDungeonRenderIndex(dungeon) {
   const tileChunks = new Map();
   const roomCellToRoom = new Map();
@@ -1674,7 +1754,7 @@ function BattleMapSurface({
   function handleFitDungeon() {
     const metrics = viewportMetricsOf(surfaceRef.current);
     viewportRef.current = metrics;
-    const extents = dungeon?.extents;
+    const extents = getDungeonFitExtents(dungeon);
     let nextCellSize = cellSizeRef.current;
     if (extents && Number(extents.width) > 0 && Number(extents.height) > 0) {
       const widthCells = Number(extents.width);

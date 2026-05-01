@@ -155,6 +155,15 @@ function mapPointForCell(viewport, x, y) {
   };
 }
 
+function expectedCameraForExtents(extents, cellSize = MAP_ZOOM.defaultSize) {
+  const center = cellToWorld((extents.minX + extents.maxX) / 2, (extents.minY + extents.maxY) / 2, cellSize);
+
+  return {
+    x: 400 - center.x,
+    y: 250 - center.y,
+  };
+}
+
 function pointerClickMapCell(x, y, pointerId = 1) {
   const viewport = getMapViewport();
   const point = mapPointForCell(viewport, x, y);
@@ -272,6 +281,7 @@ async function openAddUnitModal(user) {
 describe("App", () => {
   beforeEach(() => {
     window.history.pushState({}, "", "/");
+    window.localStorage.clear();
     global.fetch = vi.fn();
   });
 
@@ -297,6 +307,25 @@ describe("App", () => {
     await screen.findByText("Round 1");
 
     expect(window.location.search).toContain("sid=sid-123");
+  });
+
+  it("lets the user brighten the display and stores the preference", async () => {
+    renderWithSnapshot(buildSnapshot());
+
+    await screen.findByText("Battle Simulator");
+
+    const brightnessSlider = screen.getByRole("slider", { name: "Display brightness" });
+    expect(brightnessSlider).toHaveValue("115");
+
+    fireEvent.change(brightnessSlider, { target: { value: "145" } });
+
+    expect(brightnessSlider).toHaveValue("145");
+    expect(screen.getByText("145%")).toBeInTheDocument();
+    expect(document.querySelector(".shell")).toHaveStyle({
+      "--display-brightness": "1.45",
+      "--display-brightness-lift": "0.165",
+    });
+    expect(window.localStorage.getItem("weavers-display-brightness")).toBe("145");
   });
 
   it("renders initiative add controls and keeps main panel plus roster images visible", async () => {
@@ -2495,6 +2524,87 @@ describe("App", () => {
 
     expect(Number(viewport.dataset.cameraX)).toBeLessThan(0);
     expect(Number(viewport.dataset.cameraY)).toBeLessThan(0);
+  });
+
+  it("fits dungeon maps to visible rooms instead of the full dungeon", async () => {
+    const user = userEvent.setup();
+    const floor = { tile_type: "floor", door_open: false };
+    const door = { tile_type: "door", door_open: false };
+    const dungeon = buildDungeon({
+      tiles: {
+        "0,0": floor,
+        "1,0": floor,
+        "2,0": door,
+        "3,0": floor,
+        "40,0": floor,
+        "41,0": floor,
+      },
+      rooms: [
+        { room_id: "visible-near", cells: [[0, 0], [1, 0]] },
+        { room_id: "hidden-adjacent", cells: [[3, 0]] },
+        { room_id: "hidden-far", cells: [[40, 0], [41, 0]] },
+      ],
+      visibleRoomIds: ["visible-near"],
+      currentPcRoomIds: [],
+      linkedDoors: { "2,0": ["visible-near", "hidden-adjacent"] },
+      extents: { minX: 0, minY: 0, maxX: 41, maxY: 0, width: 42, height: 1 },
+    });
+
+    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })] }));
+
+    await screen.findByRole("button", { name: "Fit dungeon map" });
+    const viewport = getMapViewport();
+    await user.click(screen.getByRole("button", { name: "Fit dungeon map" }));
+
+    const expectedCamera = expectedCameraForExtents({ minX: 0, minY: 0, maxX: 2, maxY: 0 });
+    await waitFor(() => {
+      expect(Number(viewport.dataset.cameraX)).toBeCloseTo(expectedCamera.x);
+      expect(Number(viewport.dataset.cameraY)).toBeCloseTo(expectedCamera.y);
+    });
+  });
+
+  it("fits dungeon maps to PC rooms plus directly adjacent visible rooms", async () => {
+    const user = userEvent.setup();
+    const floor = { tile_type: "floor", door_open: false };
+    const door = { tile_type: "door", door_open: false };
+    const dungeon = buildDungeon({
+      tiles: {
+        "0,0": floor,
+        "1,0": floor,
+        "2,0": door,
+        "3,0": floor,
+        "4,0": floor,
+        "0,2": door,
+        "0,3": floor,
+        "40,0": floor,
+        "41,0": floor,
+      },
+      rooms: [
+        { room_id: "pc-room", cells: [[0, 0], [1, 0]] },
+        { room_id: "adjacent-visible", cells: [[3, 0], [4, 0]] },
+        { room_id: "adjacent-hidden", cells: [[0, 3]] },
+        { room_id: "visible-far", cells: [[40, 0], [41, 0]] },
+      ],
+      visibleRoomIds: ["pc-room", "adjacent-visible", "visible-far"],
+      currentPcRoomIds: ["pc-room"],
+      linkedDoors: {
+        "2,0": ["pc-room", "adjacent-visible"],
+        "0,2": ["pc-room", "adjacent-hidden"],
+      },
+      extents: { minX: 0, minY: 0, maxX: 41, maxY: 3, width: 42, height: 4 },
+    });
+
+    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })] }));
+
+    await screen.findByRole("button", { name: "Fit dungeon map" });
+    const viewport = getMapViewport();
+    await user.click(screen.getByRole("button", { name: "Fit dungeon map" }));
+
+    const expectedCamera = expectedCameraForExtents({ minX: 0, minY: 0, maxX: 4, maxY: 2 });
+    await waitFor(() => {
+      expect(Number(viewport.dataset.cameraX)).toBeCloseTo(expectedCamera.x);
+      expect(Number(viewport.dataset.cameraY)).toBeCloseTo(expectedCamera.y);
+    });
   });
 
   it("pinch zooms the map with two touch pointers", async () => {
