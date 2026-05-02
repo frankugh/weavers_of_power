@@ -37,6 +37,9 @@ function buildEnemy(overrides = {}) {
     current_draw_groups: [],
     current_draw_attacks: [],
     quick_attack_used: false,
+    power_draw_used: false,
+    is_ko: false,
+    wound_counts: null,
     last_draw_text: [],
     loot_rolled: false,
     rolled_loot: {},
@@ -875,6 +878,73 @@ describe("App", () => {
     expect(screen.getByText((_, node) => node?.textContent === "Mira gains 1 wound.")).toBeInTheDocument();
   });
 
+  it("shows player wound counts and confirms deck wound removal", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      toughness_current: 4,
+      toughness_max: 4,
+      power_base: 4,
+      wound_counts: { hand: 1, discard: 0, draw_pile: 1, total: 2 },
+    });
+    const afterDiscard = buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1"],
+      enemies: [{ ...player, wound_counts: { hand: 0, discard: 0, draw_pile: 1, total: 1 } }],
+    });
+    const afterRemove = buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1"],
+      enemies: [{ ...player, wound_counts: { hand: 0, discard: 0, draw_pile: 0, total: 0 } }],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "player-1",
+        order: ["player-1"],
+        enemies: [player],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/entities/player-1/wounds/discard" && requestOptions?.method === "POST") {
+            return jsonResponse(afterDiscard);
+          }
+          if (url === "/api/battle/sessions/sid-123/entities/player-1/wounds/remove" && requestOptions?.method === "POST") {
+            return jsonResponse(afterRemove);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Mira");
+    expect(screen.getByText("Wounds")).toBeInTheDocument();
+    expect(screen.getByText("Hand").closest(".loot-block")).toHaveTextContent("1");
+    expect(screen.getByText("Total").closest(".loot-block")).toHaveTextContent("2");
+
+    await user.click(screen.getByRole("button", { name: "Discard Wound" }));
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/player-1/wounds/discard",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+
+    await user.click(screen.getByRole("button", { name: "Remove Wound" }));
+    expect(screen.getByText("Remove Wound From Deck")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Remove from deck" }));
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/player-1/wounds/remove",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ confirmDeck: true }) }),
+      );
+    });
+  });
+
   it("disables quick attack after it has been used for the current draw", async () => {
     const user = userEvent.setup();
     const attacker = buildEnemy({
@@ -981,7 +1051,7 @@ describe("App", () => {
     expect(screen.queryByRole("complementary", { name: "Draw Card Inspector" })).not.toBeInTheDocument();
   });
 
-  it("keeps player draw enabled and renders grouped player draws", async () => {
+  it("disables player power draw after use and keeps Draw X available", async () => {
     const player = buildEnemy({
       instance_id: "player-1",
       template_id: "player",
@@ -994,16 +1064,9 @@ describe("App", () => {
       armor_max: 1,
       guard_current: 1,
       power_base: 4,
-      current_draw_text: ["Martial energy success"],
-      current_draw_groups: [
-        {
-          label: "Draw 1",
-          items: ["Martial energy success"],
-          summary: { outcomes: { success: 1, fate: 0, fail: 0 }, energies: { Martial: 1 } },
-        },
-      ],
+      wound_counts: { hand: 0, discard: 0, draw_pile: 0, total: 0 },
     });
-    const nextSnapshot = buildSnapshot({
+    const drawnSnapshot = buildSnapshot({
       selectedId: "player-1",
       activeTurnId: "player-1",
       turnInProgress: true,
@@ -1011,7 +1074,28 @@ describe("App", () => {
       enemies: [
         {
           ...player,
-          current_draw_text: ["Martial energy success", "Elemental energy fail"],
+          power_draw_used: true,
+          current_draw_text: ["Martial energy success"],
+          current_draw_groups: [
+            {
+              label: "Draw 1",
+              items: ["Martial energy success"],
+              summary: { outcomes: { success: 1, fate: 0, fail: 0 }, energies: { Martial: 1 } },
+            },
+          ],
+        },
+      ],
+    });
+    const exactSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "player-1",
+      turnInProgress: true,
+      order: ["player-1"],
+      enemies: [
+        {
+          ...player,
+          power_draw_used: true,
+          current_draw_text: ["Martial energy success", "Wound"],
           current_draw_groups: [
             {
               label: "Draw 1",
@@ -1020,10 +1104,11 @@ describe("App", () => {
             },
             {
               label: "Draw 2",
-              items: ["Elemental energy fail"],
-              summary: { outcomes: { success: 0, fate: 0, fail: 1 }, energies: { Elemental: 1 } },
+              items: ["Wound"],
+              summary: { outcomes: { success: 0, fate: 0, fail: 1 }, energies: {} },
             },
           ],
+          wound_counts: { hand: 1, discard: 0, draw_pile: 0, total: 1 },
         },
       ],
     });
@@ -1032,14 +1117,17 @@ describe("App", () => {
       buildSnapshot({
         selectedId: "player-1",
         activeTurnId: "player-1",
-        turnInProgress: true,
+        turnInProgress: false,
         order: ["player-1"],
         enemies: [player],
       }),
       {
         extraFetch: (url, requestOptions) => {
           if (url === "/api/battle/sessions/sid-123/turn/draw" && requestOptions?.method === "POST") {
-            return jsonResponse(nextSnapshot);
+            return jsonResponse(drawnSnapshot);
+          }
+          if (url === "/api/battle/sessions/sid-123/turn/draw-exact" && requestOptions?.method === "POST") {
+            return jsonResponse(exactSnapshot);
           }
           return undefined;
         },
@@ -1048,7 +1136,7 @@ describe("App", () => {
 
     await findMapToken("Mira");
     expect(screen.getByRole("button", { name: "Draw" })).toBeEnabled();
-    vi.useFakeTimers();
+    expect(screen.getByRole("button", { name: "Draw X" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Draw" }));
     await act(async () => {
       await Promise.resolve();
@@ -1060,27 +1148,24 @@ describe("App", () => {
       "/api/battle/sessions/sid-123/turn/draw",
       expect.objectContaining({ method: "POST" }),
     );
-    expect(screen.getByRole("button", { name: "Draw" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Draw" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Draw X" })).toBeEnabled();
     const reveal = screen.getByRole("complementary", { name: "Draw Card Inspector" });
-    expect(within(reveal).getByText("Elemental energy fail")).toBeInTheDocument();
-    expect(within(reveal).getByText("fail 1")).toBeInTheDocument();
-    expect(within(reveal).getByText("Elemental 1")).toBeInTheDocument();
-    expect(within(reveal).getByText("fail 1").closest(".draw-summary-row")).not.toBe(
-      within(reveal).getByText("Elemental 1").closest(".draw-summary-row"),
-    );
-    expect(within(reveal).queryByText("Martial energy success")).not.toBeInTheDocument();
-    act(() => {
-      vi.advanceTimersByTime(100);
+    expect(within(reveal).getByText("Martial energy success")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Draw X" }));
+    fireEvent.click(screen.getByRole("button", { name: "1" }));
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/turn/draw-exact",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ count: 1 }) }),
+      );
     });
-    expect(reveal).toHaveAttribute("data-draw-reveal-phase", "hold");
-    act(() => {
-      vi.advanceTimersByTime(10000);
-    });
-    expect(reveal).toHaveAttribute("data-draw-reveal-phase", "hold");
-    fireEvent.pointerDown(reveal);
-    expect(reveal).toHaveAttribute("data-draw-reveal-phase", "hold");
-    fireEvent.pointerDown(document.body);
-    expect(reveal).toHaveAttribute("data-draw-reveal-phase", "settle");
+    expect(screen.getByText("Wounds")).toBeInTheDocument();
+    expect(screen.getByText("Hand").closest(".loot-block")).toHaveTextContent("1");
+    const exactReveal = screen.getByRole("complementary", { name: "Draw Card Inspector" });
+    expect(within(exactReveal).getByText("Wound")).toBeInTheDocument();
+    expect(within(exactReveal).getByText("fail 1")).toBeInTheDocument();
     const draw1 = screen.getByText("Draw 1");
     const draw2 = screen.getByText("Draw 2");
     expect(draw2.compareDocumentPosition(draw1) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -1184,6 +1269,81 @@ describe("App", () => {
     const reveal = await screen.findByRole("complementary", { name: "Draw Card Inspector" });
     expect(within(reveal).getByText("Redraw")).toBeInTheDocument();
     expect(within(reveal).getByText("Guard 3")).toBeInTheDocument();
+  });
+
+  it("posts player redraw from the More menu after Draw of Power", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      toughness_current: 4,
+      toughness_max: 4,
+      power_base: 4,
+      power_draw_used: true,
+      current_draw_text: ["Martial energy success"],
+      current_draw_groups: [
+        {
+          label: "Draw 1",
+          items: ["Martial energy success"],
+          summary: { outcomes: { success: 1, fate: 0, fail: 0 }, energies: { Martial: 1 } },
+        },
+      ],
+      wound_counts: { hand: 1, discard: 0, draw_pile: 0, total: 1 },
+    });
+    const redrawnSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "player-1",
+      turnInProgress: true,
+      order: ["player-1"],
+      enemies: [
+        {
+          ...player,
+          current_draw_text: ["Elemental energy fail"],
+          current_draw_groups: [
+            {
+              label: "Draw 1",
+              items: ["Elemental energy fail"],
+              summary: { outcomes: { success: 0, fate: 0, fail: 1 }, energies: { Elemental: 1 } },
+            },
+          ],
+        },
+      ],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "player-1",
+        activeTurnId: "player-1",
+        turnInProgress: true,
+        order: ["player-1"],
+        enemies: [player],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/turn/redraw" && requestOptions?.method === "POST") {
+            return jsonResponse(redrawnSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Mira");
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Redraw" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/turn/redraw",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    const reveal = await screen.findByRole("complementary", { name: "Draw Card Inspector" });
+    expect(within(reveal).getByText("Redraw")).toBeInTheDocument();
+    expect(within(reveal).getByText("Elemental energy fail")).toBeInTheDocument();
   });
 
   it("renders separate selected and active turn indicators when different units are involved", async () => {

@@ -88,6 +88,10 @@ class EnemyInstance:
     quick_attack_used: bool = False
     draw_groups: list[list[str]] = field(default_factory=list)
     pending_reshuffle: bool = False
+    draw_bonus_pending: int = 0
+    actions_used: int = 0
+    power_draw_used: bool = False
+    is_ko: bool = False
 
     statuses: dict[str, dict] = field(default_factory=dict)
 

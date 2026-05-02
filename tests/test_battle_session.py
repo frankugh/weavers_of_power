@@ -607,7 +607,7 @@ class BattleSessionTests(unittest.TestCase):
 
         self.assertEqual(target.toughness_current, 3)
         self.assertEqual(result["woundEvents"][0]["wounds"], 1)
-        self.assertEqual(target.deck_state.discard_pile, [WOUND_CARD_ID])
+        self.assertEqual(target.deck_state.hand, [WOUND_CARD_ID])
 
     def test_quick_attack_reports_unsupported_modifiers_and_manual_effects(self) -> None:
         session = self.context.create_session("quick-unsupported")
@@ -858,7 +858,7 @@ class BattleSessionTests(unittest.TestCase):
         session.apply_heal_to_selected(toughness=1, armor=0, magic_armor=0, guard=0)
         self.assertEqual(player.toughness_current, 4)
 
-    def test_player_heal_can_overheal_to_twice_toughness_max(self) -> None:
+    def test_player_heal_clamps_to_toughness_max(self) -> None:
         session = self.context.create_session("player-overheal")
         session.add_player(name="Mira", toughness=3, armor=0, magic_armor=0, power=1, movement=5)
         player = session.state.enemies[session.selected_id]
@@ -866,11 +866,11 @@ class BattleSessionTests(unittest.TestCase):
 
         session.apply_heal_to_selected(toughness=3, armor=0, magic_armor=0, guard=0)
 
-        self.assertEqual(player.toughness_current, 5)
+        self.assertEqual(player.toughness_current, 3)
 
         session.apply_heal_to_selected(toughness=3, armor=0, magic_armor=0, guard=0)
 
-        self.assertEqual(player.toughness_current, 6)
+        self.assertEqual(player.toughness_current, 3)
 
     def test_enemy_heal_still_clamps_to_toughness_max(self) -> None:
         session = self.context.create_session("enemy-heal-cap")
@@ -899,10 +899,117 @@ class BattleSessionTests(unittest.TestCase):
         )
 
         self.assertEqual(player.toughness_current, 4)
-        self.assertEqual(player.deck_state.discard_pile, [WOUND_CARD_ID, WOUND_CARD_ID])
+        self.assertEqual(player.deck_state.hand, [WOUND_CARD_ID, WOUND_CARD_ID])
         self.assertEqual(result["woundEvents"][0]["wounds"], 2)
         self.assertEqual(result["woundEvents"][0]["toughnessAfter"], 4)
         self.assertIn("2 wounds added", session.combat_log[0])
+        payload = session.snapshot()["enemies"][0]
+        self.assertEqual(payload["wound_counts"], {"hand": 2, "discard": 0, "draw_pile": 0, "total": 2})
+
+    def test_player_draw_of_power_is_reduced_by_hand_wounds(self) -> None:
+        session = self.context.create_session("player-wound-draw")
+        session.add_player(name="Mira", power=4)
+        player = session.state.enemies[session.selected_id]
+        player.deck_state.hand = [WOUND_CARD_ID]
+        player.deck_state.discard_pile = []
+        player.deck_state.draw_pile = [
+            "hf_martial_1_success",
+            "hf_elemental_1_fail",
+            "hf_void_success",
+            "hf_radiance_1_success",
+        ]
+
+        session.draw_turn()
+
+        self.assertEqual(
+            player.deck_state.hand,
+            [WOUND_CARD_ID, "hf_martial_1_success", "hf_elemental_1_fail", "hf_void_success"],
+        )
+        self.assertEqual(session.visible_draw_for(player), ["hf_martial_1_success", "hf_elemental_1_fail", "hf_void_success"])
+        self.assertTrue(player.power_draw_used)
+        payload = session.snapshot()["enemies"][0]
+        self.assertEqual(payload["wound_counts"], {"hand": 1, "discard": 0, "draw_pile": 0, "total": 1})
+
+    def test_player_draw_exact_ignores_hand_wounds_and_drawn_wounds_count_as_fails(self) -> None:
+        session = self.context.create_session("player-draw-x-wound")
+        session.add_player(name="Mira", power=4)
+        player = session.state.enemies[session.selected_id]
+        player.deck_state.hand = [WOUND_CARD_ID]
+        player.deck_state.discard_pile = []
+        player.deck_state.draw_pile = [WOUND_CARD_ID, "hf_martial_1_success"]
+
+        session.draw_exact_turn(2)
+
+        self.assertEqual(player.deck_state.hand, [WOUND_CARD_ID, WOUND_CARD_ID, "hf_martial_1_success"])
+        self.assertFalse(player.power_draw_used)
+        payload = session.snapshot()["enemies"][0]
+        self.assertEqual(payload["current_draw_text"], ["Wound", "Martial energy success"])
+        self.assertEqual(payload["current_draw_summary"]["outcomes"], {"success": 1, "fate": 0, "fail": 1})
+        self.assertEqual(payload["wound_counts"], {"hand": 2, "discard": 0, "draw_pile": 0, "total": 2})
+
+    def test_player_wounds_persist_in_hand_after_turn_cleanup(self) -> None:
+        session = self.context.create_session("player-wound-cleanup")
+        session.add_player(name="Mira", power=4)
+        player = session.state.enemies[session.selected_id]
+        player.deck_state.draw_pile = [WOUND_CARD_ID, "hf_martial_1_success"]
+        player.deck_state.discard_pile = []
+        player.deck_state.hand = []
+
+        session.draw_exact_turn(2)
+        session.next_turn()
+        session.start_new_round()
+
+        self.assertEqual(player.deck_state.hand, [WOUND_CARD_ID])
+        self.assertEqual(player.deck_state.discard_pile, ["hf_martial_1_success"])
+        self.assertEqual(session.visible_draw_for(player), [])
+
+    def test_player_wound_actions_discard_remove_and_confirm_deck_removal(self) -> None:
+        session = self.context.create_session("player-wound-actions")
+        session.add_player(name="Mira", power=4)
+        player_id = session.selected_id
+        player = session.state.enemies[player_id]
+        player.deck_state.hand = [WOUND_CARD_ID, WOUND_CARD_ID]
+        player.deck_state.discard_pile = [WOUND_CARD_ID]
+        player.deck_state.draw_pile = [WOUND_CARD_ID, "hf_martial_1_success"]
+
+        session.discard_player_wound(player_id)
+        self.assertEqual(player.deck_state.hand, [WOUND_CARD_ID])
+        self.assertEqual(player.deck_state.discard_pile, [WOUND_CARD_ID, WOUND_CARD_ID])
+
+        session.remove_player_wound(player_id)
+        self.assertEqual(player.deck_state.hand, [])
+        self.assertEqual(player.deck_state.discard_pile, [WOUND_CARD_ID, WOUND_CARD_ID])
+        session.remove_player_wound(player_id)
+        session.remove_player_wound(player_id)
+        self.assertEqual(player.deck_state.discard_pile, [])
+
+        with self.assertRaisesRegex(ValueError, "requires confirmation"):
+            session.remove_player_wound(player_id)
+        session.remove_player_wound(player_id, confirm_deck=True)
+        self.assertEqual(player.deck_state.draw_pile, ["hf_martial_1_success"])
+
+    def test_player_ko_from_wounds_clears_only_after_all_hand_wounds_leave_hand(self) -> None:
+        session = self.context.create_session("player-wound-ko")
+        session.add_player(name="Mira", power=1)
+        player_id = session.selected_id
+        player = session.state.enemies[player_id]
+        player.deck_state.hand = [WOUND_CARD_ID, WOUND_CARD_ID]
+        player.deck_state.discard_pile = []
+        player.deck_state.draw_pile = ["hf_martial_1_success"]
+
+        session.draw_turn()
+
+        self.assertTrue(player.is_ko)
+        self.assertTrue(session.is_down(player))
+        payload = session.snapshot()["enemies"][0]
+        self.assertTrue(payload["is_ko"])
+        self.assertTrue(payload["is_down"])
+
+        session.discard_player_wound(player_id)
+        self.assertTrue(player.is_ko)
+        session.discard_player_wound(player_id)
+        self.assertFalse(player.is_ko)
+        self.assertFalse(session.is_down(player))
 
     def test_delete_manual_save_removes_file_and_backup(self) -> None:
         session = self.context.create_session("manual-delete")
@@ -1079,7 +1186,7 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(restored.core_deck_id, "human_fighter_lvl1")
         self.assertEqual(len(restored.deck_state.draw_pile), 26)
 
-    def test_player_can_draw_multiple_groups_in_one_turn(self) -> None:
+    def test_player_can_draw_exact_after_draw_of_power_in_one_turn(self) -> None:
         session = self.context.create_session("player-multiple-draw")
         session.add_player(name="Mira")
         player = session.state.enemies[session.selected_id]
@@ -1097,7 +1204,7 @@ class BattleSessionTests(unittest.TestCase):
         player.deck_state.hand = []
 
         session.draw_turn()
-        session.draw_turn()
+        session.draw_exact_turn(4)
 
         self.assertTrue(session.turn_in_progress)
         self.assertEqual(session.active_turn_id, player.instance_id)

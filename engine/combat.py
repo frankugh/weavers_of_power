@@ -139,7 +139,7 @@ def apply_attack(
     if reset_toughness_on_deplete:
         wounds_added = _apply_toughness_damage_with_resets(enemy, dmg_to_hp)
         if wounds_added:
-            enemy.deck_state.discard_pile.extend([WOUND_CARD_ID] * wounds_added)
+            enemy.deck_state.hand.extend([WOUND_CARD_ID] * wounds_added)
     else:
         enemy.toughness_current = max(0, toughness_b - dmg_to_hp)
     enemy.guard_current = guard_after

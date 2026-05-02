@@ -68,6 +68,22 @@ class RollInitiativeRequest(BaseModel):
     modes: dict[str, str] = Field(default_factory=dict)
 
 
+class DrawExactRequest(BaseModel):
+    count: int = Field(default=1, ge=1)
+
+
+class StrengthenRequest(BaseModel):
+    x: int = Field(default=1, ge=1)
+
+
+class HelpRequest(BaseModel):
+    targetId: str
+
+
+class RemoveWoundRequest(BaseModel):
+    confirmDeck: bool = False
+
+
 class AttackRequest(BaseModel):
     damage: int = Field(default=0, ge=0)
     modifiers: list[AttackMod] = Field(default_factory=list)
@@ -232,9 +248,41 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
             lambda session: session.move_entity_with_movement(instance_id, request.x, request.y, dash=request.dash),
         )
 
+    @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/wounds/discard")
+    def discard_player_wound(sid: str, instance_id: str):
+        return run_mutation(sid, lambda session: session.discard_player_wound(instance_id))
+
+    @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/wounds/remove")
+    def remove_player_wound(sid: str, instance_id: str, request: RemoveWoundRequest):
+        return run_mutation(sid, lambda session: session.remove_player_wound(instance_id, confirm_deck=request.confirmDeck))
+
     @api_app.post("/api/battle/sessions/{sid}/turn/draw")
     def draw_turn(sid: str):
         return run_mutation(sid, lambda session: session.draw_turn())
+
+    @api_app.post("/api/battle/sessions/{sid}/turn/draw-exact")
+    def draw_exact_turn(sid: str, request: DrawExactRequest):
+        return run_mutation(sid, lambda session: session.draw_exact_turn(request.count))
+
+    @api_app.post("/api/battle/sessions/{sid}/action/channel")
+    def channel_pc(sid: str):
+        return run_mutation(sid, lambda session: session.channel_pc())
+
+    @api_app.post("/api/battle/sessions/{sid}/action/strengthen")
+    def strengthen_pc(sid: str, request: StrengthenRequest):
+        return run_mutation(sid, lambda session: session.strengthen_pc(request.x))
+
+    @api_app.post("/api/battle/sessions/{sid}/action/shed")
+    def shed_wound(sid: str):
+        return run_mutation(sid, lambda session: session.shed_wound())
+
+    @api_app.post("/api/battle/sessions/{sid}/action/disengage")
+    def disengage_pc(sid: str):
+        return run_mutation(sid, lambda session: session.disengage_pc())
+
+    @api_app.post("/api/battle/sessions/{sid}/action/help")
+    def help_pc(sid: str, request: HelpRequest):
+        return run_mutation(sid, lambda session: session.help_pc(request.targetId))
 
     @api_app.post("/api/battle/sessions/{sid}/turn/redraw")
     def redraw_turn(sid: str):

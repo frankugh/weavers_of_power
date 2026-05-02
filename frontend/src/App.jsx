@@ -262,12 +262,18 @@ function App() {
   const [saves, setSaves] = useState([]);
   const [attackForm, setAttackForm] = useState(EMPTY_ATTACK_FORM);
   const [healForm, setHealForm] = useState(EMPTY_HEAL_FORM);
+  const [drawExactCount, setDrawExactCount] = useState(1);
+  const [strengthenCount, setStrengthenCount] = useState(1);
+  const [actionWarningAcknowledged, setActionWarningAcknowledged] = useState(false);
+  const [pendingActionFn, setPendingActionFn] = useState(null);
+  const [helpTargets, setHelpTargets] = useState([]);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [unitContextMenu, setUnitContextMenu] = useState(null);
   const [previewEntityId, setPreviewEntityId] = useState(null);
   const [drawReveal, setDrawReveal] = useState(null);
   const [drawDetail, setDrawDetail] = useState(null);
   const [woundNotice, setWoundNotice] = useState(null);
+  const [pendingWoundRemove, setPendingWoundRemove] = useState(null);
   const [customForm, setCustomForm] = useState({
     name: "Custom",
     toughness: 10,
@@ -445,6 +451,11 @@ function App() {
   }, [snapshot?.pendingNewRound]);
 
   useEffect(() => {
+    setActionWarningAcknowledged(false);
+    setPendingActionFn(null);
+  }, [snapshot?.activeTurnId]);
+
+  useEffect(() => {
     const notice = snapshot?.turnSkipNotice;
     if (notice && notice.length > 0) {
       setNotice(`Surprised and skipped: ${notice.join(", ")}`);
@@ -500,6 +511,9 @@ function App() {
     activeEntity && activeEntity.instance_id !== selectedEntity?.instance_id ? activeEntity : null;
   const isPlayerSelected = Boolean(selectedEntity?.is_player);
   const selectedIsDown = Boolean(selectedEntity?.is_down);
+  const selectedIsKo = Boolean(selectedEntity?.is_ko);
+  const selectedPowerDrawUsed = Boolean(selectedEntity?.power_draw_used);
+  const selectedWoundCounts = selectedEntity?.wound_counts || { hand: 0, discard: 0, draw_pile: 0, total: 0 };
   const movementState = snapshot?.movementState || null;
   const dungeon = snapshot?.dungeon || null;
   const selectedIsActive = Boolean(selectedEntity && snapshot?.activeTurnId === selectedEntity.instance_id);
@@ -579,15 +593,40 @@ function App() {
   const canDraw = Boolean(
     selectedEntity &&
       !selectedIsDown &&
-      (isPlayerSelected || !snapshot.turnInProgress) &&
-      selectedIsActive,
+      selectedIsActive &&
+      (isPlayerSelected ? !selectedPowerDrawUsed : !snapshot.turnInProgress),
   );
+  const canDrawExact = Boolean(selectedEntity && isPlayerSelected && !selectedIsDown && selectedIsActive);
+  const playerActionsUsed = (selectedEntity?.actions_used ?? 0) + (snapshot?.movementState?.dashUsed ? 1 : 0);
+  const pcEntitiesInRange = isPlayerSelected && selectedEntity?.grid_x != null
+    ? orderedEnemies.filter(
+        (e) =>
+          e.is_player &&
+          e.instance_id !== selectedEntity.instance_id &&
+          !e.is_down &&
+          e.grid_x != null &&
+          e.grid_y != null &&
+          Math.max(
+            Math.abs(e.grid_x - selectedEntity.grid_x),
+            Math.abs(e.grid_y - selectedEntity.grid_y),
+          ) <= 1,
+      )
+    : [];
+  const canHelp = isPlayerSelected && !selectedIsDown && pcEntitiesInRange.length > 0;
+  const canShed = isPlayerSelected && !selectedIsDown && (selectedEntity?.wounds_in_hand ?? 0) > 0;
   const canRedraw = Boolean(
     selectedEntity &&
-      !isPlayerSelected &&
       !selectedIsDown &&
       snapshot.turnInProgress &&
       snapshot?.activeTurnId === selectedEntity.instance_id,
+  ) && (!isPlayerSelected || selectedPowerDrawUsed);
+  const canDiscardWound = Boolean(isPlayerSelected && Number(selectedWoundCounts.hand) > 0);
+  const canRemoveWound = Boolean(isPlayerSelected && Number(selectedWoundCounts.total) > 0);
+  const removeWoundNeedsDeckConfirm = Boolean(
+    isPlayerSelected &&
+      Number(selectedWoundCounts.hand) === 0 &&
+      Number(selectedWoundCounts.discard) === 0 &&
+      Number(selectedWoundCounts.draw_pile) > 0,
   );
   const canAttackOrHeal = Boolean(visibleSelectedEntity && !selectedIsDown);
   const selectedTargetNoun = isPlayerSelected ? "player" : "enemy";
@@ -637,6 +676,7 @@ function App() {
     setDrawDetail(null);
     setPreviewEntityId(null);
     setWoundNotice(null);
+    setPendingWoundRemove(null);
   }
 
   function showDrawReveal(payload, kind) {
@@ -1206,6 +1246,84 @@ function App() {
     }
   }
 
+  async function handleDrawExact(explicitCount) {
+    const n = explicitCount !== undefined ? explicitCount : Number(drawExactCount);
+    closeModal();
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/turn/draw-exact`,
+      {
+        method: "POST",
+        body: JSON.stringify({ count: n }),
+      },
+      `Drew ${n} card(s)`,
+    );
+    if (payload) {
+      showDrawReveal(payload, "draw");
+    }
+  }
+
+  async function handleChannel() {
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/action/channel`,
+      { method: "POST" },
+      "Channeled",
+    );
+  }
+
+  async function handleStrengthen(explicitX) {
+    const x = explicitX !== undefined ? explicitX : Number(strengthenCount);
+    closeModal();
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/action/strengthen`,
+      { method: "POST", body: JSON.stringify({ x }) },
+      `Strengthened +${x}`,
+    );
+  }
+
+  async function handleShed() {
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/action/shed`,
+      { method: "POST" },
+      "Wound shed",
+    );
+  }
+
+  async function handleDisengage() {
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/action/disengage`,
+      { method: "POST" },
+      "Disengaged",
+    );
+    setModal("disengage-info");
+  }
+
+  async function handleHelp(targetId) {
+    closeModal();
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/action/help`,
+      { method: "POST", body: JSON.stringify({ targetId }) },
+      "Help given",
+    );
+  }
+
+  function withActionCheck(fn) {
+    if (isPlayerSelected && playerActionsUsed >= 2 && !actionWarningAcknowledged) {
+      setPendingActionFn(() => fn);
+      setModal("action-warning");
+    } else {
+      fn();
+    }
+  }
+
+  function handleConfirmActionWarning() {
+    setActionWarningAcknowledged(true);
+    closeModal();
+    if (pendingActionFn) {
+      pendingActionFn();
+      setPendingActionFn(null);
+    }
+  }
+
   async function handleTurnAdvance() {
     if (!hasActiveTurn && !pendingNewRound && hasStartableUnit && !initiativeRolledForTarget) {
       setInitiativeOpenReason("start");
@@ -1383,6 +1501,35 @@ function App() {
     if (payload) {
       closeModal();
       setHealForm(EMPTY_HEAL_FORM);
+    }
+  }
+
+  async function handleDiscardWound() {
+    if (!selectedEntity) return;
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/entities/${selectedEntity.instance_id}/wounds/discard`,
+      { method: "POST" },
+      "Wound discarded",
+    );
+  }
+
+  async function handleRemoveWound({ confirmDeck = false } = {}) {
+    if (!selectedEntity) return;
+    if (!confirmDeck && removeWoundNeedsDeckConfirm) {
+      setPendingWoundRemove({ instanceId: selectedEntity.instance_id, name: selectedEntity.name });
+      setModal("remove-wound-confirm");
+      return;
+    }
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/entities/${selectedEntity.instance_id}/wounds/remove`,
+      {
+        method: "POST",
+        body: JSON.stringify({ confirmDeck }),
+      },
+      "Wound removed",
+    );
+    if (payload && modal === "remove-wound-confirm") {
+      closeModal();
     }
   }
 
@@ -1754,6 +1901,89 @@ function App() {
                 >
                   Draw
                 </button>
+                {canDrawExact && (
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      withActionCheck(() => { setDrawExactCount(1); setModal("draw-exact"); });
+                    }}
+                    disabled={busy}
+                  >
+                    Draw X
+                  </button>
+                )}
+                {isPlayerSelected && !selectedIsDown && (
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      withActionCheck(handleChannel);
+                    }}
+                    disabled={busy}
+                    title={`Draw bonus pending: ${selectedEntity?.draw_bonus_pending ?? 0}/3`}
+                  >
+                    Channel{selectedEntity?.draw_bonus_pending > 0 ? ` (+${selectedEntity.draw_bonus_pending})` : ""}
+                  </button>
+                )}
+                {isPlayerSelected && !selectedIsDown && (
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      withActionCheck(() => { setStrengthenCount(1); setModal("strengthen"); });
+                    }}
+                    disabled={busy}
+                  >
+                    Strengthen
+                  </button>
+                )}
+                {canShed && (
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      withActionCheck(handleShed);
+                    }}
+                    disabled={busy}
+                    title={`${selectedEntity?.wounds_in_hand ?? 0} wound(s) in hand`}
+                  >
+                    Shed
+                  </button>
+                )}
+                {isPlayerSelected && !selectedIsDown && (
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      withActionCheck(handleDisengage);
+                    }}
+                    disabled={busy}
+                  >
+                    Disengage
+                  </button>
+                )}
+                {isPlayerSelected && !selectedIsDown && (
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      if (pcEntitiesInRange.length === 1) {
+                        withActionCheck(() => handleHelp(pcEntitiesInRange[0].instance_id));
+                      } else {
+                        withActionCheck(() => { setHelpTargets(pcEntitiesInRange); setModal("help-select"); });
+                      }
+                    }}
+                    disabled={!canHelp || busy}
+                  >
+                    Help
+                  </button>
+                )}
+                {isPlayerSelected && selectedIsActive && (
+                  <span className="action-counter" title="Gebruikte acties deze beurt (max 2 voor waarschuwing)">
+                    {playerActionsUsed}/2 acties
+                  </span>
+                )}
                 <button
                   className="primary-button"
                   onClick={() => {
@@ -2007,7 +2237,7 @@ function App() {
                         className="state-badge-compact"
                       />
                       {selectedEntity.is_player ? <span className="badge">Player</span> : <span className="badge badge-enemy">Enemy</span>}
-                      {selectedEntity.is_down ? <span className="badge badge-down">Down</span> : null}
+                      {selectedEntity.is_down ? <span className="badge badge-down">{selectedIsKo ? "KO" : "Down"}</span> : null}
                     </div>
                     <div className="selected-meta-row">
                       {!selectedEntity.is_player && selectedEntity.status_text && selectedEntity.status_text !== "-" ? (
@@ -2069,6 +2299,35 @@ function App() {
 
                   {selectedEntity.toughness_max > 0 ? (
                     <ProgressBar label="Vitality" value={percent(selectedEntity.toughness_current, selectedEntity.toughness_max)} compact />
+                  ) : null}
+                  {selectedEntity.is_player ? (
+                    <div className="unit-inspector-section wound-inspector" aria-label="Player wound counts">
+                      <div className="selected-draw-label">Wounds</div>
+                      <div className="wound-count-grid">
+                        <LootBlock label="Hand" value={String(selectedWoundCounts.hand || 0)} />
+                        <LootBlock label="Total" value={String(selectedWoundCounts.total || 0)} />
+                        <LootBlock label="Discard" value={String(selectedWoundCounts.discard || 0)} />
+                        <LootBlock label="Deck" value={String(selectedWoundCounts.draw_pile || 0)} />
+                      </div>
+                      <div className="wound-action-row">
+                        <button
+                          className="secondary-button wound-action-button"
+                          type="button"
+                          onClick={handleDiscardWound}
+                          disabled={!canDiscardWound || busy}
+                        >
+                          Discard Wound
+                        </button>
+                        <button
+                          className="secondary-button wound-action-button"
+                          type="button"
+                          onClick={() => handleRemoveWound()}
+                          disabled={!canRemoveWound || busy}
+                        >
+                          Remove Wound
+                        </button>
+                      </div>
+                    </div>
                   ) : null}
                   {!selectedEntity.is_player && selectedStatuses.length ? (
                     <div className="selected-statuses">
@@ -2518,6 +2777,33 @@ function App() {
             </div>
           </div>
         ) : null}
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "remove-wound-confirm" && Boolean(pendingWoundRemove)}
+        title="Remove Wound From Deck"
+        subtitle="This normally should not happen during combat."
+        onClose={closeModal}
+        closeOnOutsideClick={false}
+      >
+        <div className="panel-body modal-form">
+          <div className="subtle-copy">
+            {pendingWoundRemove ? `Confirm removing one wound from ${pendingWoundRemove.name}'s draw pile.` : ""}
+          </div>
+          <div className="modal-actions">
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => handleRemoveWound({ confirmDeck: true })}
+              disabled={busy}
+            >
+              Remove from deck
+            </button>
+            <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
       </ModalShell>
 
       <ModalShell
@@ -3026,6 +3312,153 @@ function App() {
             <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
               Close
             </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "action-warning"}
+        title="Meer dan 2 acties"
+        subtitle="Je gebruikt al je 3e actie deze beurt. Wil je doorgaan?"
+        onClose={closeModal}
+        closeOnOutsideClick={false}
+      >
+        <div className="panel-body modal-form">
+          <div className="modal-actions">
+            <button className="primary-button" type="button" onClick={handleConfirmActionWarning} disabled={busy}>
+              Doorgaan
+            </button>
+            <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
+              Annuleer
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "disengage-info"}
+        title="Disengage"
+        onClose={closeModal}
+      >
+        <div className="panel-body modal-form">
+          <p className="subtle-copy">
+            {selectedEntity?.name ?? "De speler"} mag deze beurt vrij bewegen zonder opportunity attacks uit te lokken.
+          </p>
+          <div className="modal-actions">
+            <button className="primary-button" type="button" onClick={closeModal}>
+              Begrepen
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "help-select"}
+        title="Help"
+        subtitle="Kies welke speler je helpt."
+        onClose={closeModal}
+      >
+        <div className="panel-body modal-form">
+          {helpTargets.map((target) => (
+            <button
+              key={target.instance_id}
+              className="secondary-button"
+              type="button"
+              onClick={() => handleHelp(target.instance_id)}
+              disabled={busy}
+            >
+              {target.name}
+            </button>
+          ))}
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "draw-exact"}
+        title="Draw X kaarten"
+        subtitle="Race- en class-kaarten trekken niet door."
+        onClose={closeModal}
+      >
+        <div className="panel-body">
+          <div className="draw-exact-row">
+            <div className="draw-exact-presets">
+              {[1, 2, 3, 4, 5, 6, 7].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  className="primary-button draw-exact-preset-btn"
+                  onClick={() => handleDrawExact(n)}
+                  disabled={busy}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <span className="draw-exact-sep" aria-hidden="true" />
+            <form
+              className="draw-exact-custom"
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleDrawExact();
+              }}
+            >
+              <input
+                className="draw-exact-input"
+                type="number"
+                min="1"
+                max="99"
+                value={drawExactCount}
+                onChange={(e) => setDrawExactCount(Number(e.target.value))}
+              />
+              <button className="primary-button" type="submit" disabled={busy}>
+                Draw
+              </button>
+            </form>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "strengthen"}
+        title="Strengthen"
+        subtitle={`+1 toughness per punt, +1 draw bonus per toughness gewonnen (max +3 totaal).${selectedEntity?.draw_bonus_pending > 0 ? ` Al ${selectedEntity.draw_bonus_pending} bonus in reserve.` : ""}`}
+        onClose={closeModal}
+      >
+        <div className="panel-body">
+          <div className="draw-exact-row">
+            <div className="draw-exact-presets">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  className="primary-button draw-exact-preset-btn"
+                  onClick={() => handleStrengthen(n)}
+                  disabled={busy}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <span className="draw-exact-sep" aria-hidden="true" />
+            <form
+              className="draw-exact-custom"
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleStrengthen();
+              }}
+            >
+              <input
+                className="draw-exact-input"
+                type="number"
+                min="1"
+                max="99"
+                value={strengthenCount}
+                onChange={(e) => setStrengthenCount(Number(e.target.value))}
+              />
+              <button className="primary-button" type="submit" disabled={busy}>
+                Strengthen
+              </button>
+            </form>
           </div>
         </div>
       </ModalShell>

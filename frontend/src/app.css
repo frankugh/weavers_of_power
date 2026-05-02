@@ -1812,6 +1812,29 @@ button.draw-card:hover {
   font-size: 0.82rem;
 }
 
+.wound-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.wound-count-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.wound-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wound-action-button {
+  flex: 1 1 110px;
+  min-width: 0;
+}
+
 .log-list {
   max-height: none;
   overflow: visible;
@@ -2313,6 +2336,62 @@ button.draw-card:hover {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.action-counter {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.draw-exact-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.draw-exact-presets {
+  display: flex;
+  gap: 6px;
+}
+
+.draw-exact-preset-btn {
+  min-width: 40px;
+  padding: 10px 6px;
+  text-align: center;
+}
+
+.draw-exact-sep {
+  width: 1px;
+  height: 26px;
+  background: var(--line);
+  flex-shrink: 0;
+  margin: 0 2px;
+}
+
+.draw-exact-custom {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.draw-exact-input {
+  width: 64px;
+  min-height: 42px;
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--text);
+  font-size: 1rem;
+  flex-shrink: 0;
 }
 
 .error-banner {

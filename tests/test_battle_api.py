@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from battle_api import register_battle_api
 from battle_session import BattleSessionContext
+from engine.combat import WOUND_CARD_ID
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -341,11 +342,83 @@ class BattleApiTests(unittest.TestCase):
         player = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == player_snapshot["selectedId"])
         self.assertEqual(player["toughness_current"], 4)
         self.assertFalse(player["is_down"])
+        self.assertFalse(player["is_ko"])
+        self.assertEqual(player["wound_counts"], {"hand": 2, "discard": 0, "draw_pile": 0, "total": 2})
         self.assertEqual(payload["woundEvents"][0]["name"], "Mira")
         self.assertEqual(payload["woundEvents"][0]["wounds"], 2)
         self.assertEqual(payload["woundEvents"][0]["toughnessAfter"], 4)
 
-    def test_heal_endpoint_allows_player_overheal_to_twice_toughness_max(self) -> None:
+    def test_player_wound_endpoints_discard_remove_and_require_deck_confirmation(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        player_snapshot = self.client.post(
+            f"/api/battle/sessions/{sid}/players",
+            json={"name": "Mira", "power": 1},
+        ).json()
+        player_id = player_snapshot["selectedId"]
+        session = self.context.load_session(sid)
+        player = session.state.enemies[player_id]
+        player.deck_state.hand = [WOUND_CARD_ID]
+        player.deck_state.discard_pile = [WOUND_CARD_ID]
+        player.deck_state.draw_pile = [WOUND_CARD_ID, "hf_martial_1_success"]
+        session.autosave()
+
+        discarded = self.client.post(f"/api/battle/sessions/{sid}/entities/{player_id}/wounds/discard")
+        self.assertEqual(discarded.status_code, 200)
+        player_payload = next(enemy for enemy in discarded.json()["enemies"] if enemy["instance_id"] == player_id)
+        self.assertEqual(player_payload["wound_counts"], {"hand": 0, "discard": 2, "draw_pile": 1, "total": 3})
+
+        removed_discard = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{player_id}/wounds/remove",
+            json={"confirmDeck": False},
+        )
+        self.assertEqual(removed_discard.status_code, 200)
+        player_payload = next(enemy for enemy in removed_discard.json()["enemies"] if enemy["instance_id"] == player_id)
+        self.assertEqual(player_payload["wound_counts"], {"hand": 0, "discard": 1, "draw_pile": 1, "total": 2})
+
+        self.client.post(f"/api/battle/sessions/{sid}/entities/{player_id}/wounds/remove", json={"confirmDeck": False})
+        unconfirmed = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{player_id}/wounds/remove",
+            json={"confirmDeck": False},
+        )
+        self.assertEqual(unconfirmed.status_code, 400)
+        self.assertIn("requires confirmation", unconfirmed.json()["detail"])
+
+        confirmed = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{player_id}/wounds/remove",
+            json={"confirmDeck": True},
+        )
+        self.assertEqual(confirmed.status_code, 200)
+        player_payload = next(enemy for enemy in confirmed.json()["enemies"] if enemy["instance_id"] == player_id)
+        self.assertEqual(player_payload["wound_counts"], {"hand": 0, "discard": 0, "draw_pile": 0, "total": 0})
+
+    def test_player_wound_ko_is_reported_in_snapshot_and_clears_after_hand_wounds(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        player_snapshot = self.client.post(
+            f"/api/battle/sessions/{sid}/players",
+            json={"name": "Mira", "power": 1},
+        ).json()
+        player_id = player_snapshot["selectedId"]
+        session = self.context.load_session(sid)
+        player = session.state.enemies[player_id]
+        player.deck_state.hand = [WOUND_CARD_ID]
+        player.deck_state.discard_pile = []
+        player.deck_state.draw_pile = ["hf_martial_1_success"]
+        session.active_turn_id = player_id
+        session.autosave()
+
+        drawn = self.client.post(f"/api/battle/sessions/{sid}/turn/draw")
+        self.assertEqual(drawn.status_code, 200)
+        player_payload = next(enemy for enemy in drawn.json()["enemies"] if enemy["instance_id"] == player_id)
+        self.assertTrue(player_payload["is_ko"])
+        self.assertTrue(player_payload["is_down"])
+
+        discarded = self.client.post(f"/api/battle/sessions/{sid}/entities/{player_id}/wounds/discard")
+        self.assertEqual(discarded.status_code, 200)
+        player_payload = next(enemy for enemy in discarded.json()["enemies"] if enemy["instance_id"] == player_id)
+        self.assertFalse(player_payload["is_ko"])
+        self.assertFalse(player_payload["is_down"])
+
+    def test_heal_endpoint_clamps_player_to_toughness_max(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         self.client.post(
             f"/api/battle/sessions/{sid}/players",
@@ -362,7 +435,7 @@ class BattleApiTests(unittest.TestCase):
         ).json()
 
         player = next(enemy for enemy in payload["enemies"] if enemy["template_id"] == "player")
-        self.assertEqual(player["toughness_current"], 5)
+        self.assertEqual(player["toughness_current"], 3)
         self.assertEqual(player["toughness_max"], 3)
 
         payload = self.client.post(
@@ -371,7 +444,7 @@ class BattleApiTests(unittest.TestCase):
         ).json()
 
         player = next(enemy for enemy in payload["enemies"] if enemy["template_id"] == "player")
-        self.assertEqual(player["toughness_current"], 6)
+        self.assertEqual(player["toughness_current"], 3)
 
     def test_quick_attack_endpoint_uses_active_draw_and_supports_undo(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
@@ -675,7 +748,7 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(default_player["power_base"], 4)
         self.assertEqual(default_player["initiative_modifier"], 2)
 
-    def test_player_draw_endpoint_allows_multiple_draws_in_active_turn(self) -> None:
+    def test_player_draw_exact_endpoint_allows_skill_draw_after_power_draw(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         added = self.client.post(f"/api/battle/sessions/{sid}/players", json={"name": "Mira"}).json()
         player_id = added["selectedId"]
@@ -686,7 +759,10 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(first_payload["activeTurnId"], player_id)
         self.assertTrue(first_payload["turnInProgress"])
 
-        second = self.client.post(f"/api/battle/sessions/{sid}/turn/draw")
+        second_power = self.client.post(f"/api/battle/sessions/{sid}/turn/draw")
+        self.assertEqual(second_power.status_code, 400)
+
+        second = self.client.post(f"/api/battle/sessions/{sid}/turn/draw-exact", json={"count": 1})
         self.assertEqual(second.status_code, 200)
         player = next(e for e in second.json()["enemies"] if e["instance_id"] == player_id)
         self.assertEqual(len(player["current_draw_groups"]), 2)
