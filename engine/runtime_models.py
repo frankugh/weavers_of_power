@@ -11,8 +11,10 @@ class Tile:
 
 @dataclass
 class DungeonWall:
-    wall_type: str          # "wall" | "door"
+    wall_type: str          # "wall" | "door" | "secret_door"
     door_open: bool = False
+    secret_dc: int = 2
+    secret_discovered: bool = False
 
 
 @dataclass
@@ -44,6 +46,8 @@ class DungeonState:
     render_version: int = 0
     # linked_doors is derived by analysis and persisted to avoid re-analyzing on every request.
     linked_doors: dict = field(default_factory=dict)                # "x,y,e"|"x,y,s" → [room_id_a, room_id_b]
+    searched_room_ids: list = field(default_factory=list)           # room_ids already searched by party
+    secret_suspects: list = field(default_factory=list)             # list of suspect dicts
 
 
 @dataclass

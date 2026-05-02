@@ -222,6 +222,26 @@ function pointerClickMapCell(x, y, pointerId = 1, options = {}) {
   });
 }
 
+function pointerClickMapEdge(edge, pointerId = 31) {
+  const viewport = getMapViewport();
+  const point = mapPointForEdge(viewport, edge);
+
+  fireEvent.pointerDown(viewport, {
+    pointerId,
+    pointerType: "mouse",
+    button: 0,
+    buttons: 1,
+    ...point,
+  });
+  fireEvent.pointerUp(viewport, {
+    pointerId,
+    pointerType: "mouse",
+    button: 0,
+    buttons: 0,
+    ...point,
+  });
+}
+
 function pointerRightClickMapCell(x, y, pointerId = 51) {
   const viewport = getMapViewport();
   const point = mapPointForCell(viewport, x, y);
@@ -740,6 +760,34 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     await user.click(screen.getByRole("button", { name: "More" }));
     expect(screen.getByRole("menuitem", { name: "Heal player" })).toBeInTheDocument();
+  });
+
+  it("only shows suspect investigation when the selected player is within 5ft", async () => {
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 3,
+      grid_y: 3,
+    });
+    const dungeon = buildDungeon({
+      currentPcRoomIds: ["room-1"],
+      secretSuspects: [
+        { room_id: "room-1", edge_key: "0,0,e", kind: "secret", exhausted: false },
+      ],
+    });
+
+    renderWithSnapshot(buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1"],
+      enemies: [player],
+      dungeon,
+    }));
+
+    await findMapToken("Player 1");
+    expect(screen.queryByRole("button", { name: "Investigate Suspect" })).not.toBeInTheDocument();
   });
 
   it("shows a wound popup when player damage resets toughness", async () => {
@@ -2295,6 +2343,34 @@ describe("App", () => {
     });
     expect(screen.getByRole("button", { name: "Exit GM" })).toBeInTheDocument();
     expect(getMapViewport().dataset.mapMode).toBe("gm-reposition");
+  });
+
+  it("lets GM reposition select and reveal a secret door edge", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon({
+      walls: { "0,0,e": { wall_type: "secret_door", door_open: false, secret_discovered: false, secret_dc: 2 } },
+    });
+    const revealedDungeon = buildDungeon({
+      walls: { "0,0,e": { wall_type: "secret_door", door_open: false, secret_discovered: true, secret_dc: 2 } },
+    });
+    const revealCalls = [];
+
+    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 1, grid_y: 1 })] }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/dungeon/secret-doors/reveal" && requestOptions?.method === "POST") {
+          revealCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse(buildSnapshot({ dungeon: revealedDungeon }));
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "GM Reposition" }));
+    pointerClickMapEdge({ x: 0, y: 0, side: "e" });
+    await user.click(await screen.findByRole("button", { name: "Reveal to players" }));
+
+    expect(revealCalls).toEqual([{ x: 0, y: 0, side: "e" }]);
   });
 
   it("limits GM reposition dungeon targets to visible rooms", async () => {

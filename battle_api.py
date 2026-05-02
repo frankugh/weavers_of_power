@@ -122,6 +122,7 @@ class DungeonEdgeRequest(BaseModel):
 class DungeonWallsRequest(BaseModel):
     wallType: str
     edges: list[DungeonEdgeRequest]
+    secretDc: int = Field(default=2, ge=0)
 
 
 class DungeonDoorStateRequest(BaseModel):
@@ -137,6 +138,27 @@ class DungeonSettingsRequest(BaseModel):
 
 class DungeonRoomRevealedRequest(BaseModel):
     revealed: bool
+
+
+class DungeonSecretDoorRevealRequest(BaseModel):
+    x: int
+    y: int
+    side: str
+
+
+class DungeonSecretDoorDcRequest(BaseModel):
+    x: int
+    y: int
+    side: str
+    dc: int = Field(default=2, ge=0)
+
+
+class SearchResolveRequest(BaseModel):
+    useWillpower: bool = False
+
+
+class InteractSuspectRequest(BaseModel):
+    edgeKey: str
 
 
 def register_battle_api(api_app, context: BattleSessionContext) -> None:
@@ -388,7 +410,7 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
         edges = [{"x": e.x, "y": e.y, "side": e.side} for e in request.edges]
         return run_mutation(
             sid,
-            lambda session: session.edit_dungeon_walls(request.wallType, edges),
+            lambda session: session.edit_dungeon_walls(request.wallType, edges, secret_dc=request.secretDc),
         )
 
     @api_app.post("/api/battle/sessions/{sid}/dungeon/analyze")
@@ -409,3 +431,29 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.post("/api/battle/sessions/{sid}/dungeon/rooms/{room_id}/revealed")
     def room_revealed(sid: str, room_id: str, request: DungeonRoomRevealedRequest):
         return run_mutation(sid, lambda session: session.set_room_revealed(room_id, request.revealed))
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/secret-doors/reveal")
+    def reveal_secret_door(sid: str, request: DungeonSecretDoorRevealRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.gm_reveal_secret_door(request.x, request.y, request.side),
+        )
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/secret-doors/dc")
+    def set_secret_door_dc(sid: str, request: DungeonSecretDoorDcRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.gm_set_secret_door_dc(request.x, request.y, request.side, request.dc),
+        )
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/search/start")
+    def start_room_search(sid: str):
+        return run_mutation(sid, lambda session: session.start_room_search())
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/search/resolve")
+    def resolve_room_search(sid: str, request: SearchResolveRequest):
+        return run_mutation(sid, lambda session: session.resolve_room_search(request.useWillpower), undoable=False)
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/suspects/interact")
+    def interact_suspect(sid: str, request: InteractSuspectRequest):
+        return run_mutation(sid, lambda session: session.interact_suspect(request.edgeKey))

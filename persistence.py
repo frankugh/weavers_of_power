@@ -42,7 +42,12 @@ def dungeon_state_to_dict(ds: DungeonState) -> Dict[str, Any]:
     for key, tile in ds.tiles.items():
         tiles_out[key] = {"tile_type": tile.tile_type}
     walls_out = {
-        key: {"wall_type": w.wall_type, "door_open": w.door_open}
+        key: {
+            "wall_type": w.wall_type,
+            "door_open": w.door_open,
+            "secret_dc": getattr(w, "secret_dc", 2),
+            "secret_discovered": getattr(w, "secret_discovered", False),
+        }
         for key, w in ds.walls.items()
     }
     rooms_out = [
@@ -74,6 +79,8 @@ def dungeon_state_to_dict(ds: DungeonState) -> Dict[str, Any]:
             key: list(rooms)
             for key, rooms in getattr(ds, "linked_doors", {}).items()
         },
+        "searched_room_ids": list(getattr(ds, "searched_room_ids", [])),
+        "secret_suspects": list(getattr(ds, "secret_suspects", [])),
     }
 
 
@@ -85,7 +92,12 @@ def dungeon_state_from_dict(d: Dict[str, Any]) -> DungeonState:
             tile_type = "floor"  # legacy door tiles become floor; walls handle doors now
         tiles[key] = Tile(tile_type=tile_type)
     walls = {
-        key: DungeonWall(wall_type=wv["wall_type"], door_open=bool(wv.get("door_open", False)))
+        key: DungeonWall(
+            wall_type=wv["wall_type"],
+            door_open=bool(wv.get("door_open", False)),
+            secret_dc=int(wv.get("secret_dc", 2)),
+            secret_discovered=bool(wv.get("secret_discovered", False)),
+        )
         for key, wv in (d.get("walls") or {}).items()
     }
     rooms = [
@@ -117,6 +129,8 @@ def dungeon_state_from_dict(d: Dict[str, Any]) -> DungeonState:
             key: list(rooms)
             for key, rooms in (d.get("linked_doors") or {}).items()
         },
+        searched_room_ids=list(d.get("searched_room_ids") or []),
+        secret_suspects=list(d.get("secret_suspects") or []),
     )
 
 

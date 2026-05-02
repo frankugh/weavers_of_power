@@ -204,7 +204,7 @@ def _link_door_walls(
     issues: list[DungeonIssue] = []
 
     for key, wall in walls.items():
-        if wall.wall_type != "door":
+        if wall.wall_type not in ("door", "secret_door"):
             continue
         parts = key.split(",")
         x, y, side = int(parts[0]), int(parts[1]), parts[2]

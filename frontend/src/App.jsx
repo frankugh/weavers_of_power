@@ -39,7 +39,7 @@ const GM_DUNGEON_DRAW_SUBMODES = {
   TERRAIN: "terrain",
   WALLS: "walls",
 };
-const GM_DUNGEON_WALL_PALETTES = ["wall", "door", "erase"];
+const GM_DUNGEON_WALL_PALETTES = ["wall", "door", "secret_door", "erase"];
 const RECTANGLE_PALETTES = new Set(["floor", "void"]);
 const RECTANGLE_CONFIRM_LIMIT = 2500;
 const DISPLAY_BRIGHTNESS_STORAGE_KEY = "weavers-display-brightness";
@@ -302,6 +302,9 @@ function App() {
   const [gmDungeonDrawSubmode, setGmDungeonDrawSubmode] = useState(GM_DUNGEON_DRAW_SUBMODES.TERRAIN);
   const [gmDungeonWallPalette, setGmDungeonWallPalette] = useState("wall");
   const [highlightedRoomId, setHighlightedRoomId] = useState(null);
+  const [gmSelectedSecretDoorKey, setGmSelectedSecretDoorKey] = useState(null);
+  const [gmSecretDcInput, setGmSecretDcInput] = useState("");
+  const [gmSecretDoorDefaultDc, setGmSecretDoorDefaultDc] = useState(2);
   const [pendingLargeTileEdit, setPendingLargeTileEdit] = useState(null);
   const [displayBrightness, setDisplayBrightness] = useState(getInitialDisplayBrightness);
 
@@ -451,6 +454,12 @@ function App() {
   }, [snapshot?.pendingNewRound]);
 
   useEffect(() => {
+    if (snapshot?.pendingSearch?.hasFate) {
+      setModal("search-resolve");
+    }
+  }, [snapshot?.pendingSearch?.hasFate]);
+
+  useEffect(() => {
     setActionWarningAcknowledged(false);
     setPendingActionFn(null);
   }, [snapshot?.activeTurnId]);
@@ -574,7 +583,9 @@ function App() {
       .map(({ x, y, side }) => ({ x, y, side, key: `${x},${y},${side}` }))
       .filter(({ key }) => {
         const wall = dungeon.walls[key];
-        return wall?.wall_type === "door" && (dungeon.linkedDoors || {})[key];
+        const isDoor = wall?.wall_type === "door";
+        const isDiscoveredSecret = wall?.wall_type === "secret_door" && wall?.secret_discovered;
+        return (isDoor || isDiscoveredSecret) && (dungeon.linkedDoors || {})[key];
       });
   }, [dungeon, selectedEntity?.grid_x, selectedEntity?.grid_y, selectedEntity?.instance_id]);
   const activeDrawAttacks = activeEntity?.current_draw_attacks || [];
@@ -613,6 +624,46 @@ function App() {
       )
     : [];
   const canHelp = isPlayerSelected && !selectedIsDown && pcEntitiesInRange.length > 0;
+
+  const pendingSearch = snapshot?.pendingSearch ?? null;
+  const currentPcRoomId = dungeon?.currentPcRoomIds?.[0] ?? null;
+  const roomAlreadySearched = Boolean(currentPcRoomId && (dungeon?.searchedRoomIds || []).includes(currentPcRoomId));
+  const canSearch = Boolean(
+    isPlayerSelected &&
+      !selectedIsDown &&
+      dungeon &&
+      !roomAlreadySearched &&
+      !pendingSearch &&
+      (snapshot?.activeTurnId == null || snapshot?.activeTurnId === selectedEntity?.instance_id),
+  );
+
+  const adjacentSuspects = useMemo(() => {
+    if (!isPlayerSelected || selectedIsDown) return [];
+    if (snapshot?.activeTurnId != null && snapshot.activeTurnId !== selectedEntity?.instance_id) return [];
+    if (!dungeon?.secretSuspects?.length || !selectedEntity || selectedEntity.grid_x == null) return [];
+    // Build room → cell set map to mirror the backend room-side cell logic
+    const roomCellSet = {};
+    (dungeon.rooms || []).forEach((r) => {
+      r.cells.forEach((c) => { roomCellSet[`${c[0]},${c[1]}`] = r.room_id; });
+    });
+    return dungeon.secretSuspects.filter((s) => {
+      if (s.exhausted) return false;
+      const parts = s.edge_key?.split(",");
+      if (!parts || parts.length !== 3) return false;
+      const ex = parseInt(parts[0], 10);
+      const ey = parseInt(parts[1], 10);
+      const es = parts[2];
+      const bx = es === "e" ? ex + 1 : ex;
+      const by = es === "s" ? ey + 1 : ey;
+      // Use the room-side cell (matching backend interact_suspect logic)
+      let rx = ex, ry = ey;
+      if (s.room_id && roomCellSet[`${bx},${by}`] === s.room_id) {
+        rx = bx; ry = by;
+      }
+      const dist = Math.max(Math.abs(selectedEntity.grid_x - rx), Math.abs(selectedEntity.grid_y - ry));
+      return dist <= 1;
+    });
+  }, [dungeon?.secretSuspects, dungeon?.rooms, isPlayerSelected, selectedIsDown, selectedEntity?.grid_x, selectedEntity?.grid_y, selectedEntity?.instance_id, snapshot?.activeTurnId]);
   const canShed = isPlayerSelected && !selectedIsDown && (selectedEntity?.wounds_in_hand ?? 0) > 0;
   const canRedraw = Boolean(
     selectedEntity &&
@@ -631,6 +682,7 @@ function App() {
   const canAttackOrHeal = Boolean(visibleSelectedEntity && !selectedIsDown);
   const selectedTargetNoun = isPlayerSelected ? "player" : "enemy";
   const canRollLoot = isTemplateLootable(visibleSelectedEntity);
+  const canDisengage = Boolean(isPlayerSelected && !selectedIsDown);
   const canContextRollLoot = Boolean(contextMenuEntity?.is_down && !contextMenuEntity?.loot_rolled && isTemplateLootable(contextMenuEntity));
   const canContextQuickAttack = Boolean(
     contextMenuEntity &&
@@ -646,7 +698,7 @@ function App() {
   const selectedDrawGroups = [...drawGroupsForEntity(selectedEntity)].reverse();
   const selectedHasDraw = selectedDrawGroups.length > 0;
   const selectedHasLoot = Boolean(selectedEntity?.loot_rolled);
-  const canOpenActionMore = Boolean(canRedraw || canAttackOrHeal || canRollLoot || canReposition);
+  const canOpenActionMore = Boolean(canRedraw || canAttackOrHeal || canRollLoot || canReposition || canDisengage || canHelp);
   const sessionHasHistory = Boolean(snapshot?.canUndo || snapshot?.canRedo || snapshot?.undoDepth || snapshot?.redoDepth);
   const canRollInitiative = Boolean(snapshot?.canRollInitiative) && orderIds.length > 0;
   const initiativeTargetRound = snapshot?.initiativeTargetRound ?? null;
@@ -865,9 +917,13 @@ function App() {
 
   async function submitWallEdit(wallType, edges) {
     if (!snapshot?.sid || edges.length === 0) return null;
+    const body = { wallType, edges };
+    if (wallType === "secret_door") {
+      body.secretDc = gmSecretDoorDefaultDc;
+    }
     return applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/walls`, {
       method: "POST",
-      body: JSON.stringify({ wallType, edges }),
+      body: JSON.stringify(body),
     });
   }
 
@@ -876,6 +932,61 @@ function App() {
     await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/doors/state`, {
       method: "POST",
       body: JSON.stringify({ x, y, side, open: !isOpen }),
+    });
+  }
+
+  async function handleStartSearch() {
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/dungeon/search/start`,
+      { method: "POST" },
+    );
+    if (!payload) return;
+    showDrawReveal(payload, "draw");
+    if (payload.pendingSearch?.hasFate) {
+      setModal("search-resolve");
+    } else {
+      await applySnapshotRequest(
+        `/api/battle/sessions/${snapshot.sid}/dungeon/search/resolve`,
+        { method: "POST", body: JSON.stringify({ useWillpower: false }) },
+      );
+    }
+  }
+
+  async function handleResolveSearch(useWillpower) {
+    closeModal();
+    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/search/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ useWillpower }),
+    });
+  }
+
+  async function handleInteractSuspect(edgeKey) {
+    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/suspects/interact`, {
+      method: "POST",
+      body: JSON.stringify({ edgeKey }),
+    });
+  }
+
+  async function handleGmRevealSecretDoor(edgeKey) {
+    const parts = edgeKey.split(",");
+    if (parts.length !== 3) return;
+    const [x, y, side] = parts;
+    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/secret-doors/reveal`, {
+      method: "POST",
+      body: JSON.stringify({ x: parseInt(x, 10), y: parseInt(y, 10), side }),
+    });
+    setGmSelectedSecretDoorKey(null);
+  }
+
+  async function handleGmSetSecretDc(edgeKey) {
+    const parts = edgeKey.split(",");
+    if (parts.length !== 3) return;
+    const [x, y, side] = parts;
+    const dc = parseInt(gmSecretDcInput, 10);
+    if (isNaN(dc) || dc < 0) return;
+    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/secret-doors/dc`, {
+      method: "POST",
+      body: JSON.stringify({ x: parseInt(x, 10), y: parseInt(y, 10), side, dc }),
     });
   }
 
@@ -1708,10 +1819,14 @@ function App() {
               onMoveToCell={handleMoveSelectedToCell}
               onTileEdit={submitTileEdit}
               onWallEdit={submitWallEdit}
+              onSecretDoorClick={(key) => {
+                setGmSelectedSecretDoorKey((prev) => (prev === key ? null : key));
+                setGmSecretDcInput(String(dungeon?.walls?.[key]?.secret_dc ?? 2));
+              }}
               onUnitContextMenu={handleUnitContextMenu}
               onUnitDoubleClick={handleUnitDoubleClick}
             />
-            {isGmDungeonMode && dungeon && (
+            {(isGmDungeonMode || (isGmRepositionMode && gmSelectedSecretDoorKey)) && dungeon && (
               <div className="dungeon-room-panel">
                 <div className="dungeon-room-panel-header">
                   <button
@@ -1748,6 +1863,44 @@ function App() {
                     </div>
                   );
                 })}
+                {gmSelectedSecretDoorKey && (
+                  <div className="dungeon-secret-door-panel">
+                    <div className="dungeon-room-label">Secret Door: {gmSelectedSecretDoorKey}</div>
+                    <button
+                      type="button"
+                      className="menu-button"
+                      onClick={() => handleGmRevealSecretDoor(gmSelectedSecretDoorKey)}
+                      disabled={busy}
+                    >
+                      Reveal to players
+                    </button>
+                    <div className="dungeon-secret-dc-row">
+                      <label className="dungeon-secret-dc-label">DC</label>
+                      <input
+                        className="dungeon-secret-dc-input"
+                        type="number"
+                        min="0"
+                        value={gmSecretDcInput}
+                        onChange={(e) => setGmSecretDcInput(e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className="menu-button"
+                        onClick={() => handleGmSetSecretDc(gmSelectedSecretDoorKey)}
+                        disabled={busy}
+                      >
+                        Set DC
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => setGmSelectedSecretDoorKey(null)}
+                    >
+                      Deselect
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </section>
@@ -1843,10 +1996,23 @@ function App() {
                               onClick={() => setGmDungeonWallPalette(p)}
                               disabled={busy}
                             >
-                              {p.charAt(0).toUpperCase() + p.slice(1)}
+                              {p === "secret_door" ? "Secret" : p.charAt(0).toUpperCase() + p.slice(1)}
                             </button>
                           ))}
                         </div>
+                        {gmDungeonWallPalette === "secret_door" && (
+                          <label className="dungeon-secret-dc-toolbar">
+                            <span>DC</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="10"
+                              className="dungeon-secret-dc-input"
+                              value={gmSecretDoorDefaultDc}
+                              onChange={(e) => setGmSecretDoorDefaultDc(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                            />
+                          </label>
+                        )}
                         <div className="dungeon-toolbar-sep" />
                       </>
                     )}
@@ -1951,34 +2117,6 @@ function App() {
                     Shed
                   </button>
                 )}
-                {isPlayerSelected && !selectedIsDown && (
-                  <button
-                    className="secondary-button"
-                    onClick={() => {
-                      setActionMenuOpen(false);
-                      withActionCheck(handleDisengage);
-                    }}
-                    disabled={busy}
-                  >
-                    Disengage
-                  </button>
-                )}
-                {isPlayerSelected && !selectedIsDown && (
-                  <button
-                    className="secondary-button"
-                    onClick={() => {
-                      setActionMenuOpen(false);
-                      if (pcEntitiesInRange.length === 1) {
-                        withActionCheck(() => handleHelp(pcEntitiesInRange[0].instance_id));
-                      } else {
-                        withActionCheck(() => { setHelpTargets(pcEntitiesInRange); setModal("help-select"); });
-                      }
-                    }}
-                    disabled={!canHelp || busy}
-                  >
-                    Help
-                  </button>
-                )}
                 {isPlayerSelected && selectedIsActive && (
                   <span className="action-counter" title="Gebruikte acties deze beurt (max 2 voor waarschuwing)">
                     {playerActionsUsed}/2 acties
@@ -2021,7 +2159,39 @@ function App() {
                     onClick={() => handleToggleDoor(door)}
                     disabled={busy}
                   >
-                    {dungeon?.walls?.[door.key]?.door_open ? "Close Door" : "Open Door"}
+                    {dungeon?.walls?.[door.key]?.wall_type === "secret_door"
+                      ? dungeon?.walls?.[door.key]?.door_open ? "Close Secret Door" : "Open Secret Door"
+                      : dungeon?.walls?.[door.key]?.door_open ? "Close Door" : "Open Door"}
+                  </button>
+                ))}
+                {canSearch && (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => { setActionMenuOpen(false); withActionCheck(handleStartSearch); }}
+                    disabled={busy}
+                  >
+                    Search Room
+                  </button>
+                )}
+                {!canSearch && roomAlreadySearched && isPlayerSelected && !selectedIsDown && dungeon && (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled
+                  >
+                    Room Searched
+                  </button>
+                )}
+                {adjacentSuspects.map((s) => (
+                  <button
+                    key={s.edge_key}
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => { setActionMenuOpen(false); withActionCheck(() => handleInteractSuspect(s.edge_key)); }}
+                    disabled={busy}
+                  >
+                    Investigate Suspect
                   </button>
                 ))}
                 <button
@@ -2076,6 +2246,34 @@ function App() {
                       disabled={!canRedraw || busy}
                     >
                       Redraw
+                    </button>
+                    <button
+                      className="secondary-button action-more-item"
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setActionMenuOpen(false);
+                        withActionCheck(handleDisengage);
+                      }}
+                      disabled={!canDisengage || busy}
+                    >
+                      Disengage
+                    </button>
+                    <button
+                      className="secondary-button action-more-item"
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setActionMenuOpen(false);
+                        if (pcEntitiesInRange.length === 1) {
+                          withActionCheck(() => handleHelp(pcEntitiesInRange[0].instance_id));
+                        } else {
+                          withActionCheck(() => { setHelpTargets(pcEntitiesInRange); setModal("help-select"); });
+                        }
+                      }}
+                      disabled={!canHelp || busy}
+                    >
+                      Help
                     </button>
                     <button
                       className="secondary-button action-more-item"
@@ -3336,6 +3534,28 @@ function App() {
       </ModalShell>
 
       <ModalShell
+        open={modal === "search-resolve"}
+        title="Fate getrokken — Willpower inzetten?"
+        subtitle={pendingSearch ? `${pendingSearch.successCount} successen + ${pendingSearch.fateCount} fate` : ""}
+        onClose={() => handleResolveSearch(false)}
+        closeOnOutsideClick={false}
+      >
+        <div className="panel-body modal-form">
+          <div className="subtle-copy">
+            Een fate-kaart is getrokken. Zet je willpower in om de fate als succes te tellen?
+          </div>
+          <div className="modal-actions">
+            <button className="primary-button" type="button" onClick={() => handleResolveSearch(true)} disabled={busy}>
+              Willpower inzetten
+            </button>
+            <button className="secondary-button" type="button" onClick={() => handleResolveSearch(false)} disabled={busy}>
+              Overslaan
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
         open={modal === "disengage-info"}
         title="Disengage"
         onClose={closeModal}
@@ -3510,6 +3730,7 @@ function BattleRoom({
   onMoveToCell,
   onTileEdit,
   onWallEdit,
+  onSecretDoorClick,
   onUnitContextMenu,
   onUnitDoubleClick,
 }) {
@@ -3548,6 +3769,7 @@ function BattleRoom({
         onMoveToCell={onMoveToCell}
         onTileEdit={onTileEdit}
         onWallEdit={onWallEdit}
+        onSecretDoorClick={onSecretDoorClick}
         onUnitContextMenu={onUnitContextMenu}
         onUnitDoubleClick={onUnitDoubleClick}
       />

@@ -520,7 +520,10 @@ function edgeHasAnyWall(dungeon, ax, ay, bx, by) {
 function wallBlocksOrthogonal(dungeon, ax, ay, bx, by) {
   const wall = dungeon?.walls?.[canonicalEdgeKey(ax, ay, bx, by)];
   if (!wall) return false;
-  return wall.wall_type === "wall" || !wall.door_open;
+  if (wall.wall_type === "wall") return true;
+  if (wall.wall_type === "door") return !wall.door_open;
+  if (wall.wall_type === "secret_door") return !(wall.secret_discovered && wall.door_open);
+  return false;
 }
 
 function diagonalTouchesAnyWall(dungeon, ax, ay, bx, by) {
@@ -617,8 +620,40 @@ function buildWallRenderIndex(walls) {
   return chunks;
 }
 
-function drawEdgeWall(graphics, wall, x1, y1, x2, y2, side, cellSize) {
+function drawEdgeWall(graphics, wall, x1, y1, x2, y2, side, cellSize, isGmMode = false) {
   const widths = wallStrokeWidths(cellSize);
+  if (wall.wall_type === "secret_door") {
+    const discovered = wall.secret_discovered;
+    if (isGmMode) {
+      if (discovered) {
+        // Discovered secret door in GM mode: draw as door with purple tint overlay
+        // fall through to door drawing below by reassigning locally
+      } else {
+        // Hidden secret door in GM mode: dashed purple line
+        const len = side === "e" ? y2 - y1 : x2 - x1;
+        const dashLen = Math.max(3, Math.round(len * 0.25));
+        const gap = Math.max(2, Math.round(len * 0.15));
+        let pos = 0;
+        let drawing = true;
+        while (pos < len) {
+          const end = Math.min(pos + (drawing ? dashLen : gap), len);
+          if (drawing) {
+            if (side === "e") graphics.moveTo(x1, y1 + pos).lineTo(x1, y1 + end).stroke({ color: 0x8844cc, alpha: 0.9, width: widths.outer });
+            else graphics.moveTo(x1 + pos, y1).lineTo(x1 + end, y1).stroke({ color: 0x8844cc, alpha: 0.9, width: widths.outer });
+          }
+          pos = end;
+          drawing = !drawing;
+        }
+        return;
+      }
+    } else if (!discovered) {
+      // Hidden secret door for players: render as regular wall
+      graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: 0x140904, width: widths.outer });
+      graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: 0x8a5628, alpha: 0.9, width: widths.inner });
+      return;
+    }
+    // Discovered secret door (any mode): render as regular door (fall through)
+  }
   if (wall.wall_type === "wall") {
     graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: 0x140904, width: widths.outer });
     graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: 0x8a5628, alpha: 0.9, width: widths.inner });
@@ -658,6 +693,60 @@ function drawEdgeWall(graphics, wall, x1, y1, x2, y2, side, cellSize) {
   }
 }
 
+function drawSecretSuspects(PIXI, container, dungeon, renderIndex, range, cellSize, isGmMode = false) {
+  while (container.children.length > 0) container.removeChildAt(0);
+  if (!dungeon?.secretSuspects?.length) return;
+  const step = mapStep(cellSize);
+  const padding = MAP_VIEWPORT_PADDING;
+  const halfGap = Math.floor(MAP_GRID_GAP / 2);
+  const revealedSet = new Set(dungeon.visibleRoomIds || []);
+  const roomCellToRoom = renderIndex?.roomCellToRoom || new Map();
+
+  for (const suspect of dungeon.secretSuspects) {
+    const parts = suspect.edge_key?.split(",");
+    if (!parts || parts.length !== 3) continue;
+    const x = parseInt(parts[0], 10);
+    const y = parseInt(parts[1], 10);
+    const side = parts[2];
+    if (!isCellInRange(x, y, { ...range, minX: range.minX - 1, minY: range.minY - 1 })) continue;
+    if (!isGmMode) {
+      // Check both cells adjacent to the edge for visibility
+      const nx = side === "e" ? x + 1 : x;
+      const ny = side === "s" ? y + 1 : y;
+      const roomCellA = roomCellToRoom.get(`${x},${y}`);
+      const roomCellB = roomCellToRoom.get(`${nx},${ny}`);
+      const visibleA = !roomCellA || revealedSet.has(roomCellA.room_id);
+      const visibleB = !roomCellB || revealedSet.has(roomCellB.room_id);
+      if (!visibleA && !visibleB) continue;
+    }
+
+    let cx, cy;
+    if (side === "e") {
+      cx = padding + (x + 1) * step - halfGap;
+      cy = padding + y * step + cellSize / 2;
+    } else {
+      cx = padding + x * step + cellSize / 2;
+      cy = padding + (y + 1) * step - halfGap;
+    }
+
+    const radius = Math.max(5, Math.round(cellSize * 0.18));
+    const bg = new PIXI.Graphics();
+    const fillColor = suspect.exhausted ? 0x666666 : suspect.kind === "false" ? 0xaa4400 : 0x774499;
+    bg.circle(cx, cy, radius).fill({ color: fillColor, alpha: 0.85 });
+    bg.circle(cx, cy, radius).stroke({ color: 0xffffff, alpha: 0.6, width: 1 });
+    container.addChild(bg);
+
+    const label = new PIXI.Text({
+      text: "?",
+      style: { fill: 0xffffff, fontSize: Math.max(7, Math.round(cellSize * 0.22)), fontWeight: "700" },
+      anchor: 0.5,
+    });
+    label.x = cx;
+    label.y = cy;
+    container.addChild(label);
+  }
+}
+
 function drawWallEdges(graphics, dungeon, wallRenderIndex, renderIndex, range, cellSize, isGmMode) {
   graphics.clear();
   if (!dungeon?.walls) return;
@@ -688,10 +777,10 @@ function drawWallEdges(graphics, dungeon, wallRenderIndex, renderIndex, range, c
       }
       if (side === "e") {
         const ex = padding + (x + 1) * step - halfGap;
-        drawEdgeWall(graphics, wall, ex, padding + y * step, ex, padding + y * step + cellSize, "e", cellSize);
+        drawEdgeWall(graphics, wall, ex, padding + y * step, ex, padding + y * step + cellSize, "e", cellSize, isGmMode);
       } else {
         const sy = padding + (y + 1) * step - halfGap;
-        drawEdgeWall(graphics, wall, padding + x * step, sy, padding + x * step + cellSize, sy, "s", cellSize);
+        drawEdgeWall(graphics, wall, padding + x * step, sy, padding + x * step + cellSize, sy, "s", cellSize, isGmMode);
       }
     }
   }
@@ -703,7 +792,7 @@ function drawWallEdgePreview(graphics, edges, wallPalette, cellSize) {
   const step = mapStep(cellSize);
   const padding = MAP_VIEWPORT_PADDING;
   const halfGap = Math.floor(MAP_GRID_GAP / 2);
-  const color = wallPalette === "erase" ? 0xff5555 : wallPalette === "door" ? 0xe8c070 : 0x9ab0c0;
+  const color = wallPalette === "erase" ? 0xff5555 : wallPalette === "door" ? 0xe8c070 : wallPalette === "secret_door" ? 0xaa66ff : 0x9ab0c0;
   const widths = wallStrokeWidths(cellSize);
   const lineWidth = wallPalette === "door" ? widths.doorFrame : widths.outer;
 
@@ -1025,6 +1114,7 @@ function drawStaticMapLayer(
   drawGrid(layers.terrain, room, cellSize, { unbounded, camera, viewport });
   drawDungeonTiles(layers.dungeonTiles, dungeon, renderIndex, range, cellSize, isGmDungeonMode, highlightedRoomId);
   drawWallEdges(layers.dungeonWalls, dungeon, renderIndex?.wallChunks, renderIndex, range, cellSize, isGmDungeonMode);
+  drawSecretSuspects(renderer.PIXI, layers.secretSuspects, dungeon, renderIndex, range, cellSize, isGmDungeonMode);
   drawDungeonIssues(layers.dungeonIssues, dungeon, range, cellSize);
   renderPixi(renderer);
 }
@@ -1157,6 +1247,7 @@ function BattleMapSurface({
   onMoveToCell,
   onTileEdit,
   onWallEdit,
+  onSecretDoorClick,
   onUnitContextMenu,
   onUnitDoubleClick,
 }) {
@@ -1295,6 +1386,7 @@ function BattleMapSurface({
           terrain: new PIXI.Graphics(),
           dungeonTiles: new PIXI.Graphics(),
           dungeonWalls: new PIXI.Graphics(),
+          secretSuspects: new PIXI.Container(),
           dungeonIssues: new PIXI.Graphics(),
           dungeonPreview: new PIXI.Graphics(),
           wallPreview: new PIXI.Graphics(),
@@ -1308,6 +1400,7 @@ function BattleMapSurface({
           layers.terrain,
           layers.dungeonTiles,
           layers.dungeonWalls,
+          layers.secretSuspects,
           layers.dungeonIssues,
           layers.dungeonPreview,
           layers.wallPreview,
@@ -1829,6 +1922,7 @@ function BattleMapSurface({
     const isGmDungeonWallDraw = isGmDungeonDrawMode && gmDungeonDrawSubmode === "walls";
     const isGmDungeonSelectMode = mapMode === "gm-dungeon" && gmDungeonInteractionMode === "select";
     const isGmDungeonDragMode = mapMode === "gm-dungeon" && gmDungeonInteractionMode === "drag";
+    const canSelectSecretDoorEdge = isGmDungeonSelectMode || mapMode === "gm-reposition";
     const isMultiSelectMode = isGmDungeonSelectMode || mapMode === "gm-reposition";
 
     if (isGmDungeonDragMode && !busy && (isMiddleMouse || isLeftMouse || pointerType === "touch")) {
@@ -1872,6 +1966,22 @@ function BattleMapSurface({
       }
       surfaceRef.current?.setPointerCapture?.(pointerId);
       return;
+    }
+
+    if (canSelectSecretDoorEdge && !busy && (isLeftMouse || pointerType === "touch") && onSecretDoorClick) {
+      const occupant = cell ? getTopSelectableEntity(getEntitiesAtPosition(entitiesByPosition, cell)) : null;
+      if (!occupant) {
+        const edge = edgeFromPointer(event);
+        if (edge) {
+          const ek = edgeKey(edge);
+          const wall = dungeon?.walls?.[ek];
+          if (wall?.wall_type === "secret_door") {
+            event.preventDefault();
+            onSecretDoorClick(ek);
+            return;
+          }
+        }
+      }
     }
 
     if (isMultiSelectMode && !busy && (isLeftMouse || pointerType === "touch") && cell) {
@@ -2111,7 +2221,20 @@ function BattleMapSurface({
     const blockingOccupant = getBlockingEntity(cellEntities);
     const occupant = getTopSelectableEntity(cellEntities);
     const isGmDungeonSelectMode = mapMode === "gm-dungeon" && gmDungeonInteractionMode === "select";
+    const canSelectSecretDoorEdge = isGmDungeonSelectMode || mapMode === "gm-reposition";
     const isMultiSelectMode = isGmDungeonSelectMode || mapMode === "gm-reposition";
+
+    if (canSelectSecretDoorEdge && !occupant && onSecretDoorClick) {
+      const edge = edgeFromPointer(event);
+      if (edge) {
+        const ek = edgeKey(edge);
+        const wall = dungeon?.walls?.[ek];
+        if (wall?.wall_type === "secret_door") {
+          onSecretDoorClick(ek);
+          return;
+        }
+      }
+    }
 
     if (occupant) {
       const now = Date.now();
