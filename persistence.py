@@ -80,7 +80,7 @@ def dungeon_state_to_dict(ds: DungeonState) -> Dict[str, Any]:
             for key, rooms in getattr(ds, "linked_doors", {}).items()
         },
         "searched_room_ids": list(getattr(ds, "searched_room_ids", [])),
-        "secret_suspects": list(getattr(ds, "secret_suspects", [])),
+        "secret_suspects": [dict(s) for s in getattr(ds, "secret_suspects", [])],
     }
 
 

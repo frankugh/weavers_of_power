@@ -961,7 +961,7 @@ class BattleSession:
             )
             # DC -2 if PC is on the cell directly bordering the edge (dist == 0)
             adjusted_dc = max(0, getattr(wall, "secret_dc", 2) - (2 if dist == 0 else 0))
-            candidates.append({"edge_key": key, "adjusted_dc": adjusted_dc})
+            candidates.append({"edge_key": key, "adjusted_dc": adjusted_dc, "dist": dist})
         return candidates
 
     def _pick_false_suspect_edge(self, room_id: str) -> Optional[str]:
@@ -1000,6 +1000,34 @@ class BattleSession:
                     else:
                         fallback.add(edge)
         candidates = preferred if preferred else fallback
+        if not candidates:
+            return None
+        return self._rng.choice(sorted(candidates))
+
+    def _pick_player_adjacent_wall_edge(self, entity: "EnemyInstance", room_id: str) -> Optional[str]:
+        """Pick a random room-perimeter wall edge directly adjacent (dist==0) to entity, avoiding doors."""
+        if entity.grid_x is None or entity.grid_y is None:
+            return None
+        room = next((r for r in self.dungeon.rooms if r.room_id == room_id), None)
+        if room is None:
+            return None
+        room_cells = {tuple(c) for c in room.cells}
+        existing_suspect_edges = {s["edge_key"] for s in self.dungeon.secret_suspects}
+        candidates: list[str] = []
+        for nx, ny in (
+            (entity.grid_x + 1, entity.grid_y),
+            (entity.grid_x - 1, entity.grid_y),
+            (entity.grid_x, entity.grid_y + 1),
+            (entity.grid_x, entity.grid_y - 1),
+        ):
+            if (nx, ny) not in room_cells:
+                edge = canonical_edge_key(entity.grid_x, entity.grid_y, nx, ny)
+                wall = self.dungeon.walls.get(edge)
+                if wall is not None and wall.wall_type in ("door", "secret_door"):
+                    continue
+                if edge in existing_suspect_edges:
+                    continue
+                candidates.append(edge)
         if not candidates:
             return None
         return self._rng.choice(sorted(candidates))
@@ -1070,7 +1098,10 @@ class BattleSession:
         outcome = "nothing"
         edge_key = None
 
-        if candidates:
+        # 0 successes can never discover a door or place a true suspect
+        if score == 0:
+            pass
+        elif candidates:
             target = candidates[0]
             adjusted_dc = target["adjusted_dc"]
             edge_key = target["edge_key"]
@@ -1102,7 +1133,18 @@ class BattleSession:
         # 0 successes → 1/2, 1 → 1/3, 2 → 1/6, 3+ → never
         false_prob = max(0.0, (3 - score) / 6) if score < 3 else 0.0
         if outcome != "discovered" and false_prob > 0 and self._rng.random() < false_prob:
-            false_edge = self._pick_false_suspect_edge(room_id)
+            # With 0 successes and no adjacent secret door: 33% chance of suspect at player's
+            # direct wall (the other 66% follow normal false-suspect placement rules).
+            has_adjacent_door = score == 0 and any(c["dist"] == 0 for c in candidates)
+            use_player_adjacent = (
+                score == 0
+                and not has_adjacent_door
+                and self._rng.random() < 1 / 3
+            )
+            if use_player_adjacent:
+                false_edge = self._pick_player_adjacent_wall_edge(entity, room_id)
+            else:
+                false_edge = self._pick_false_suspect_edge(room_id)
             if false_edge:
                 false_dc = self._rng.randint(1, 3)
                 self.dungeon.secret_suspects.append({
@@ -1224,7 +1266,7 @@ class BattleSession:
         summary = self._player_draw_summary(drawn)
         drawn_text = ", ".join(self.card_to_effect_text(cid) for cid in drawn)
 
-        if score >= dc:
+        if score > 0 and score >= dc:
             if suspect_kind == "secret":
                 wall = self.dungeon.walls.get(edge_key)
                 if wall:

@@ -1099,6 +1099,44 @@ function renderPixi(renderer) {
   renderer.app.render();
 }
 
+const GLOW_DURATION_MS = 5000;
+const GLOW_FADE_MS = 1200;
+
+function drawDiscoveredSecretDoorGlows(graphics, dungeon, range, cellSize, time, remaining) {
+  graphics.clear();
+  if (!dungeon?.walls || remaining <= 0) return;
+  const step = mapStep(cellSize);
+  const padding = MAP_VIEWPORT_PADDING;
+  const halfGap = Math.floor(MAP_GRID_GAP / 2);
+  const edgeRange = { ...range, minX: range.minX - 1, minY: range.minY - 1 };
+  const pulse = 0.5 + 0.5 * Math.sin(time * 0.0025);
+  const fadeAlpha = remaining < GLOW_FADE_MS ? remaining / GLOW_FADE_MS : 1.0;
+
+  for (const [key, wall] of Object.entries(dungeon.walls)) {
+    if (wall.wall_type !== "secret_door" || !wall.secret_discovered) continue;
+    const parts = key.split(",");
+    const x = parseInt(parts[0], 10);
+    const y = parseInt(parts[1], 10);
+    const side = parts[2];
+    if (!isCellInRange(x, y, edgeRange)) continue;
+
+    let x1, y1, x2, y2;
+    if (side === "e") {
+      x1 = x2 = padding + (x + 1) * step - halfGap;
+      y1 = padding + y * step;
+      y2 = padding + y * step + cellSize;
+    } else {
+      y1 = y2 = padding + (y + 1) * step - halfGap;
+      x1 = padding + x * step;
+      x2 = padding + x * step + cellSize;
+    }
+
+    const glowWidth = Math.max(4, Math.round(cellSize * 0.18));
+    const alpha = (0.28 + 0.38 * pulse) * fadeAlpha;
+    graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: 0xcc66ff, alpha, width: glowWidth });
+  }
+}
+
 function drawStaticMapLayer(
   renderer,
   room,
@@ -1282,6 +1320,8 @@ function BattleMapSurface({
   const [isPanning, setIsPanning] = useState(false);
   const [pixiReady, setPixiReady] = useState(false);
   const [textureVersion, setTextureVersion] = useState(0);
+  const glowActiveUntilRef = useRef(0);
+  const prevDiscoveredEdgesRef = useRef(new Set());
 
   const dungeonRenderKey = dungeon ? `${dungeon.analysisVersion ?? 0}:${dungeon.renderVersion ?? 0}` : "none";
   const renderIndex = useMemo(() => buildDungeonRenderIndex(dungeon), [dungeonRenderKey, dungeon]);
@@ -1402,6 +1442,7 @@ function BattleMapSurface({
           terrain: new PIXI.Graphics(),
           dungeonTiles: new PIXI.Graphics(),
           dungeonWalls: new PIXI.Graphics(),
+          secretDoorGlow: new PIXI.Graphics(),
           secretSuspects: new PIXI.Container(),
           dungeonIssues: new PIXI.Graphics(),
           dungeonPreview: new PIXI.Graphics(),
@@ -1416,6 +1457,7 @@ function BattleMapSurface({
           layers.terrain,
           layers.dungeonTiles,
           layers.dungeonWalls,
+          layers.secretDoorGlow,
           layers.secretSuspects,
           layers.dungeonIssues,
           layers.dungeonPreview,
@@ -1564,6 +1606,83 @@ function BattleMapSurface({
   useEffect(() => {
     drawUnitsLayer(rendererRef.current, placedEntities, selectedId, selectedUnitIds, activeTurnId, cellSize);
   }, [pixiReady, textureVersion, placedEntities, selectedId, selectedUnitIds, activeTurnId, cellSize]);
+
+  // Secret door glow: detect new discoveries and animate; timer auto-expires after GLOW_DURATION_MS
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer || !pixiReady) return undefined;
+
+    if (!dungeon?.walls) {
+      renderer.layers.secretDoorGlow.clear();
+      return undefined;
+    }
+
+    const nowDiscovered = new Set(
+      Object.entries(dungeon.walls)
+        .filter(([, w]) => w.wall_type === "secret_door" && w.secret_discovered)
+        .map(([k]) => k),
+    );
+
+    // Only arm timer when a door is newly discovered in this render
+    const prev = prevDiscoveredEdgesRef.current;
+    prevDiscoveredEdgesRef.current = nowDiscovered;
+    if ([...nowDiscovered].some((k) => !prev.has(k))) {
+      glowActiveUntilRef.current = performance.now() + GLOW_DURATION_MS;
+    }
+
+    if (nowDiscovered.size === 0) {
+      renderer.layers.secretDoorGlow.clear();
+      renderPixi(renderer);
+      return undefined;
+    }
+
+    const getRange = () => visibleCellRange(cameraRef.current, viewportRef.current, cellSizeRef.current);
+
+    if (prefersReducedMotion()) {
+      const now = performance.now();
+      const remaining = glowActiveUntilRef.current - now;
+      if (remaining > 0) {
+        drawDiscoveredSecretDoorGlows(renderer.layers.secretDoorGlow, dungeon, getRange(), cellSizeRef.current, now, remaining);
+        renderPixi(renderer);
+      } else {
+        renderer.layers.secretDoorGlow.clear();
+        renderPixi(renderer);
+      }
+      return undefined;
+    }
+
+    let frameId = null;
+    let cancelled = false;
+
+    function tick() {
+      if (cancelled) return;
+      const now = performance.now();
+      const remaining = glowActiveUntilRef.current - now;
+      if (remaining <= 0) {
+        renderer.layers.secretDoorGlow.clear();
+        renderPixi(renderer);
+        return;
+      }
+      drawDiscoveredSecretDoorGlows(
+        renderer.layers.secretDoorGlow,
+        dungeon,
+        getRange(),
+        cellSizeRef.current,
+        now,
+        remaining,
+      );
+      renderPixi(renderer);
+      frameId = window.requestAnimationFrame(tick);
+    }
+
+    frameId = window.requestAnimationFrame(tick);
+
+    return () => {
+      cancelled = true;
+      if (frameId != null) window.cancelAnimationFrame(frameId);
+      renderer.layers.secretDoorGlow.clear();
+    };
+  }, [pixiReady, dungeon, cellSize, camera.x, camera.y]);
 
   useEffect(() => {
     const renderer = rendererRef.current;

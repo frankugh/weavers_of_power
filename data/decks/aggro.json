@@ -7,7 +7,7 @@
     { "id": "aggro_a6", "title": "Attack 6", "effects": [{"type":"attack","amount":6}] },
     { "id": "aggro_a2g1", "title": "Attack 2 + Guard 1", "effects": [{"type":"attack","amount":2},{"type":"guard","amount":1}] },
     { "id": "aggro_multi", "title": "Multi Attack", "effects": [{"type":"attack","amount":3},{"type":"attack","amount":2}] },
-    { "id": "aggro_a3b", "title": "Attack 3", "effects": [{"type":"attack","amount":3}] },
+    { "id": "aggro_a4", "title": "Attack 4", "effects": [{"type":"attack","amount":4}] },
     { "id": "aggro_dasha2", "title": "Dash + Attack 2", "effects": [{"type":"disengage","amount":2},{"type":"attack","amount":3}] }
   ]
 }
