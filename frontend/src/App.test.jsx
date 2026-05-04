@@ -116,6 +116,10 @@ const metaPayload = {
     { id: "wraith", name: "Wraith", imageUrl: "/images/anonymous.png", category: "Uncategorized" },
   ],
   decks: [{ id: "basic", name: "Basic Deck" }],
+  playerDecks: [
+    { id: "human_fighter_lvl1", name: "Human Fighter Level 1" },
+    { id: "human_wizzard_lvl1", name: "Human Wizard Level 1" },
+  ],
 };
 
 function renderWithSnapshot(snapshot, options = {}) {
@@ -788,6 +792,71 @@ describe("App", () => {
 
     await findMapToken("Player 1");
     expect(screen.queryByRole("button", { name: "Investigate Suspect" })).not.toBeInTheDocument();
+  });
+
+  it("asks for willpower when suspect investigation draws fate", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 0,
+      grid_y: 0,
+    });
+    const dungeon = buildDungeon({
+      currentPcRoomIds: ["room-1"],
+      secretSuspects: [
+        { room_id: "room-1", edge_key: "0,0,e", kind: "secret", exhausted: false },
+      ],
+    });
+    const startedSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1"],
+      enemies: [player],
+      dungeon,
+      pendingSearch: {
+        kind: "suspect",
+        entityId: "player-1",
+        roomId: "room-1",
+        edgeKey: "0,0,e",
+        hasFate: true,
+        successCount: 0,
+        fateCount: 1,
+      },
+    });
+    const resolveCalls = [];
+
+    renderWithSnapshot(buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1"],
+      enemies: [player],
+      dungeon,
+    }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/dungeon/suspects/interact" && requestOptions?.method === "POST") {
+          return jsonResponse(startedSnapshot);
+        }
+        if (url === "/api/battle/sessions/sid-123/dungeon/suspects/resolve" && requestOptions?.method === "POST") {
+          resolveCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse(buildSnapshot({
+            selectedId: "player-1",
+            order: ["player-1"],
+            enemies: [player],
+            dungeon,
+            pendingSearch: null,
+          }));
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Player 1");
+    await user.click(screen.getByRole("button", { name: "Investigate Suspect" }));
+    await user.click(await screen.findByRole("button", { name: "Willpower inzetten" }));
+
+    expect(resolveCalls).toEqual([{ useWillpower: true }]);
   });
 
   it("shows a wound popup when player damage resets toughness", async () => {
@@ -1608,6 +1677,39 @@ describe("App", () => {
       );
     });
     expect(await findMapToken("Player 1")).toBeInTheDocument();
+  });
+
+  it("submits the selected player deck when adding a PC", async () => {
+    const user = userEvent.setup();
+    const playerCalls = [];
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/players" && requestOptions?.method === "POST") {
+          playerCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse(buildSnapshot({
+            selectedId: "player-1",
+            order: ["enemy-1", "player-1"],
+            enemies: [buildEnemy(), buildEnemy({
+              instance_id: "player-1",
+              template_id: "player",
+              name: "Player 1",
+              is_player: true,
+            })],
+          }));
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await openAddUnitModal(user);
+    await user.click(screen.getByRole("tab", { name: "Player Character" }));
+    await user.selectOptions(screen.getByLabelText("Deck"), "human_wizzard_lvl1");
+    await user.click(screen.getByRole("button", { name: "Add player character" }));
+
+    await waitFor(() => {
+      expect(playerCalls[0]).toEqual(expect.objectContaining({ playerDeckId: "human_wizzard_lvl1" }));
+    });
   });
 
   it("submits a custom enemy through the existing custom request shape", async () => {

@@ -31,6 +31,10 @@ class BattleApiTests(unittest.TestCase):
         payload = response.json()
         self.assertIn("enemyTemplates", payload)
         self.assertIn("decks", payload)
+        self.assertIn("playerDecks", payload)
+        player_decks_by_id = {item["id"]: item for item in payload["playerDecks"]}
+        self.assertIn("human_fighter_lvl1", player_decks_by_id)
+        self.assertIn("human_wizzard_lvl1", player_decks_by_id)
         templates_by_id = {item["id"]: item for item in payload["enemyTemplates"]}
         self.assertTrue({"goblin", "bandit", "guard", "soldier"}.issubset(templates_by_id))
         goblin_template = next(item for item in payload["enemyTemplates"] if item["id"] == "goblin")
@@ -179,6 +183,50 @@ class BattleApiTests(unittest.TestCase):
 
         undone = self.client.post(f"/api/battle/sessions/{sid}/undo").json()
         self.assertEqual([enemy["instance_id"] for enemy in undone["enemies"]], [source_id])
+
+    def test_suspect_interaction_resolves_willpower_and_undoes_as_one_check(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        session = self.context.load_session(sid)
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[0, 0], [1, 0]])
+        session.analyze_dungeon()
+        session.add_player()
+        player = session.state.enemies[session.selected_id]
+        player.grid_x, player.grid_y = 0, 0
+        player.room_id = session.dungeon.rooms[0].room_id
+        player.deck_state.hand = []
+        player.deck_state.discard_pile = []
+        player.deck_state.draw_pile = ["hf_martial_1_fail", "hf_void_fate", "hf_void_fail"]
+        session.dungeon.secret_suspects = [{
+            "room_id": player.room_id,
+            "edge_key": "0,0,e",
+            "kind": "false",
+            "exhausted": False,
+            "false_dc": 1,
+        }]
+        session.autosave()
+
+        started = self.client.post(
+            f"/api/battle/sessions/{sid}/dungeon/suspects/interact",
+            json={"edgeKey": "0,0,e"},
+        ).json()
+        self.assertEqual(started["pendingSearch"]["kind"], "suspect")
+        self.assertTrue(started["pendingSearch"]["hasFate"])
+        self.assertEqual(started["undoDepth"], 1)
+
+        resolved = self.client.post(
+            f"/api/battle/sessions/{sid}/dungeon/suspects/resolve",
+            json={"useWillpower": True},
+        ).json()
+        self.assertIsNone(resolved["pendingSearch"])
+        self.assertEqual(resolved["suspectInteraction"]["outcome"], "cleared")
+        self.assertEqual(resolved["undoDepth"], 1)
+        self.assertEqual(resolved["dungeon"]["secretSuspects"], [])
+
+        undone = self.client.post(f"/api/battle/sessions/{sid}/undo").json()
+        self.assertIsNone(undone["pendingSearch"])
+        self.assertEqual(undone["undoDepth"], 0)
+        self.assertEqual(len(undone["dungeon"]["secretSuspects"]), 1)
 
     def test_start_encounter_endpoint_activates_highest_initiative_unit(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
@@ -747,6 +795,19 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(default_player["guard_base"], 1)
         self.assertEqual(default_player["power_base"], 4)
         self.assertEqual(default_player["initiative_modifier"], 2)
+
+    def test_add_player_can_select_player_deck(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+
+        response = self.client.post(
+            f"/api/battle/sessions/{sid}/players",
+            json={"name": "Merlin", "playerDeckId": "human_wizzard_lvl1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        player = next(e for e in response.json()["enemies"] if e["template_id"] == "player")
+        self.assertEqual(player["name"], "Merlin")
+        self.assertEqual(player["core_deck_id"], "human_wizzard_lvl1")
 
     def test_player_draw_exact_endpoint_allows_skill_draw_after_power_draw(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]

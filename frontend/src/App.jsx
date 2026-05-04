@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { requestJson } from "./api.js";
 import BattleMapSurface from "./BattleMapSurface.jsx";
+import { pickSearchFlavour } from "./roomSearchFlavour.js";
 
 const ATTACK_MODIFIERS = [
   { key: "stab", label: "Stab" },
@@ -253,6 +254,7 @@ function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [modal, setModal] = useState(null);
+  const [flavourText, setFlavourText] = useState(null);
   const [addUnitTab, setAddUnitTab] = useState("premade");
   const [templateSearch, setTemplateSearch] = useState("");
   const [templateCategory, setTemplateCategory] = useState("All");
@@ -285,6 +287,7 @@ function App() {
   });
   const [pcForm, setPcForm] = useState({
     name: "",
+    playerDeckId: "",
     toughness: 4,
     armor: 1,
     magicArmor: 0,
@@ -322,6 +325,14 @@ function App() {
     }
     setCustomForm((current) => ({ ...current, coreDeckId: meta.decks[0].id }));
   }, [customForm.coreDeckId, meta]);
+
+  useEffect(() => {
+    if (!meta || pcForm.playerDeckId || !meta.playerDecks?.length) {
+      return;
+    }
+    const defaultDeck = meta.playerDecks.find((deck) => deck.id === "human_fighter_lvl1") || meta.playerDecks[0];
+    setPcForm((current) => ({ ...current, playerDeckId: defaultDeck.id }));
+  }, [pcForm.playerDeckId, meta]);
 
   useEffect(() => {
     setMapMode(MAP_MODES.IDLE);
@@ -626,7 +637,7 @@ function App() {
   const canHelp = isPlayerSelected && !selectedIsDown && pcEntitiesInRange.length > 0;
 
   const pendingSearch = snapshot?.pendingSearch ?? null;
-  const currentPcRoomId = dungeon?.currentPcRoomIds?.[0] ?? null;
+  const currentPcRoomId = selectedEntity?.room_id ?? null;
   const roomAlreadySearched = Boolean(currentPcRoomId && (dungeon?.searchedRoomIds || []).includes(currentPcRoomId));
   const canSearch = Boolean(
     isPlayerSelected &&
@@ -935,6 +946,14 @@ function App() {
     });
   }
 
+  function showSearchFlavour(payload) {
+    const text = pickSearchFlavour(payload);
+    if (text) {
+      setFlavourText(text);
+      setModal("search-flavour");
+    }
+  }
+
   async function handleStartSearch() {
     const payload = await applySnapshotRequest(
       `/api/battle/sessions/${snapshot.sid}/dungeon/search/start`,
@@ -945,26 +964,42 @@ function App() {
     if (payload.pendingSearch?.hasFate) {
       setModal("search-resolve");
     } else {
-      await applySnapshotRequest(
+      const resolved = await applySnapshotRequest(
         `/api/battle/sessions/${snapshot.sid}/dungeon/search/resolve`,
         { method: "POST", body: JSON.stringify({ useWillpower: false }) },
       );
+      showSearchFlavour(resolved);
     }
   }
 
   async function handleResolveSearch(useWillpower) {
+    const resolvePath = pendingSearch?.kind === "suspect"
+      ? "dungeon/suspects/resolve"
+      : "dungeon/search/resolve";
     closeModal();
-    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/search/resolve`, {
+    const resolved = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/${resolvePath}`, {
       method: "POST",
       body: JSON.stringify({ useWillpower }),
     });
+    showSearchFlavour(resolved);
   }
 
   async function handleInteractSuspect(edgeKey) {
-    await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/suspects/interact`, {
+    const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/suspects/interact`, {
       method: "POST",
       body: JSON.stringify({ edgeKey }),
     });
+    if (!payload) return;
+    showDrawReveal(payload, "draw");
+    if (payload.pendingSearch?.hasFate) {
+      setModal("search-resolve");
+    } else {
+      const resolved = await applySnapshotRequest(
+        `/api/battle/sessions/${snapshot.sid}/dungeon/suspects/resolve`,
+        { method: "POST", body: JSON.stringify({ useWillpower: false }) },
+      );
+      showSearchFlavour(resolved);
+    }
   }
 
   async function handleGmRevealSecretDoor(edgeKey) {
@@ -3090,6 +3125,19 @@ function App() {
                       onChange={(event) => setPcForm((current) => ({ ...current, name: event.target.value }))}
                     />
                   </label>
+                  <label className="field field-full">
+                    <span>Deck</span>
+                    <select
+                      value={pcForm.playerDeckId}
+                      onChange={(event) => setPcForm((current) => ({ ...current, playerDeckId: event.target.value }))}
+                    >
+                      {(meta.playerDecks || []).map((deck) => (
+                        <option key={deck.id} value={deck.id}>
+                          {deck.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <label className="field">
                     <span>Toughness</span>
                     <input
@@ -3556,6 +3604,23 @@ function App() {
       </ModalShell>
 
       <ModalShell
+        open={modal === "search-flavour"}
+        title="Search"
+        onClose={closeModal}
+      >
+        <div className="panel-body modal-form">
+          <p style={{ fontStyle: "italic", lineHeight: 1.7, fontSize: "clamp(1rem, 2.5vw, 1.25rem)", margin: "0.5rem 0 1.25rem" }}>
+            {flavourText}
+          </p>
+          <div className="modal-actions">
+            <button className="primary-button" type="button" onClick={closeModal}>
+              Understood
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
         open={modal === "disengage-info"}
         title="Disengage"
         onClose={closeModal}
@@ -3641,7 +3706,7 @@ function App() {
       <ModalShell
         open={modal === "strengthen"}
         title="Strengthen"
-        subtitle={`+1 toughness per punt, +1 draw bonus per toughness gewonnen (max +3 totaal).${selectedEntity?.draw_bonus_pending > 0 ? ` Al ${selectedEntity.draw_bonus_pending} bonus in reserve.` : ""}`}
+        subtitle={`+1 toughness per punt tot max toughness; overgebleven punten worden +1 draw bonus (max +3 totaal).${selectedEntity?.draw_bonus_pending > 0 ? ` Al ${selectedEntity.draw_bonus_pending} bonus in reserve.` : ""}`}
         onClose={closeModal}
       >
         <div className="panel-body">

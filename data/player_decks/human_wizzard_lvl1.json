@@ -1,6 +1,6 @@
 {
-  "id": "human_fighter_lvl1",
-  "name": "Human Fighter Level 1",
+  "id": "human_wizard_lvl1",
+  "name": "Human Wizard Level 1",
   "cards": [
     {
       "id": "hf_master_fate_reshuffle",
@@ -26,12 +26,12 @@
       "instruction": "Human: draw 2 cards"
     },
     {
-      "id": "hf_class_fighter_fate",
-      "title": "Class fate - Fighter: draw 1 and perform a martial action as a free action",
+      "id": "hf_class_wizard_fate",
+      "title": "Class fate - Wizard: draw 1 and perform an elemental action as a free action",
       "energyType": "Class",
       "outcome": "fate",
       "extraDraw": 1,
-      "instruction": "Fighter: perform a martial action as a free action"
+      "instruction": "Wizard: perform an elemental action as a free action"
     },
     {
       "id": "hf_martial_2_success",
@@ -48,10 +48,10 @@
       "outcome": "success"
     },
     {
-      "id": "hf_martial_3_fate",
-      "title": "Martial 3 energy fate",
+      "id": "hf_martial_2_fate",
+      "title": "Martial 2 energy fate",
       "energyType": "Martial",
-      "energyAmount": 3,
+      "energyAmount": 2,
       "outcome": "fate"
     },
     {
@@ -59,14 +59,8 @@
       "title": "Martial energy fail",
       "energyType": "Martial",
       "energyAmount": 1,
-      "outcome": "fail"
-    },
-    {
-      "id": "hf_martial_2_fail",
-      "title": "Martial 2 energy fail",
-      "energyType": "Martial",
-      "energyAmount": 2,
-      "outcome": "fail"
+      "outcome": "fail",
+      "weight": 2
     },
     {
       "id": "hf_elemental_2_success",
@@ -85,19 +79,25 @@
       "weight": 1
     },
     {
-      "id": "hf_elemental_2_fate",
-      "title": "Elemental 2 energy fate",
+      "id": "hf_elemental_3_fate",
+      "title": "Elemental 3 energy fate",
+      "energyType": "Elemental",
+      "energyAmount": 3,
+      "outcome": "fate"
+    },
+    {
+      "id": "hf_elemental_2_fail",
+      "title": "Elemental 2 energy fail",
       "energyType": "Elemental",
       "energyAmount": 2,
-      "outcome": "fate"
+      "outcome": "fail"
     },
     {
       "id": "hf_elemental_1_fail",
       "title": "Elemental energy fail",
       "energyType": "Elemental",
       "energyAmount": 1,
-      "outcome": "fail",
-      "weight": 2
+      "outcome": "fail"
     },
     {
       "id": "hf_radiance_2_success",

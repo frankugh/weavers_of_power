@@ -731,7 +731,7 @@ function drawSecretSuspects(PIXI, container, dungeon, renderIndex, range, cellSi
 
     const radius = Math.max(5, Math.round(cellSize * 0.18));
     const bg = new PIXI.Graphics();
-    const fillColor = suspect.exhausted ? 0x666666 : suspect.kind === "false" ? 0xaa4400 : 0x774499;
+    const fillColor = suspect.exhausted ? 0x666666 : 0x774499;
     bg.circle(cx, cy, radius).fill({ color: fillColor, alpha: 0.85 });
     bg.circle(cx, cy, radius).stroke({ color: 0xffffff, alpha: 0.6, width: 1 });
     container.addChild(bg);
@@ -807,7 +807,7 @@ function drawWallEdgePreview(graphics, edges, wallPalette, cellSize) {
   }
 }
 
-function getReachableMovementCells(room, selectedEntity, movementState, blockingByPosition, dungeon) {
+function getReachableMovementCells(room, selectedEntity, movementState, blockingByPosition, dungeon, passthroughByPosition = new Map()) {
   const reachable = new Map();
   const usesDungeonGrid = Boolean(dungeon?.tiles);
   if (!hasGridPosition(selectedEntity, room, dungeon)) {
@@ -854,7 +854,10 @@ function getReachableMovementCells(room, selectedEntity, movementState, blocking
       if (!usesDungeonGrid && (nextX < 0 || nextY < 0 || nextX >= room.columns || nextY >= room.rows)) {
         continue;
       }
-      if (blockingByPosition.has(positionKey(nextX, nextY))) {
+      const nextKey = positionKey(nextX, nextY);
+      const isPassthrough = passthroughByPosition.has(nextKey);
+      // Friendly units (passthrough) can be traversed but not stopped on; enemies hard-block
+      if (!isPassthrough && blockingByPosition.has(nextKey)) {
         continue;
       }
       if (dungeonBlocksCell(dungeon, nextX, nextY)) {
@@ -884,18 +887,21 @@ function getReachableMovementCells(room, selectedEntity, movementState, blocking
 
       const totalCost = movementUsed + nextCost;
       const requiresDash = !dashUsed && totalCost > baseMovement;
-      const cellKey = positionKey(nextX, nextY);
-      const currentCell = reachable.get(cellKey);
+      const cellKey = nextKey;
       const kind = dashUsed || totalCost > baseMovement ? "dash" : "normal";
-      if (!currentCell || currentCell.cost > nextCost) {
-        reachable.set(cellKey, {
-          x: nextX,
-          y: nextY,
-          cost: nextCost,
-          diagonalSteps: nextDiagonalSteps,
-          kind,
-          requiresDash,
-        });
+      // Only mark as a valid destination if no friendly unit is standing here
+      if (!isPassthrough) {
+        const currentCell = reachable.get(cellKey);
+        if (!currentCell || currentCell.cost > nextCost) {
+          reachable.set(cellKey, {
+            x: nextX,
+            y: nextY,
+            cost: nextCost,
+            diagonalSteps: nextDiagonalSteps,
+            kind,
+            requiresDash,
+          });
+        }
       }
 
       best.set(key, { cost: nextCost, diagonalSteps: nextDiagonalSteps });
@@ -1301,12 +1307,22 @@ function BattleMapSurface({
       ),
     [placedEntities],
   );
+  // Same-faction non-down units: can be traversed during movement but cannot be stopped on
+  const passthroughByPosition = useMemo(() => {
+    if (!selectedEntity) return new Map();
+    const selectedIsPlayer = Boolean(selectedEntity.is_player);
+    return new Map(
+      placedEntities
+        .filter((e) => isBlockingEntity(e) && Boolean(e.is_player) === selectedIsPlayer && e.instance_id !== selectedEntity.instance_id)
+        .map((e) => [positionKey(e.grid_x, e.grid_y), e]),
+    );
+  }, [placedEntities, selectedEntity]);
   const reachableCells = useMemo(
     () =>
       mapMode === "move"
-        ? getReachableMovementCells(room, selectedEntity, movementState, blockingByPosition, dungeon)
+        ? getReachableMovementCells(room, selectedEntity, movementState, blockingByPosition, dungeon, passthroughByPosition)
         : new Map(),
-    [room.columns, room.rows, selectedEntity, movementState, blockingByPosition, mapMode, dungeon],
+    [room.columns, room.rows, selectedEntity, movementState, blockingByPosition, passthroughByPosition, mapMode, dungeon],
   );
 
   useEffect(() => {

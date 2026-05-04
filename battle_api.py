@@ -50,6 +50,7 @@ class CustomEnemyRequest(BaseModel):
 
 class AddPlayerRequest(BaseModel):
     name: str = ""
+    playerDeckId: str = "human_fighter_lvl1"
     toughness: int = Field(default=4, ge=0)
     armor: int = Field(default=1, ge=0)
     magicArmor: int = Field(default=0, ge=0)
@@ -241,6 +242,7 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
                 movement=request.movement,
                 base_guard=request.baseGuard,
                 initiative_modifier=request.initiativeModifier,
+                player_deck_id=request.playerDeckId,
             ),
         )
 
@@ -457,3 +459,7 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.post("/api/battle/sessions/{sid}/dungeon/suspects/interact")
     def interact_suspect(sid: str, request: InteractSuspectRequest):
         return run_mutation(sid, lambda session: session.interact_suspect(request.edgeKey))
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/suspects/resolve")
+    def resolve_suspect(sid: str, request: SearchResolveRequest):
+        return run_mutation(sid, lambda session: session.resolve_suspect_interaction(request.useWillpower), undoable=False)

@@ -963,6 +963,31 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(player.deck_state.discard_pile, ["hf_martial_1_success"])
         self.assertEqual(session.visible_draw_for(player), [])
 
+    def test_strengthen_only_converts_unspent_points_to_draw_bonus(self) -> None:
+        session = self.context.create_session("strengthen-overflow")
+        session.add_player(name="Mira", toughness=4)
+        player = session.state.enemies[session.selected_id]
+
+        player.toughness_current = 3
+        player.draw_bonus_pending = 0
+        session.strengthen_pc(3)
+        self.assertEqual(player.toughness_current, 4)
+        self.assertEqual(player.draw_bonus_pending, 2)
+
+        player.toughness_max = 3
+        player.toughness_current = 3
+        player.draw_bonus_pending = 0
+        session.strengthen_pc(1)
+        self.assertEqual(player.toughness_current, 3)
+        self.assertEqual(player.draw_bonus_pending, 1)
+
+        player.toughness_max = 4
+        player.toughness_current = 1
+        player.draw_bonus_pending = 0
+        session.strengthen_pc(2)
+        self.assertEqual(player.toughness_current, 3)
+        self.assertEqual(player.draw_bonus_pending, 0)
+
     def test_player_wound_actions_discard_remove_and_confirm_deck_removal(self) -> None:
         session = self.context.create_session("player-wound-actions")
         session.add_player(name="Mira", power=4)
@@ -1185,6 +1210,15 @@ class BattleSessionTests(unittest.TestCase):
         restored = next(e for e in reloaded.state.enemies.values() if reloaded.is_player(e))
         self.assertEqual(restored.core_deck_id, "human_fighter_lvl1")
         self.assertEqual(len(restored.deck_state.draw_pile), 26)
+
+    def test_player_can_use_selected_player_deck(self) -> None:
+        session = self.context.create_session("player-wizard-deck")
+        session.add_player(name="Merlin", player_deck_id="human_wizzard_lvl1")
+
+        player = next(e for e in session.state.enemies.values() if session.is_player(e))
+        self.assertEqual(player.core_deck_id, "human_wizzard_lvl1")
+        self.assertIn("hf_class_wizard_fate", player.deck_state.draw_pile)
+        self.assertNotIn("hf_class_fighter_fate", player.deck_state.draw_pile)
 
     def test_player_can_draw_exact_after_draw_of_power_in_one_turn(self) -> None:
         session = self.context.create_session("player-multiple-draw")

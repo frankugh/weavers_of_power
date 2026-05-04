@@ -239,7 +239,11 @@ class BattleSessionContext:
             for template_id, template in sorted(self.enemy_templates.items(), key=lambda item: item[1].name.lower())
         ]
         decks = [{"id": deck_id, "name": deck.name} for deck_id, deck in sorted(self.decks.items(), key=lambda item: item[1].name.lower())]
-        return {"enemyTemplates": templates, "decks": decks}
+        player_decks = [
+            {"id": deck_id, "name": deck.name}
+            for deck_id, deck in sorted(self.player_decks.items(), key=lambda item: item[1].name.lower())
+        ]
+        return {"enemyTemplates": templates, "decks": decks, "playerDecks": player_decks}
 
     def template_image_url(self, template: EnemyTemplate) -> str:
         image = (getattr(template, "image", None) or "").replace("\\", "/").lstrip("/")
@@ -447,6 +451,8 @@ class BattleSession:
             "pendingSearch": {
                 "entityId": self.pending_search["entity_id"],
                 "roomId": self.pending_search["room_id"],
+                "kind": self.pending_search.get("kind", "search"),
+                "edgeKey": self.pending_search.get("edge_key"),
                 "hasFate": self.pending_search["has_fate"],
                 "successCount": self.pending_search["success_count"],
                 "fateCount": self.pending_search["fate_count"],
@@ -536,10 +542,12 @@ class BattleSession:
         movement: int = HUMAN_FIGHTER_DEFAULTS["movement"],
         base_guard: int = HUMAN_FIGHTER_DEFAULTS["base_guard"],
         initiative_modifier: int = HUMAN_FIGHTER_DEFAULTS["initiative_modifier"],
+        player_deck_id: str = PLAYER_DECK_ID,
     ) -> None:
-        player_deck = self.context.player_decks.get(PLAYER_DECK_ID)
+        deck_id = player_deck_id or PLAYER_DECK_ID
+        player_deck = self.context.player_decks.get(deck_id)
         if player_deck is None:
-            raise BattleSessionError(f"Player deck '{PLAYER_DECK_ID}' is not loaded")
+            raise BattleSessionError(f"Player deck '{deck_id}' is not loaded")
         resolved_name = name.strip() or f"Player {self._next_suffix('Player')}"
         instance = spawn_player(
             resolved_name,
@@ -957,13 +965,26 @@ class BattleSession:
         return candidates
 
     def _pick_false_suspect_edge(self, room_id: str) -> Optional[str]:
-        """Pick a random room perimeter edge suitable for a false suspect marker."""
+        """Pick a random room perimeter edge suitable for a false suspect marker.
+
+        Prefers edges where the far side is in an unrevealed (or no) room so
+        the deception cannot trivially be seen through by the players.
+        """
         room = next((r for r in self.dungeon.rooms if r.room_id == room_id), None)
         if room is None:
             return None
         room_cells = {tuple(c) for c in room.cells}
+
+        # Map every cell to its room_id across the whole dungeon
+        cell_to_room: dict[tuple[int, int], str] = {}
+        for r in self.dungeon.rooms:
+            for c in r.cells:
+                cell_to_room[tuple(c)] = r.room_id
+        revealed_set = set(getattr(self.dungeon, "revealed_room_ids", []))
+
         existing_suspect_edges = {s["edge_key"] for s in self.dungeon.secret_suspects}
-        candidates: set[str] = set()
+        preferred: set[str] = set()
+        fallback: set[str] = set()
         for x, y in room_cells:
             for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
                 if (nx, ny) not in room_cells:
@@ -973,7 +994,12 @@ class BattleSession:
                         continue
                     if edge in existing_suspect_edges:
                         continue
-                    candidates.add(edge)
+                    far_room = cell_to_room.get((nx, ny))
+                    if far_room is None or far_room not in revealed_set:
+                        preferred.add(edge)
+                    else:
+                        fallback.add(edge)
+        candidates = preferred if preferred else fallback
         if not candidates:
             return None
         return self._rng.choice(sorted(candidates))
@@ -1008,6 +1034,7 @@ class BattleSession:
         self._add_log(f"{entity.name} searches the room: {drawn_text}")
 
         self.pending_search = {
+            "kind": "search",
             "entity_id": entity.instance_id,
             "room_id": room_id,
             "drawn_card_ids": drawn,
@@ -1069,24 +1096,27 @@ class BattleSession:
                     })
                 outcome = "true_suspect"
                 self._add_log(f"{entity.name} senses something suspicious…")
-            else:
-                if self._rng.random() < 0.25:
-                    false_edge = self._pick_false_suspect_edge(room_id)
-                    if false_edge:
-                        false_dc = self._rng.randint(1, 3)
-                        self.dungeon.secret_suspects.append({
-                            "room_id": room_id,
-                            "edge_key": false_edge,
-                            "kind": "false",
-                            "exhausted": False,
-                            "false_dc": false_dc,
-                        })
-                        outcome = "false_suspect"
-                        edge_key = false_edge
-                        self._add_log(f"{entity.name} thinks something might be hidden here…")
+
+        # False suspect chance scales with failure severity; blocked only on a clean discovery.
+        # A near miss (true_suspect) can still also produce a false suspect.
+        # 0 successes → 1/2, 1 → 1/3, 2 → 1/6, 3+ → never
+        false_prob = max(0.0, (3 - score) / 6) if score < 3 else 0.0
+        if outcome != "discovered" and false_prob > 0 and self._rng.random() < false_prob:
+            false_edge = self._pick_false_suspect_edge(room_id)
+            if false_edge:
+                false_dc = self._rng.randint(1, 3)
+                self.dungeon.secret_suspects.append({
+                    "room_id": room_id,
+                    "edge_key": false_edge,
+                    "kind": "false",
+                    "exhausted": False,
+                    "false_dc": false_dc,
+                })
+                self._add_log(f"{entity.name} thinks something might be hidden here…")
                 if outcome == "nothing":
-                    self._add_log(f"{entity.name} searches but finds nothing.")
-        else:
+                    outcome = "false_suspect"
+                    edge_key = false_edge
+        if outcome == "nothing":
             self._add_log(f"{entity.name} searches but finds nothing.")
 
         self.pending_search = None
@@ -1110,6 +1140,8 @@ class BattleSession:
             raise BattleSessionError("No dungeon loaded.")
         if self.active_turn_id is not None and self.active_turn_id != entity.instance_id:
             raise BattleSessionError("Another unit has the active turn. End that turn first.")
+        if self.pending_search is not None:
+            raise BattleSessionError("A search is already in progress. Resolve it first.")
 
         suspect = next((s for s in self.dungeon.secret_suspects if s["edge_key"] == edge_key), None)
         if suspect is None:
@@ -1140,7 +1172,6 @@ class BattleSession:
         drawn = list(result.drawn)
         self._append_visible_draw_group(entity, drawn)
         summary = self._player_draw_summary(drawn)
-        score = summary["outcomes"]["success"]
 
         if suspect["kind"] == "secret":
             wall = self.dungeon.walls.get(edge_key)
@@ -1150,8 +1181,51 @@ class BattleSession:
 
         drawn_text = ", ".join(self.card_to_effect_text(cid) for cid in drawn)
 
+        self._add_log(f"{entity.name} investigates a suspect marker: {drawn_text}")
+        self.pending_search = {
+            "kind": "suspect",
+            "entity_id": entity.instance_id,
+            "room_id": suspect.get("room_id"),
+            "edge_key": edge_key,
+            "suspect_kind": suspect.get("kind", "false"),
+            "dc": dc,
+            "drawn_card_ids": drawn,
+            "success_count": summary["outcomes"]["success"],
+            "fate_count": summary["outcomes"]["fate"],
+            "has_fate": summary["outcomes"]["fate"] > 0,
+        }
+        self.autosave()
+        return {
+            "suspectInteractionStarted": {
+                "edgeKey": edge_key,
+                "kind": suspect["kind"],
+                "dc": dc,
+                "drawnCardIds": drawn,
+                "summary": summary,
+                "hasFate": summary["outcomes"]["fate"] > 0,
+            }
+        }
+
+    def resolve_suspect_interaction(self, use_willpower: bool) -> dict:
+        if self.pending_search is None or self.pending_search.get("kind") != "suspect":
+            raise BattleSessionError("No pending suspect interaction to resolve.")
+        ps = self.pending_search
+        entity = self.state.enemies.get(ps["entity_id"])
+        if entity is None:
+            self.pending_search = None
+            raise BattleSessionError("Suspect interaction entity no longer exists.")
+
+        edge_key = ps["edge_key"]
+        suspect_kind = ps.get("suspect_kind", "false")
+        dc = int(ps.get("dc", 1))
+        score = ps["success_count"] + (ps["fate_count"] if use_willpower else 0)
+        suspect = next((s for s in self.dungeon.secret_suspects if s["edge_key"] == edge_key), None)
+        drawn = list(ps.get("drawn_card_ids", []))
+        summary = self._player_draw_summary(drawn)
+        drawn_text = ", ".join(self.card_to_effect_text(cid) for cid in drawn)
+
         if score >= dc:
-            if suspect["kind"] == "secret":
+            if suspect_kind == "secret":
                 wall = self.dungeon.walls.get(edge_key)
                 if wall:
                     wall.secret_discovered = True
@@ -1164,24 +1238,27 @@ class BattleSession:
                 self.dungeon.secret_suspects = [
                     s for s in self.dungeon.secret_suspects if s["edge_key"] != edge_key
                 ]
-                self._add_log(f"{entity.name} investigates — nothing here. ({drawn_text})")
+                self._add_log(f"{entity.name} investigates - nothing here. ({drawn_text})")
                 outcome = "cleared"
         else:
-            suspect["exhausted"] = True
+            if suspect is not None:
+                suspect["exhausted"] = True
             self._add_log(f"{entity.name} investigates but finds nothing conclusive. ({drawn_text})")
             outcome = "exhausted"
 
+        self.pending_search = None
         self.dungeon.render_version += 1
         self.autosave()
         return {
             "suspectInteraction": {
                 "edgeKey": edge_key,
-                "kind": suspect["kind"],
+                "kind": suspect_kind,
                 "outcome": outcome,
                 "score": score,
                 "dc": dc,
                 "drawnCardIds": drawn,
                 "summary": summary,
+                "useWillpower": use_willpower,
             }
         }
 
@@ -1921,13 +1998,14 @@ class BattleSession:
         before = entity.toughness_current
         entity.toughness_current = min(entity.toughness_max, entity.toughness_current + x)
         gained = entity.toughness_current - before
-        if gained > 0:
-            entity.draw_bonus_pending = min(3, entity.draw_bonus_pending + gained)
+        draw_bonus_gained = max(0, x - gained)
+        if draw_bonus_gained > 0:
+            entity.draw_bonus_pending = min(3, entity.draw_bonus_pending + draw_bonus_gained)
         self._charge_action(entity)
         self._add_log(
             f"{entity.name} strengthened: +{gained} toughness "
             f"({entity.toughness_current}/{entity.toughness_max}), "
-            f"draw bonus pending: {entity.draw_bonus_pending}"
+            f"+{draw_bonus_gained} draw bonus, pending: {entity.draw_bonus_pending}"
         )
         self.autosave()
 
@@ -2142,7 +2220,7 @@ class BattleSession:
         if start == target:
             return (0, 0)
 
-        occupied = self._occupied_positions(exclude_id=entity.instance_id)
+        occupied = self._occupied_positions(exclude_id=entity.instance_id, passthrough_entity=entity)
         start_parity = int(diagonal_steps_used) % 2
         queue: list[tuple[int, int, int, int, int, int]] = [(0, 0, 0, start[0], start[1], start_parity)]
         best: dict[tuple[int, int, int], tuple[int, int]] = {(start[0], start[1], start_parity): (0, 0)}
@@ -2752,12 +2830,20 @@ class BattleSession:
                 return entity
         return None
 
-    def _occupied_positions(self, *, exclude_id: Optional[str] = None) -> set[tuple[int, int]]:
+    def _occupied_positions(
+        self,
+        *,
+        exclude_id: Optional[str] = None,
+        passthrough_entity: Optional["EnemyInstance"] = None,
+    ) -> set[tuple[int, int]]:
         positions: set[tuple[int, int]] = set()
         for entity in self.state.enemies.values():
             if entity.instance_id == exclude_id:
                 continue
             if not self._blocks_position(entity):
+                continue
+            # Same-faction units are passable during movement (can't stop on them, but can pass through)
+            if passthrough_entity is not None and self.is_player(entity) == self.is_player(passthrough_entity):
                 continue
             if self._has_position(entity) and self._position_in_bounds(entity.grid_x, entity.grid_y):
                 positions.add((int(entity.grid_x), int(entity.grid_y)))
@@ -2917,11 +3003,12 @@ class BattleSession:
         entity.visible_draw = [card_id for group in groups for card_id in group]
 
     def _migrate_player_deck_state(self, entity: EnemyInstance) -> None:
-        player_deck = self.context.player_decks.get(PLAYER_DECK_ID)
+        deck_id = getattr(entity, "core_deck_id", None) or PLAYER_DECK_ID
+        player_deck = self.context.player_decks.get(deck_id)
         if player_deck is None:
             return
-        if getattr(entity, "core_deck_id", None) != PLAYER_DECK_ID:
-            entity.core_deck_id = PLAYER_DECK_ID
+        if getattr(entity, "core_deck_id", None) != deck_id:
+            entity.core_deck_id = deck_id
 
         deck_state = entity.deck_state
         player_card_ids = {card.id for card in player_deck.cards}
