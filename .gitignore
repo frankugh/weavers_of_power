@@ -82,3 +82,4 @@ saves/
 # --- Local data that shouldn't be tracked ---
 # Uncomment if you generate images locally and don't want them committed:
 # images/generated/
+images/**/extra
