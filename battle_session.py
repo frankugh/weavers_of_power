@@ -6,13 +6,15 @@ from datetime import datetime
 import heapq
 from pathlib import Path
 import random
+import re
 import uuid
 from typing import Optional
 
 from engine.combat import WOUND_CARD_ID, AttackMod, apply_attack, apply_heal
 from engine.dungeon import analyze as dungeon_analyze
 from engine.dungeon import canonical_edge_key, migrate_to_dungeon, normalize_side
-from engine.loader import load_decks, load_enemies
+from engine.excel_creatures import load_creatures_from_workbook
+from engine.loader import load_decks
 from engine.loot import roll_loot
 from engine.models import Card, Deck, EnemyTemplate
 from engine.runtime import BattleState, draw_additional_cards, draw_cards, end_turn, spawn_enemy, start_turn
@@ -170,6 +172,7 @@ class DrawResolution:
     card_ids: tuple[str, ...]
     guard_added: int = 0
     extra_drawn: int = 0
+    reshuffle_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -187,12 +190,18 @@ class BattleSessionContext:
     decks_dir: Optional[Path] = None
     player_decks_dir: Optional[Path] = None
     enemies_dir: Optional[Path] = None
+    creatures_workbook: Optional[Path] = None
     images_dir: Optional[Path] = None
     save_version: int = 3
 
     def __post_init__(self) -> None:
         self.root = Path(self.root)
         self.decks_dir = Path(self.decks_dir) if self.decks_dir else (self.root / "data" / "decks")
+        self.creatures_workbook = (
+            Path(self.creatures_workbook)
+            if self.creatures_workbook
+            else (self.root / "data" / "denizens_creature_database.xlsx")
+        )
         self.player_decks_dir = (
             Path(self.player_decks_dir)
             if self.player_decks_dir
@@ -208,7 +217,7 @@ class BattleSessionContext:
 
         self.decks = load_decks(self.decks_dir)
         self.player_decks = load_decks(self.player_decks_dir) if self.player_decks_dir.exists() else {}
-        self.enemy_templates = load_enemies(self.enemies_dir, decks=self.decks, images_dir=self.images_dir)
+        self.enemy_templates = load_creatures_from_workbook(self.creatures_workbook, images_dir=self.images_dir)
         self.card_index = self._build_card_index()
         self._sessions: dict[str, BattleSession] = {}
 
@@ -221,6 +230,9 @@ class BattleSessionContext:
             for card in deck.cards:
                 index[card.id] = card
         for template in self.enemy_templates.values():
+            if template.action_deck:
+                for card in template.action_deck.cards:
+                    index[card.id] = card
             for special in template.specials:
                 index[special.id] = special
         return index
@@ -235,6 +247,22 @@ class BattleSessionContext:
                 "name": template.name,
                 "imageUrl": self.template_image_url(template),
                 "category": getattr(template, "category", "Uncategorized"),
+                "part": getattr(template, "part", None),
+                "section": getattr(template, "section", None),
+                "threatTier": getattr(template, "threat_tier", None),
+                "threatLevel": getattr(template, "threat_level", None),
+                "shortFlavour": getattr(template, "short_flavour", None),
+                "loreNote": getattr(template, "lore_note", None),
+                "gmNote": getattr(template, "gm_note", None),
+                "mechanicsNote": getattr(template, "mechanics_note", None),
+                "traits": getattr(template, "traits", None),
+                "skills": dict(getattr(template, "skills", {}) or {}),
+                "actions": dict(getattr(template, "actions", {}) or {}),
+                "playtestStatus": getattr(template, "playtest_status", None),
+                "spawnable": bool(getattr(template, "spawnable", True)),
+                "spawnBlockers": list(getattr(template, "spawn_blockers", ()) or ()),
+                "imagePath": getattr(template, "image", None),
+                "imageMissing": bool(getattr(template, "image_missing", False)),
             }
             for template_id, template in sorted(self.enemy_templates.items(), key=lambda item: item[1].name.lower())
         ]
@@ -252,8 +280,18 @@ class BattleSessionContext:
         if image == "bandid.png":
             image = "Outlaws/bandit.png"
         if not image or not (self.images_dir / image).exists():
-            image = "anonymous.png"
+            image = self._derived_image_path(template) or "anonymous.png"
         return f"/images/{image}"
+
+    def _derived_image_path(self, template: EnemyTemplate) -> str | None:
+        part = getattr(template, "part", None) or ""
+        section = getattr(template, "section", None) or ""
+        creature_id = getattr(template, "id", None) or ""
+        if not part or not section or not creature_id:
+            return None
+        safe = lambda s: re.sub(r"[^\w]", "_", s).strip("_")
+        derived = f"{safe(part)}/{safe(section)}/{creature_id}.png"
+        return derived if (self.images_dir / derived).exists() else None
 
     def create_session(self, sid: Optional[str] = None) -> "BattleSession":
         session = BattleSession(context=self, sid=sid or create_sid())
@@ -492,6 +530,9 @@ class BattleSession:
         if template_id not in self.context.enemy_templates:
             raise BattleSessionError(f"Unknown template '{template_id}'")
         template = self.context.enemy_templates[template_id]
+        if not getattr(template, "spawnable", True):
+            blockers = ", ".join(getattr(template, "spawn_blockers", ()) or ("incomplete creature row",))
+            raise BattleSessionError(f"Template '{template.name}' is not spawnable: {blockers}")
         instance = spawn_enemy(template, self.context.decks, rnd=self._rng)
         instance.name = f"{template.name} {self._next_suffix(template.name)}"
         self.state.add_enemy(instance)
@@ -1567,6 +1608,8 @@ class BattleSession:
                 suffix_parts.append(f"+{draw_resolution.guard_added} guard")
             if draw_resolution.extra_drawn:
                 suffix_parts.append(f"+{draw_resolution.extra_drawn} draw")
+            if draw_resolution.reshuffle_pending:
+                suffix_parts.append("reshuffle pending")
             suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
             self._add_log(f"{entity.name} draws: {drawn_text}{suffix}")
         else:
@@ -1598,6 +1641,8 @@ class BattleSession:
                 suffix_parts.append(f"+{draw_resolution.guard_added} guard")
             if draw_resolution.extra_drawn:
                 suffix_parts.append(f"+{draw_resolution.extra_drawn} draw")
+            if draw_resolution.reshuffle_pending:
+                suffix_parts.append("reshuffle pending")
             suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
             self._add_log(f"{entity.name} redraws: {drawn_text}{suffix}")
         else:
@@ -2100,6 +2145,8 @@ class BattleSession:
         template = self.context.enemy_templates.get(entity.template_id)
         if not template:
             raise BattleSessionError(f"Missing template for '{entity.name}'")
+        if not getattr(template, "loot", ()):
+            raise BattleSessionError(f"{template.name} has no loot table.")
         loot_result = roll_loot(template, rnd=self._rng)
         entity.rolled_loot = {
             "currency": dict(loot_result.currency),
@@ -2189,7 +2236,8 @@ class BattleSession:
             if fallback and (self.context.images_dir / fallback).exists():
                 image = fallback
             else:
-                image = "anonymous.png"
+                image = self.context._derived_image_path(template) if template else None
+                image = image or "anonymous.png"
 
         return f"/images/{image}"
 
@@ -2346,6 +2394,8 @@ class BattleSession:
         card = self.context.card_index.get(card_id)
         if not card:
             return card_id
+        if card.action_text:
+            return card.action_text
         if self._has_player_card_metadata(card):
             return self._player_card_text(card)
         parts: list[str] = []
@@ -2443,7 +2493,7 @@ class BattleSession:
                 modifiers: list[AttackMod] = []
                 unsupported: list[str] = []
                 for modifier in effect.modifiers:
-                    normalized = SUPPORTED_QUICK_ATTACK_MODIFIERS.get(str(modifier))
+                    normalized = self._normalize_quick_attack_modifier(str(modifier))
                     if normalized:
                         if normalized not in modifiers:
                             modifiers.append(normalized)
@@ -2456,10 +2506,19 @@ class BattleSession:
                         damage=int(effect.amount),
                         modifiers=tuple(modifiers),
                         unsupported_modifiers=tuple(unsupported),
-                        manual_effects=manual_effects,
+                        manual_effects=tuple([*manual_effects, *getattr(card, "manual_notes", ())]),
                     )
                 )
         return steps
+
+    @staticmethod
+    def _normalize_quick_attack_modifier(modifier: str) -> Optional[AttackMod]:
+        lowered = modifier.strip().lower()
+        pierce_match = re.match(r"^pierce[:\s]+(\d+)$", lowered)
+        if pierce_match:
+            amount = max(0, int(pierce_match.group(1)))
+            return f"pierce:{amount}" if amount > 0 else None
+        return SUPPORTED_QUICK_ATTACK_MODIFIERS.get(lowered)
 
     def _quick_attack_payload(self, step: QuickAttackStep) -> dict:
         return {
@@ -2474,8 +2533,15 @@ class BattleSession:
 
     def _quick_attack_label(self, step: QuickAttackStep) -> str:
         if step.modifiers:
-            return f"Attack {step.damage} ({', '.join(step.modifiers)})"
+            return f"Attack {step.damage} ({', '.join(self._format_attack_modifier(modifier) for modifier in step.modifiers)})"
         return f"Attack {step.damage}"
+
+    @staticmethod
+    def _format_attack_modifier(modifier: str) -> str:
+        text = str(modifier)
+        if text.startswith("pierce:"):
+            return f"pierce {text.split(':', 1)[1]}"
+        return text
 
     @staticmethod
     def _effect_label(effect) -> str:
@@ -2734,11 +2800,15 @@ class BattleSession:
         pending: list[str] = list(card_ids)
         guard_added = 0
         extra_drawn = 0
+        reshuffle_pending = False
         while pending:
             card_id = pending.pop(0)
             card = self.context.card_index.get(card_id)
             if not card:
                 continue
+            if card.reshuffle:
+                entity.pending_reshuffle = True
+                reshuffle_pending = True
             for effect in card.effects:
                 if effect.type == "guard":
                     apply_heal(entity, guard=int(effect.amount))
@@ -2749,7 +2819,12 @@ class BattleSession:
                         resolved.extend(result.drawn)
                         pending.extend(result.drawn)
                         extra_drawn += len(result.drawn)
-        return DrawResolution(card_ids=tuple(resolved), guard_added=guard_added, extra_drawn=extra_drawn)
+        return DrawResolution(
+            card_ids=tuple(resolved),
+            guard_added=guard_added,
+            extra_drawn=extra_drawn,
+            reshuffle_pending=reshuffle_pending,
+        )
 
     def _guard_from_draw(self, card_ids: list[str]) -> int:
         guard_total = 0
@@ -2794,6 +2869,8 @@ class BattleSession:
             self._finish_player_turn(entity)
         else:
             end_turn(entity)
+            if getattr(entity, "pending_reshuffle", False):
+                self._reshuffle_enemy_deck_at_end(entity)
         self._add_log(f"Ended turn: {entity.name}")
 
     def _finish_player_turn(self, entity: EnemyInstance) -> None:
@@ -2809,6 +2886,16 @@ class BattleSession:
         deck_state.draw_pile = cards
         deck_state.discard_pile.clear()
         deck_state.hand = wounds_in_hand
+        self._rng.shuffle(deck_state.draw_pile)
+        entity.pending_reshuffle = False
+        self._add_log(f"{entity.name} reshuffles their deck at end of turn.")
+
+    def _reshuffle_enemy_deck_at_end(self, entity: EnemyInstance) -> None:
+        deck_state = entity.deck_state
+        cards = list(deck_state.draw_pile) + list(deck_state.discard_pile) + list(deck_state.hand)
+        deck_state.draw_pile = cards
+        deck_state.discard_pile.clear()
+        deck_state.hand.clear()
         self._rng.shuffle(deck_state.draw_pile)
         entity.pending_reshuffle = False
         self._add_log(f"{entity.name} reshuffles their deck at end of turn.")
@@ -3011,6 +3098,8 @@ class BattleSession:
                 "is_player": self.is_player(entity),
                 "is_down": self.is_down(entity),
                 "is_ko": bool(getattr(entity, "is_ko", False)) if self.is_player(entity) else False,
+                "has_loot": self._has_template_loot(entity),
+                "template_info": self._template_info_for(entity),
                 "quick_attack_used": bool(getattr(entity, "quick_attack_used", False)),
                 "effective_movement": self.effective_movement(entity),
                 "status_text": self.format_statuses(entity.statuses),
@@ -3035,6 +3124,33 @@ class BattleSession:
             }
         )
         return payload
+
+    def _has_template_loot(self, entity: EnemyInstance) -> bool:
+        if self.is_player(entity) or getattr(entity, "template_id", "") in {"custom", "player"}:
+            return False
+        template = self.context.enemy_templates.get(getattr(entity, "template_id", ""))
+        return bool(template and getattr(template, "loot", ()))
+
+    def _template_info_for(self, entity: EnemyInstance) -> Optional[dict]:
+        if self.is_player(entity):
+            return None
+        template = self.context.enemy_templates.get(getattr(entity, "template_id", ""))
+        if not template:
+            return None
+        return {
+            "part": getattr(template, "part", None),
+            "section": getattr(template, "section", None),
+            "threatTier": getattr(template, "threat_tier", None),
+            "threatLevel": getattr(template, "threat_level", None),
+            "shortFlavour": getattr(template, "short_flavour", None),
+            "loreNote": getattr(template, "lore_note", None),
+            "gmNote": getattr(template, "gm_note", None),
+            "mechanicsNote": getattr(template, "mechanics_note", None),
+            "traits": getattr(template, "traits", None),
+            "skills": dict(getattr(template, "skills", {}) or {}),
+            "actions": dict(getattr(template, "actions", {}) or {}),
+            "playtestStatus": getattr(template, "playtest_status", None),
+        }
 
     def _power_draw_cards_payload(self, entity: EnemyInstance) -> list:
         dop_group: list[str] = []
@@ -3097,7 +3213,7 @@ class BattleSession:
             return
         if not getattr(entity, "core_deck_id", None):
             entity.core_deck_id = template.coreDeck
-        core_deck = self.context.decks.get(template.coreDeck)
+        core_deck = template.action_deck or self.context.decks.get(template.coreDeck)
         if core_deck is None:
             return
 

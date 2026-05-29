@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 # --- Enums / literals ---
 
-Modifier = Literal["stab", "pierce", "magic_pierce", "sunder", "paralyse", "paralyze", "push 5ft"]
-EffectType = Literal["attack", "guard", "disengage", "draw", "dodge", "taunt", "hold"]
+Modifier = str
+EffectType = str
 
 LootType = Literal["currency", "resource", "other"]
 CurrencyKind = Literal["cp", "sp", "gp"]
@@ -50,6 +50,9 @@ class Card:
     title: str
     effects: tuple[Effect, ...]
     weight: int = 1
+    action_text: Optional[str] = None
+    manual_notes: tuple[str, ...] = ()
+    action_result: Optional[str] = None
     energy_type: Optional[str] = None
     energy_amount: int = 0
     outcome: Optional[str] = None
@@ -73,6 +76,8 @@ class Card:
                 self.extra_draw,
                 self.reshuffle,
                 self.instruction,
+                self.action_text,
+                self.manual_notes,
             )
         )
         if not self.effects and not has_player_metadata:
@@ -186,6 +191,23 @@ class EnemyTemplate:
 
     loot: tuple[LootEntry, ...]
     initiative_modifier: int = 2
+    source: str = "json"
+    action_deck: Optional[Deck] = None
+    part: Optional[str] = None
+    section: Optional[str] = None
+    threat_tier: Optional[str] = None
+    threat_level: Optional[int] = None
+    short_flavour: Optional[str] = None
+    lore_note: Optional[str] = None
+    gm_note: Optional[str] = None
+    mechanics_note: Optional[str] = None
+    traits: Optional[str] = None
+    skills: dict[str, int] = field(default_factory=dict)
+    actions: dict[str, str] = field(default_factory=dict)
+    playtest_status: Optional[str] = None
+    spawnable: bool = True
+    spawn_blockers: tuple[str, ...] = ()
+    image_missing: bool = False
 
     def validate(self, path: str, available_decks: set[str]) -> list[str]:
         errs: list[str] = []
@@ -194,24 +216,29 @@ class EnemyTemplate:
         if not self.name:
             errs.append(f"{path}: enemy name is empty")
 
+        is_excel = self.source == "excel"
+
         errs += self.hp.validate(f"{path}.hp")
         errs += self.armor.validate(f"{path}.armor")
         errs += self.magicArmor.validate(f"{path}.magicArmor")
         errs += self.baseGuard.validate(f"{path}.baseGuard")
 
-        if self.draws <= 0:
+        if self.draws <= 0 and (not is_excel or self.spawnable):
             errs.append(f"{path}.draws must be > 0 (got {self.draws})")
 
-        if self.movement <= 0:
+        if self.movement <= 0 and (not is_excel or self.spawnable):
             errs.append(f"{path}.movement must be > 0 (got {self.movement})")
 
         if self.initiative_modifier < 0:
             errs.append(f"{path}.initiative_modifier must be >= 0 (got {self.initiative_modifier})")
 
-        if self.coreDeck not in available_decks:
+        if not is_excel and self.coreDeck not in available_decks:
             errs.append(f"{path}.coreDeck '{self.coreDeck}' not found among loaded decks")
 
-        if len(self.specials) != 3:
+        if is_excel:
+            if self.spawnable and self.action_deck is None:
+                errs.append(f"{path}.action_deck missing for spawnable Excel creature")
+        elif len(self.specials) != 3:
             errs.append(f"{path}.specials must have exactly 3 cards (got {len(self.specials)})")
 
         seen: set[str] = set()
@@ -221,12 +248,12 @@ class EnemyTemplate:
             seen.add(c.id)
             errs += c.validate(f"{path}.specials[{i}]")
 
-        if not self.loot:
+        if not is_excel and not self.loot:
             errs.append(f"{path}.loot must have at least one entry")
         for i, le in enumerate(self.loot):
             errs += le.validate(f"{path}.loot[{i}]")
 
-        if self.image is None or self.image.strip() == "":
+        if not is_excel and (self.image is None or self.image.strip() == ""):
             errs.append(f"{path}.image missing/empty (set to filename in /images)")
 
         return errs

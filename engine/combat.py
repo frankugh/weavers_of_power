@@ -1,10 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Iterable, Literal, Optional
+from typing import Iterable, Optional
 
 from engine.runtime_models import EnemyInstance
 
-AttackMod = Literal["stab", "pierce", "magic_pierce", "sunder", "paralyse"]
+AttackMod = str
 WOUND_CARD_ID = "wound"
 
 
@@ -80,7 +80,8 @@ def apply_attack(
       - guard is a *consumable pool* that resets each turn
       - sunder: destroys 1 regular armor (not guard)
       - stab: ignore 1 regular armor reduction
-      - pierce: ignore all regular reduction (guard + armor)
+      - pierce: legacy modifier; ignore all regular reduction (guard + armor)
+      - pierce:X: ignore X armor first, then X remaining guard
       - magic_pierce: ignore all magic armor reduction
       - paralyse: marks a status
       - reset_toughness_on_deplete: players gain wounds and reset Toughness instead of going down
@@ -88,7 +89,15 @@ def apply_attack(
     if damage < 0:
         raise ValueError("damage must be >= 0")
 
-    mods_set = set(mods or [])
+    raw_mods = [str(mod).strip().lower() for mod in (mods or []) if str(mod).strip()]
+    mods_set = set(raw_mods)
+    pierce_amount = 0
+    for mod in raw_mods:
+        if mod.startswith("pierce:"):
+            try:
+                pierce_amount += max(0, int(mod.split(":", 1)[1]))
+            except ValueError:
+                continue
 
     toughness_b = enemy.toughness_current
     guard_b = enemy.guard_current
@@ -110,6 +119,10 @@ def apply_attack(
 
     if "pierce" in mods_set:
         ignored_regular = guard_now + armor_now
+    elif pierce_amount > 0:
+        ignored_armor = min(pierce_amount, armor_now)
+        ignored_guard = min(max(0, pierce_amount - ignored_armor), guard_now)
+        ignored_regular = ignored_armor + ignored_guard
     elif "stab" in mods_set:
         ignored_regular = min(1, armor_now)
 
@@ -122,6 +135,14 @@ def apply_attack(
     if "pierce" in mods_set:
         guard_eff = 0
         armor_eff = 0
+    elif pierce_amount > 0:
+        ignored_armor = min(pierce_amount, armor_eff)
+        armor_eff = max(0, armor_eff - ignored_armor)
+        guard_eff = max(0, guard_eff - min(max(0, pierce_amount - ignored_armor), guard_eff))
+        if "stab" in mods_set:
+            stab_ignore = min(1, armor_eff)
+            armor_eff = max(0, armor_eff - stab_ignore)
+            ignored_regular += stab_ignore
     elif "stab" in mods_set:
         armor_eff = max(0, armor_eff - 1)
 

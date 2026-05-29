@@ -1,12 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import tempfile
 import unittest
 from pathlib import Path
 
 from battle_session import BattleSessionContext
-from engine.combat import WOUND_CARD_ID
+from engine.combat import WOUND_CARD_ID, apply_attack
 from engine.loader import load_decks, load_enemies
+from engine.models import Card, Effect
 from persistence import save_current
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -33,7 +34,7 @@ class BattleSessionTests(unittest.TestCase):
     def test_added_units_are_auto_placed_on_the_battle_map(self) -> None:
         session = self.context.create_session("map-placement")
 
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         session.add_player()
         snapshot = session.snapshot()
 
@@ -65,8 +66,8 @@ class BattleSessionTests(unittest.TestCase):
         )
         enemy_json = """
 {
-  "id": "goblin",
-  "name": "Goblin",
+  "id": "C_GOBLIN",
+  "name": "C_GOBLIN",
   "image": "Greenskins/goblin.png",
   "hp": { "min": 5, "max": 5 },
   "baseGuard": { "min": 0, "max": 0 },
@@ -87,10 +88,10 @@ class BattleSessionTests(unittest.TestCase):
         decks = load_decks(decks_dir)
 
         loaded = load_enemies(enemies_dir, decks=decks, images_dir=images_dir)
-        self.assertEqual(loaded["goblin"].category, "Greenskins")
+        self.assertEqual(loaded["C_GOBLIN"].category, "Greenskins")
 
         (enemies_dir / "Outlaws" / "bad.json").write_text(
-            enemy_json.replace('"id": "goblin"', '"id": "bad_goblin"'),
+            enemy_json.replace('"id": "C_GOBLIN"', '"id": "bad_goblin"'),
             encoding="utf-8",
         )
 
@@ -99,9 +100,9 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_set_entity_position_requires_free_in_bounds_cell(self) -> None:
         session = self.context.create_session("map-position")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         first_id = session.selected_id
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_GOBLIN")
         second_id = session.selected_id
 
         session.set_entity_position(first_id, 0, 0)
@@ -120,11 +121,11 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_set_entity_positions_moves_group_atomically(self) -> None:
         session = self.context.create_session("map-group-position")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         first_id = session.selected_id
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         second_id = session.selected_id
-        session.add_enemy_from_template("guard")
+        session.add_enemy_from_template("C_HOBGOBLIN")
         blocker_id = session.selected_id
 
         session.set_entity_position(first_id, 0, 0)
@@ -152,7 +153,7 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_copy_entity_creates_fresh_premade_enemy_next_to_source(self) -> None:
         session = self.context.create_session("copy-premade")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         source_id = session.selected_id
         source = session.state.enemies[source_id]
         source.toughness_current = 1
@@ -207,7 +208,7 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_active_unit_can_spend_movement_pool_across_multiple_moves_and_dash(self) -> None:
         session = self.context.create_session("movement-pool")
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_GOBLIN")
         entity_id = session.selected_id
         session.set_entity_position(entity_id, 0, 0)
         session.next_turn()
@@ -228,9 +229,9 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_movement_rejects_non_active_and_over_double_pool_moves(self) -> None:
         session = self.context.create_session("movement-limits")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         first_id = session.selected_id
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         second_id = session.selected_id
         session.set_entity_position(first_id, 0, 0)
         session.set_entity_position(second_id, 0, 1)
@@ -245,7 +246,7 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_diagonal_movement_cost_parity_continues_across_moves(self) -> None:
         session = self.context.create_session("movement-diagonal-parity")
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         entity_id = session.selected_id
         session.set_entity_position(entity_id, 0, 0)
         session.next_turn()
@@ -265,9 +266,9 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_start_encounter_uses_first_non_down_in_order_and_resets_turn_state(self) -> None:
         session = self.context.create_session("start-encounter")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         first_id = session.selected_id
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         second_id = session.selected_id
         first_enemy = session.state.enemies[first_id]
         first_enemy.deck_state.hand = ["basic_a3"]
@@ -288,9 +289,9 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_start_encounter_skips_down_units_and_rejects_invalid_starts(self) -> None:
         session = self.context.create_session("start-encounter-skip-down")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         first_id = session.selected_id
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         second_id = session.selected_id
         session.state.enemies[first_id].toughness_current = 0
 
@@ -302,7 +303,7 @@ class BattleSessionTests(unittest.TestCase):
             session.start_encounter()
 
         all_down = self.context.create_session("start-encounter-all-down")
-        all_down.add_enemy_from_template("goblin")
+        all_down.add_enemy_from_template("C_GOBLIN")
         all_down.state.enemies[all_down.selected_id].toughness_current = 0
 
         with self.assertRaisesRegex(ValueError, "No units can start encounter"):
@@ -315,14 +316,14 @@ class BattleSessionTests(unittest.TestCase):
         session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
         session.edit_dungeon_tiles("floor", [[x, y] for x in range(3) for y in range(3)])
         session.analyze_dungeon()
-        # Player as mover — enemies block cross-faction; same-faction units are passable
+        # Player as mover â€” enemies block cross-faction; same-faction units are passable
         session.add_player(name="Mira")
         mover_id = session.selected_id
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         top_blocker_id = session.selected_id
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         middle_blocker_id = session.selected_id
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         bottom_blocker_id = session.selected_id
 
         for instance_id in (mover_id, top_blocker_id, middle_blocker_id, bottom_blocker_id):
@@ -347,7 +348,7 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_movement_state_persists_and_resets_on_next_active_turn(self) -> None:
         session = self.context.create_session("movement-persist")
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         entity_id = session.selected_id
         session.set_entity_position(entity_id, 0, 0)
         session.next_turn()
@@ -365,7 +366,7 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_auto_place_ignores_down_units_as_blockers(self) -> None:
         session = self.context.create_session("map-down-passable")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         down_id = session.selected_id
         session.state.enemies[down_id].toughness_current = 0
 
@@ -405,7 +406,7 @@ class BattleSessionTests(unittest.TestCase):
     def test_sparse_dungeon_movement_uses_explicit_walkable_tiles(self) -> None:
         session = self.context.create_session("sparse-movement")
         session.edit_dungeon_tiles("floor", [[-1, 3]])
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         entity_id = session.selected_id
         session.set_entity_position(entity_id, 0, 3)
         session.next_turn()
@@ -456,7 +457,11 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_draw_and_end_turn_keep_draw_visible_until_next_start(self) -> None:
         session = self.context.create_session("draw-turn")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
+        selected = session.state.enemies[session.selected_id]
+        selected.deck_state.draw_pile = ["C_GOBLIN__A1__4"]
+        selected.deck_state.discard_pile = []
+        selected.deck_state.hand = []
 
         session.draw_turn()
         self.assertIsNotNone(session.active_turn_id)
@@ -475,8 +480,11 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_draw_is_discarded_when_same_unit_starts_again(self) -> None:
         session = self.context.create_session("draw-replace")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         enemy = session.state.enemies[session.selected_id]
+        enemy.deck_state.draw_pile = ["C_GOBLIN__A1__4"]
+        enemy.deck_state.discard_pile = []
+        enemy.deck_state.hand = []
 
         session.draw_turn()
         first_visible_draw = session.visible_draw_for(enemy)
@@ -503,7 +511,7 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_redraw_replaces_current_draw_during_active_turn(self) -> None:
         session = self.context.create_session("redraw-turn")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         enemy = session.state.enemies[session.selected_id]
 
         session.draw_turn()
@@ -520,7 +528,7 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_draw_effect_immediately_draws_next_card(self) -> None:
         session = self.context.create_session("draw-effect")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         enemy = session.state.enemies[session.selected_id]
         enemy.power_base = 1
         enemy.deck_state.draw_pile = ["ctrl_dis5_draw", "ctrl_a3"]
@@ -538,10 +546,10 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_quick_attack_applies_current_draw_to_selected_target(self) -> None:
         session = self.context.create_session("quick-attack")
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         attacker_id = session.selected_id
         attacker = session.state.enemies[attacker_id]
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         target_id = session.selected_id
         target = session.state.enemies[target_id]
         target.toughness_current = 10
@@ -549,31 +557,31 @@ class BattleSessionTests(unittest.TestCase):
         target.guard_current = 0
         target.armor_current = 0
         target.armor_max = 0
-        attacker.deck_state.hand = ["bandit_s2"]
+        attacker.deck_state.hand = ["C_GOBLIN__S__10"]
         session.active_turn_id = attacker_id
         session.turn_in_progress = True
         session.select(target_id)
 
         result = session.apply_quick_attack_from_active_draw()
 
-        self.assertEqual(target.toughness_current, 6)
+        self.assertEqual(target.toughness_current, 5)
         self.assertEqual(result["quickAttack"]["attackerId"], attacker_id)
         self.assertEqual(result["quickAttack"]["targetId"], target_id)
-        self.assertEqual(result["quickAttack"]["attacks"][0]["label"], "Attack 4 (stab)")
+        self.assertEqual(result["quickAttack"]["attacks"][0]["label"], "Attack 5 (stab)")
         self.assertIn("Quick Attack by", session.combat_log[0])
         attacker_payload = next(enemy for enemy in session.snapshot()["enemies"] if enemy["instance_id"] == attacker_id)
         self.assertTrue(attacker.quick_attack_used)
         self.assertTrue(attacker_payload["quick_attack_used"])
-        self.assertEqual(attacker_payload["current_draw_attacks"][0]["damage"], 4)
+        self.assertEqual(attacker_payload["current_draw_attacks"][0]["damage"], 5)
         with self.assertRaisesRegex(ValueError, "already been used"):
             session.apply_quick_attack_from_active_draw()
 
     def test_quick_attack_applies_multi_attack_sequentially(self) -> None:
         session = self.context.create_session("quick-multi")
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         attacker_id = session.selected_id
         attacker = session.state.enemies[attacker_id]
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         target_id = session.selected_id
         target = session.state.enemies[target_id]
         target.toughness_current = 10
@@ -581,18 +589,18 @@ class BattleSessionTests(unittest.TestCase):
         target.guard_current = 0
         target.armor_current = 1
         target.armor_max = 1
-        attacker.deck_state.hand = ["bandit_s3"]
+        attacker.deck_state.hand = ["ctrl_a2_stab", "ctrl_a3"]
         session.active_turn_id = attacker_id
         session.turn_in_progress = True
         session.select(target_id)
 
         session.apply_quick_attack_from_active_draw()
 
-        self.assertEqual(target.toughness_current, 7)
+        self.assertEqual(target.toughness_current, 6)
 
     def test_quick_attack_adds_player_wounds(self) -> None:
         session = self.context.create_session("quick-player-wound")
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         attacker_id = session.selected_id
         attacker = session.state.enemies[attacker_id]
         session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0, power=0, movement=6)
@@ -612,10 +620,10 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_quick_attack_reports_unsupported_modifiers_and_manual_effects(self) -> None:
         session = self.context.create_session("quick-unsupported")
-        session.add_enemy_from_template("guard")
+        session.add_enemy_from_template("C_HOBGOBLIN")
         attacker_id = session.selected_id
         attacker = session.state.enemies[attacker_id]
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         target_id = session.selected_id
         target = session.state.enemies[target_id]
         target.toughness_current = 10
@@ -623,7 +631,12 @@ class BattleSessionTests(unittest.TestCase):
         target.guard_current = 0
         target.armor_current = 0
         target.armor_max = 0
-        attacker.deck_state.hand = ["guard_s1", "ctrl_a2_dodge"]
+        self.context.card_index["test_push"] = Card(
+            id="test_push",
+            title="Push Strike",
+            effects=(Effect(type="attack", amount=3, modifiers=("push 5ft",)),),
+        )
+        attacker.deck_state.hand = ["test_push", "ctrl_a2_dodge"]
         session.active_turn_id = attacker_id
         session.turn_in_progress = True
         session.select(target_id)
@@ -636,22 +649,46 @@ class BattleSessionTests(unittest.TestCase):
         self.assertIn("Handle manually", result["quickAttackNotice"])
         self.assertIn("handle manually", session.combat_log[0])
 
+    def test_quick_attack_supports_excel_pierce_x_actions(self) -> None:
+        session = self.context.create_session("quick-pierce-x")
+        session.add_enemy_from_template("C_GOBLIN_ARCHER")
+        attacker_id = session.selected_id
+        attacker = session.state.enemies[attacker_id]
+        session.add_enemy_from_template("C_GOBLIN")
+        target_id = session.selected_id
+        target = session.state.enemies[target_id]
+        target.toughness_current = 10
+        target.toughness_max = 10
+        target.guard_current = 3
+        target.armor_current = 2
+        target.armor_max = 2
+        attacker.deck_state.hand = ["C_GOBLIN_ARCHER__S__10"]
+        session.active_turn_id = attacker_id
+        session.turn_in_progress = True
+        session.select(target_id)
+
+        result = session.apply_quick_attack_from_active_draw()
+
+        self.assertEqual(result["quickAttack"]["attacks"][0]["label"], "Attack 5 (pierce 3)")
+        self.assertEqual(target.toughness_current, 7)
+        self.assertEqual(target.guard_current, 1)
+
     def test_quick_attack_rejects_invalid_state(self) -> None:
         no_active = self.context.create_session("quick-no-active")
-        no_active.add_enemy_from_template("bandit")
+        no_active.add_enemy_from_template("C_WOLF")
         with self.assertRaisesRegex(ValueError, "No NPC"):
             no_active.apply_quick_attack_from_active_draw()
 
         no_draw = self.context.create_session("quick-no-draw")
-        no_draw.add_enemy_from_template("bandit")
+        no_draw.add_enemy_from_template("C_WOLF")
         attacker_id = no_draw.selected_id
-        no_draw.add_enemy_from_template("goblin")
+        no_draw.add_enemy_from_template("C_GOBLIN")
         no_draw.active_turn_id = attacker_id
         with self.assertRaisesRegex(ValueError, "Press Draw"):
             no_draw.apply_quick_attack_from_active_draw()
 
         self_target = self.context.create_session("quick-self")
-        self_target.add_enemy_from_template("bandit")
+        self_target.add_enemy_from_template("C_WOLF")
         attacker_id = self_target.selected_id
         attacker = self_target.state.enemies[attacker_id]
         attacker.deck_state.hand = ["basic_a2"]
@@ -661,10 +698,10 @@ class BattleSessionTests(unittest.TestCase):
             self_target.apply_quick_attack_from_active_draw()
 
         down_target = self.context.create_session("quick-down")
-        down_target.add_enemy_from_template("bandit")
+        down_target.add_enemy_from_template("C_WOLF")
         attacker_id = down_target.selected_id
         attacker = down_target.state.enemies[attacker_id]
-        down_target.add_enemy_from_template("goblin")
+        down_target.add_enemy_from_template("C_GOBLIN")
         target_id = down_target.selected_id
         down_target.state.enemies[target_id].toughness_current = 0
         attacker.deck_state.hand = ["basic_a2"]
@@ -674,10 +711,10 @@ class BattleSessionTests(unittest.TestCase):
             down_target.apply_quick_attack_from_active_draw()
 
         no_attack = self.context.create_session("quick-no-attack")
-        no_attack.add_enemy_from_template("bandit")
+        no_attack.add_enemy_from_template("C_WOLF")
         attacker_id = no_attack.selected_id
         attacker = no_attack.state.enemies[attacker_id]
-        no_attack.add_enemy_from_template("goblin")
+        no_attack.add_enemy_from_template("C_GOBLIN")
         attacker.deck_state.hand = ["basic_g4"]
         no_attack.active_turn_id = attacker_id
         no_attack.turn_in_progress = True
@@ -686,10 +723,10 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_current_draw_persists_until_that_same_unit_turn_starts_again(self) -> None:
         session = self.context.create_session("draw-persist")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         first_id = session.selected_id
         first_enemy = session.state.enemies[first_id]
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         second_id = session.selected_id
 
         session.select(first_id)
@@ -714,9 +751,9 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_next_without_draw_resolves_the_active_turn(self) -> None:
         session = self.context.create_session("next-no-draw")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         first_id = session.selected_id
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         second_id = session.selected_id
         second_enemy = session.state.enemies[second_id]
         second_enemy.statuses["burn"] = {"stacks": 2}
@@ -738,11 +775,11 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_next_turn_skips_down_units(self) -> None:
         session = self.context.create_session("skip-down-turns")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         first_id = session.selected_id
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         down_id = session.selected_id
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         third_id = session.selected_id
         session.state.enemies[down_id].toughness_current = 0
 
@@ -755,9 +792,9 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_down_units_cannot_start_turns(self) -> None:
         session = self.context.create_session("down-turn-blocked")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         first_id = session.selected_id
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         second_id = session.selected_id
         session.state.enemies[first_id].toughness_current = 0
         session.state.enemies[second_id].toughness_current = 0
@@ -773,9 +810,9 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_round_increments_when_next_wraps(self) -> None:
         session = self.context.create_session("round-wrap")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         first_id = session.selected_id
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         second_id = session.selected_id
 
         session.select(first_id)
@@ -795,7 +832,7 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_manual_save_and_load_restore_entities(self) -> None:
         session = self.context.create_session("manual-load")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         selected_id = session.selected_id
         session.apply_attack_to_selected(
             damage=2,
@@ -820,7 +857,7 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_stab_ignores_one_armor_before_guard_absorbs_damage(self) -> None:
         session = self.context.create_session("stab-armor-before-guard")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         entity = session.state.enemies[session.selected_id]
         entity.toughness_current = 10
         entity.toughness_max = 10
@@ -838,6 +875,24 @@ class BattleSessionTests(unittest.TestCase):
         )
 
         self.assertEqual(entity.toughness_current, 10)
+        self.assertEqual(entity.armor_current, 2)
+        self.assertEqual(entity.guard_current, 2)
+
+    def test_pierce_x_ignores_armor_first_then_guard(self) -> None:
+        session = self.context.create_session("pierce-x")
+        session.add_enemy_from_template("C_GOBLIN")
+        entity = session.state.enemies[session.selected_id]
+        entity.toughness_current = 10
+        entity.toughness_max = 10
+        entity.guard_current = 3
+        entity.armor_current = 2
+        entity.armor_max = 2
+
+        log = apply_attack(entity, 8, mods=["pierce:4"])
+
+        self.assertEqual(log.ignored_regular, 4)
+        self.assertEqual(log.damage_to_hp, 7)
+        self.assertEqual(entity.toughness_current, 3)
         self.assertEqual(entity.armor_current, 2)
         self.assertEqual(entity.guard_current, 2)
 
@@ -875,7 +930,7 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_enemy_heal_still_clamps_to_toughness_max(self) -> None:
         session = self.context.create_session("enemy-heal-cap")
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         enemy = session.state.enemies[session.selected_id]
         enemy.toughness_current = 2
         enemy.toughness_max = 3
@@ -1069,7 +1124,7 @@ class BattleSessionTests(unittest.TestCase):
             "enemies": [
                 {
                     "instance_id": "goblin-1",
-                    "template_id": "goblin",
+                    "template_id": "C_GOBLIN",
                     "name": "Goblin 1",
                     "image": "goblin.png",
                     "toughness_current": 5,
@@ -1097,13 +1152,14 @@ class BattleSessionTests(unittest.TestCase):
         session = self.context.load_session(sid)
         entity = session.state.enemies["goblin-1"]
         all_card_ids = entity.deck_state.draw_pile + entity.deck_state.discard_pile + entity.deck_state.hand
-        control_ids = {card.id for card in self.context.decks["control"].cards}
-        goblin_special_ids = {card.id for card in self.context.enemy_templates["goblin"].specials}
+        action_ids = {
+            card.id
+            for card in self.context.enemy_templates["C_GOBLIN"].action_deck.cards
+        }
 
-        self.assertTrue(all(card_id in control_ids | goblin_special_ids for card_id in all_card_ids))
+        self.assertTrue(all(card_id in action_ids for card_id in all_card_ids))
         self.assertFalse(any(card_id.startswith("basic_") for card_id in all_card_ids))
-        self.assertEqual(len([card_id for card_id in all_card_ids if card_id in control_ids]), len(control_ids))
-        self.assertEqual(goblin_special_ids, {card_id for card_id in all_card_ids if card_id in goblin_special_ids})
+        self.assertEqual(len(all_card_ids), 20)
         self.assertEqual(entity.deck_state.hand, session.visible_draw_for(entity))
 
     def test_legacy_save_without_round_and_log_defaults_cleanly(self) -> None:
@@ -1131,9 +1187,9 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_pending_new_round_is_set_on_wrap_and_cleared_by_start_new_round(self) -> None:
         session = self.context.create_session("pending-round")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         first_id = session.selected_id
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         second_id = session.selected_id
 
         session.select(first_id)
@@ -1159,17 +1215,17 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_start_new_round_uses_initiative_order_not_selected_id(self) -> None:
         session = self.context.create_session("round-order")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         first_id = session.selected_id
-        session.add_enemy_from_template("bandit")
+        session.add_enemy_from_template("C_WOLF")
         second_id = session.selected_id
 
         session.select(first_id)
-        session.next_turn()  # first → second
-        session.next_turn()  # second → wraps, pending_new_round = True
+        session.next_turn()  # first â†’ second
+        session.next_turn()  # second â†’ wraps, pending_new_round = True
 
-        # Add a unit during GM adjustments — this changes selected_id
-        session.add_enemy_from_template("goblin")
+        # Add a unit during GM adjustments â€” this changes selected_id
+        session.add_enemy_from_template("C_GOBLIN")
         late_id = session.selected_id
         self.assertNotEqual(late_id, first_id)
 
@@ -1326,9 +1382,9 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_roll_initiative_sorts_order_by_total(self) -> None:
         session = self.context.create_session("init-sort")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         low_id = session.selected_id
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         high_id = session.selected_id
 
         # Force deterministic rolls via seeded rng
@@ -1349,7 +1405,7 @@ class BattleSessionTests(unittest.TestCase):
         from battle_session import BattleSessionError
 
         session = self.context.create_session("init-formulas")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         eid = session.selected_id
         entity = session.state.enemies[eid]
         entity.initiative_modifier = 3
@@ -1381,16 +1437,16 @@ class BattleSessionTests(unittest.TestCase):
         from battle_session import BattleSessionError
 
         session = self.context.create_session("init-block")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         session.start_encounter()
 
-        # encounter is active and not pending_new_round — should raise
+        # encounter is active and not pending_new_round â€” should raise
         with self.assertRaises(BattleSessionError):
             session.roll_initiative({})
 
     def test_roll_initiative_allowed_before_encounter(self) -> None:
         session = self.context.create_session("init-pre")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
 
         session.roll_initiative({})
 
@@ -1398,9 +1454,9 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_roll_initiative_allowed_during_pending_new_round(self) -> None:
         session = self.context.create_session("init-pending")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         first_id = session.selected_id
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
 
         session.select(first_id)
         session.next_turn()
@@ -1412,15 +1468,15 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_surprised_unit_skips_turn_and_status_removed(self) -> None:
         session = self.context.create_session("init-surprised")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         surprised_id = session.selected_id
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
 
         entity = session.state.enemies[surprised_id]
         session.roll_initiative({surprised_id: "surprised"})
         self.assertIn("surprised", entity.statuses)
 
-        # Start encounter — if surprised_id is first, it should be skipped
+        # Start encounter â€” if surprised_id is first, it should be skipped
         # We ensure surprised_id is first in order
         session.order = [surprised_id] + [iid for iid in session.order if iid != surprised_id]
         session.start_encounter()
@@ -1431,9 +1487,9 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_turn_skip_notice_is_transient(self) -> None:
         session = self.context.create_session("init-transient")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         surprised_id = session.selected_id
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
 
         entity = session.state.enemies[surprised_id]
         session.roll_initiative({surprised_id: "surprised"})
@@ -1449,7 +1505,7 @@ class BattleSessionTests(unittest.TestCase):
 
     def test_encounter_started_flag_set_on_start_encounter(self) -> None:
         session = self.context.create_session("init-flag")
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
 
         self.assertFalse(session.encounter_started)
         session.start_encounter()
@@ -1493,7 +1549,7 @@ class WallEdgeDoorTests(unittest.TestCase):
         session.analyze_dungeon()
         # even with door_open=False by default, there are two rooms
         self.assertEqual(len(session.dungeon.rooms), 2)
-        # manually set door open and re-analyze — still two rooms
+        # manually set door open and re-analyze â€” still two rooms
         session.dungeon.walls["0,0,e"].door_open = True
         session.analyze_dungeon()
         self.assertEqual(len(session.dungeon.rooms), 2)
@@ -1521,7 +1577,7 @@ class WallEdgeDoorTests(unittest.TestCase):
         session = self._make_dungeon("wall-block", [[0, 0], [1, 0]])
         session.edit_dungeon_walls("wall", [{"x": 0, "y": 0, "side": "e"}])
         session.analyze_dungeon()
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         mover_id = session.selected_id
         entity = session.state.enemies[mover_id]
         entity.grid_x, entity.grid_y = 0, 0
@@ -1535,7 +1591,7 @@ class WallEdgeDoorTests(unittest.TestCase):
         session = self._make_dungeon("door-closed-block", [[0, 0], [1, 0]])
         session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
         session.analyze_dungeon()
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         mover_id = session.selected_id
         entity = session.state.enemies[mover_id]
         entity.grid_x, entity.grid_y = 0, 0
@@ -1550,7 +1606,7 @@ class WallEdgeDoorTests(unittest.TestCase):
         session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
         session.analyze_dungeon()
         session.dungeon.walls["0,0,e"].door_open = True
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         mover_id = session.selected_id
         entity = session.state.enemies[mover_id]
         entity.grid_x, entity.grid_y = 0, 0
@@ -1564,7 +1620,7 @@ class WallEdgeDoorTests(unittest.TestCase):
         """Open door on an orthogonal passage blocks diagonal through that corner.
 
         Door at '0,0,e'. Movement=1 means only a single diagonal step (cost 1) to (1,1)
-        is affordable; alternate 2-step routes (0,0)→(1,0)→(1,1) cost 2 and are out of
+        is affordable; alternate 2-step routes (0,0)â†’(1,0)â†’(1,1) cost 2 and are out of
         budget. So (1,1) becomes unreachable when that diagonal is blocked.
         """
         session = self._make_dungeon(
@@ -1574,34 +1630,34 @@ class WallEdgeDoorTests(unittest.TestCase):
         session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
         session.analyze_dungeon()
         session.dungeon.walls["0,0,e"].door_open = True
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         mover_id = session.selected_id
         entity = session.state.enemies[mover_id]
         entity.grid_x, entity.grid_y = 0, 0
         entity.movement = 1   # only 1 step budget: diagonal (cost 1) or orthogonal (cost 1)
         session.active_turn_id = mover_id
         session._reset_movement_state(mover_id)
-        # diagonal (0,0)→(1,1): horizontal leg 0,0,e has open door → _edge_has_any_wall=True → blocked
-        # alternate path via (1,0) or (0,1) costs 2 → out of budget (movement=1)
+        # diagonal (0,0)â†’(1,1): horizontal leg 0,0,e has open door â†’ _edge_has_any_wall=True â†’ blocked
+        # alternate path via (1,0) or (0,1) costs 2 â†’ out of budget (movement=1)
         with self.assertRaises(Exception):
             session.move_entity_with_movement(mover_id, 1, 1)
 
     def test_diagonal_blocked_by_wall_edge(self) -> None:
-        """Wall at '0,0,s' blocks the diagonal (0,0)→(1,1); movement=1 keeps alternate routes out of budget."""
+        """Wall at '0,0,s' blocks the diagonal (0,0)â†’(1,1); movement=1 keeps alternate routes out of budget."""
         session = self._make_dungeon(
             "diag-wall-block",
             [[0, 0], [1, 0], [0, 1], [1, 1]],
         )
         session.edit_dungeon_walls("wall", [{"x": 0, "y": 0, "side": "s"}])
         session.analyze_dungeon()
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         mover_id = session.selected_id
         entity = session.state.enemies[mover_id]
         entity.grid_x, entity.grid_y = 0, 0
         entity.movement = 1   # budget too small for 2-step alternate routes
         session.active_turn_id = mover_id
         session._reset_movement_state(mover_id)
-        # diagonal (0,0)→(1,1): south leg 0,0,s has wall → blocked
+        # diagonal (0,0)â†’(1,1): south leg 0,0,s has wall â†’ blocked
         with self.assertRaises(Exception):
             session.move_entity_with_movement(mover_id, 1, 1)
 
@@ -1609,7 +1665,7 @@ class WallEdgeDoorTests(unittest.TestCase):
         session = self._make_dungeon("diag-target-wall-block", [[0, 0], [1, 1]])
         session.edit_dungeon_walls("wall", [{"x": 0, "y": 1, "side": "e"}])
         session.analyze_dungeon()
-        session.add_enemy_from_template("goblin")
+        session.add_enemy_from_template("C_GOBLIN")
         mover_id = session.selected_id
         entity = session.state.enemies[mover_id]
         entity.grid_x, entity.grid_y = 0, 0
@@ -1642,10 +1698,10 @@ class WallEdgeDoorTests(unittest.TestCase):
         # wall between (0,0) and (1,0); door between (1,0) and (2,0)
         session.edit_dungeon_walls("wall", [{"x": 0, "y": 0, "side": "e"}])
         session.edit_dungeon_walls("door", [{"x": 1, "y": 0, "side": "e"}])
-        # remove (1,0) → door at 1,0,e loses both neighbors, wall at 0,0,e keeps (0,0)
+        # remove (1,0) â†’ door at 1,0,e loses both neighbors, wall at 0,0,e keeps (0,0)
         session.edit_dungeon_tiles("void", [[1, 0]])
-        self.assertIn("0,0,e", session.dungeon.walls)     # wall kept — (0,0) still exists
-        self.assertNotIn("1,0,e", session.dungeon.walls)  # door removed — (2,0) has no (1,0)
+        self.assertIn("0,0,e", session.dungeon.walls)     # wall kept â€” (0,0) still exists
+        self.assertNotIn("1,0,e", session.dungeon.walls)  # door removed â€” (2,0) has no (1,0)
 
     # ------------------------------------------------------------------ set_door_state
 

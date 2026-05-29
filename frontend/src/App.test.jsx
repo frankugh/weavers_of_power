@@ -1498,7 +1498,7 @@ describe("App", () => {
     expect(container.querySelector(".roster-card[data-state='state-active']")).toHaveTextContent("Bandit 1");
   });
 
-  it("renders premade cards from meta without min max preview text", async () => {
+  it("renders the premade browser from meta", async () => {
     const user = userEvent.setup();
     renderWithSnapshot(buildSnapshot());
 
@@ -1506,14 +1506,15 @@ describe("App", () => {
     await openAddUnitModal(user);
 
     expect(screen.getByText("Add Unit")).toBeInTheDocument();
-    expect(screen.getByAltText("Goblin")).toBeInTheDocument();
-    expect(screen.getByAltText("Bandit")).toBeInTheDocument();
-    expect(screen.getByAltText("Guard")).toBeInTheDocument();
-    expect(screen.getByAltText("Soldier")).toBeInTheDocument();
-    expect(screen.getByAltText("Wraith")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Goblin" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Bandit" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Guard" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Soldier" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Wraith" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Player Character" })).toBeInTheDocument();
-    expect(screen.queryByText(/\bmin\b/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/\bmax\b/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Filter part All" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Minimum threat level")).toBeInTheDocument();
+    expect(screen.getByLabelText("Maximum threat level")).toBeInTheDocument();
   });
 
   it("filters premade templates by search and category", async () => {
@@ -1524,16 +1525,16 @@ describe("App", () => {
     await openAddUnitModal(user);
 
     await user.type(screen.getByLabelText("Search enemies"), "sold");
-    expect(screen.getByAltText("Soldier")).toBeInTheDocument();
-    expect(screen.queryByAltText("Goblin")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Soldier" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add Goblin" })).not.toBeInTheDocument();
 
     await user.clear(screen.getByLabelText("Search enemies"));
-    await user.click(screen.getByRole("tab", { name: "Realms And Order" }));
+    await user.click(screen.getByRole("button", { name: "Filter part Realms And Order" }));
 
-    expect(screen.getByAltText("Guard")).toBeInTheDocument();
-    expect(screen.getByAltText("Soldier")).toBeInTheDocument();
-    expect(screen.queryByAltText("Goblin")).not.toBeInTheDocument();
-    expect(screen.queryByAltText("Bandit")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Guard" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Soldier" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add Goblin" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add Bandit" })).not.toBeInTheDocument();
   });
 
   it("posts the selected premade template to the enemy endpoint", async () => {
@@ -1566,11 +1567,7 @@ describe("App", () => {
 
     await findMapToken("Goblin 1");
     await openAddUnitModal(user);
-    const goblinCard = screen.getByAltText("Goblin").closest("button");
-    if (!goblinCard) {
-      throw new Error("Missing premade goblin card");
-    }
-    await user.click(goblinCard);
+    await user.click(screen.getByRole("button", { name: "Add Goblin" }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
@@ -1613,7 +1610,7 @@ describe("App", () => {
 
     await findMapToken("Goblin 1");
     await openAddUnitModal(user);
-    await user.click(screen.getByAltText("Guard").closest("button"));
+    await user.click(screen.getByRole("button", { name: "Add Guard" }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(

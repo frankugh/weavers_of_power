@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import tempfile
 import unittest
@@ -36,14 +36,14 @@ class BattleApiTests(unittest.TestCase):
         self.assertIn("human_fighter_lvl1", player_decks_by_id)
         self.assertIn("human_wizzard_lvl1", player_decks_by_id)
         templates_by_id = {item["id"]: item for item in payload["enemyTemplates"]}
-        self.assertTrue({"goblin", "bandit", "guard", "soldier"}.issubset(templates_by_id))
-        goblin_template = next(item for item in payload["enemyTemplates"] if item["id"] == "goblin")
+        self.assertTrue({"C_GOBLIN", "C_WOLF", "C_HOBGOBLIN", "C_WORG"}.issubset(templates_by_id))
+        goblin_template = next(item for item in payload["enemyTemplates"] if item["id"] == "C_GOBLIN")
         self.assertEqual(goblin_template["name"], "Goblin")
-        self.assertEqual(goblin_template["imageUrl"], "/images/Greenskins/goblin.png")
-        self.assertEqual(templates_by_id["goblin"]["category"], "Greenskins")
-        self.assertEqual(templates_by_id["bandit"]["category"], "Outlaws")
-        self.assertEqual(templates_by_id["guard"]["category"], "Realms_and_order")
-        self.assertEqual(templates_by_id["soldier"]["category"], "Realms_and_order")
+        self.assertEqual(goblin_template["imageUrl"], "/images/Changelings/Greenskins/C_GOBLIN.png")
+        self.assertEqual(templates_by_id["C_GOBLIN"]["category"], "Changelings")
+        self.assertEqual(templates_by_id["C_GOBLIN"]["section"], "Greenskins")
+        self.assertTrue(templates_by_id["C_GOBLIN"]["spawnable"])
+        self.assertEqual(templates_by_id["C_WOLF"]["category"], "Changelings")
 
     def test_create_and_load_session(self) -> None:
         create_response = self.client.post("/api/battle/sessions")
@@ -59,7 +59,7 @@ class BattleApiTests(unittest.TestCase):
 
     def test_restricted_move_endpoint_tracks_pool_and_position_repositions_freely(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        added = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        added = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()
         entity_id = added["selectedId"]
         self.client.post(f"/api/battle/sessions/{sid}/entities/{entity_id}/position", json={"x": 0, "y": 0})
         self.client.post(f"/api/battle/sessions/{sid}/turn/next")
@@ -92,7 +92,7 @@ class BattleApiTests(unittest.TestCase):
 
     def test_position_endpoint_accepts_negative_sparse_floor(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        added = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        added = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()
         entity_id = added["selectedId"]
         tile_response = self.client.post(
             f"/api/battle/sessions/{sid}/dungeon/tiles",
@@ -117,9 +117,9 @@ class BattleApiTests(unittest.TestCase):
 
     def test_batch_position_endpoint_moves_group_atomically_and_undoes_once(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        first_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()["selectedId"]
-        second_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()["selectedId"]
-        blocker_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "guard"}).json()["selectedId"]
+        first_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()["selectedId"]
+        second_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"}).json()["selectedId"]
+        blocker_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_HOBGOBLIN"}).json()["selectedId"]
         self.client.post(f"/api/battle/sessions/{sid}/entities/{first_id}/position", json={"x": 0, "y": 0})
         self.client.post(f"/api/battle/sessions/{sid}/entities/{second_id}/position", json={"x": 1, "y": 0})
         self.client.post(f"/api/battle/sessions/{sid}/entities/{blocker_id}/position", json={"x": 3, "y": 0})
@@ -164,7 +164,7 @@ class BattleApiTests(unittest.TestCase):
 
     def test_copy_endpoint_creates_fresh_enemy_and_is_undoable(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        added = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        added = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()
         source_id = added["selectedId"]
         before = self.client.get(f"/api/battle/sessions/{sid}").json()
         source = next(enemy for enemy in before["enemies"] if enemy["instance_id"] == source_id)
@@ -230,9 +230,9 @@ class BattleApiTests(unittest.TestCase):
 
     def test_start_encounter_endpoint_activates_highest_initiative_unit(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        first_enemy = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        first_enemy = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()
         first_id = first_enemy["selectedId"]
-        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"})
+        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"})
 
         response = self.client.post(f"/api/battle/sessions/{sid}/encounter/start")
 
@@ -249,7 +249,7 @@ class BattleApiTests(unittest.TestCase):
         snapshot = self.client.post("/api/battle/sessions").json()
         sid = snapshot["sid"]
 
-        add_enemy = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"})
+        add_enemy = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"})
         self.assertEqual(add_enemy.status_code, 200)
         entity_id = add_enemy.json()["selectedId"]
 
@@ -295,7 +295,7 @@ class BattleApiTests(unittest.TestCase):
     def test_new_taxonomy_templates_can_be_added(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
 
-        for template_id in ("guard", "soldier"):
+        for template_id in ("C_HOBGOBLIN", "C_WORG"):
             response = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": template_id})
             self.assertEqual(response.status_code, 200)
             selected = next(enemy for enemy in response.json()["enemies"] if enemy["instance_id"] == response.json()["selectedId"])
@@ -303,7 +303,7 @@ class BattleApiTests(unittest.TestCase):
 
     def test_next_clears_current_draw_until_a_new_draw_happens(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        add_enemy = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        add_enemy = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()
         entity_id = add_enemy["selectedId"]
 
         draw_response = self.client.post(f"/api/battle/sessions/{sid}/turn/draw")
@@ -328,9 +328,9 @@ class BattleApiTests(unittest.TestCase):
 
     def test_next_to_other_unit_keeps_previous_units_draw_visible(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        first_enemy = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        first_enemy = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()
         first_id = first_enemy["selectedId"]
-        second_enemy = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        second_enemy = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"}).json()
         second_id = second_enemy["selectedId"]
 
         self.client.post(f"/api/battle/sessions/{sid}/select", json={"instanceId": first_id})
@@ -350,7 +350,7 @@ class BattleApiTests(unittest.TestCase):
 
     def test_attack_and_heal_endpoints_return_updated_snapshot(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        enemy_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        enemy_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"}).json()
 
         before = next(enemy for enemy in enemy_snapshot["enemies"] if enemy["instance_id"] == enemy_snapshot["selectedId"])
 
@@ -367,7 +367,7 @@ class BattleApiTests(unittest.TestCase):
 
         heal_response = self.client.post(
             f"/api/battle/sessions/{sid}/heal",
-            json={"toughness": 1, "armor": 0, "magicArmor": 0, "guard": 0},
+            json={"toughness": 1, "armor": 0, "magicArmor": 0, "C_HOBGOBLIN": 0},
         )
         self.assertEqual(heal_response.status_code, 200)
         healed = next(enemy for enemy in heal_response.json()["enemies"] if enemy["instance_id"] == enemy_snapshot["selectedId"])
@@ -479,7 +479,7 @@ class BattleApiTests(unittest.TestCase):
 
         payload = self.client.post(
             f"/api/battle/sessions/{sid}/heal",
-            json={"toughness": 3, "armor": 0, "magicArmor": 0, "guard": 0},
+            json={"toughness": 3, "armor": 0, "magicArmor": 0, "C_HOBGOBLIN": 0},
         ).json()
 
         player = next(enemy for enemy in payload["enemies"] if enemy["template_id"] == "player")
@@ -488,7 +488,7 @@ class BattleApiTests(unittest.TestCase):
 
         payload = self.client.post(
             f"/api/battle/sessions/{sid}/heal",
-            json={"toughness": 3, "armor": 0, "magicArmor": 0, "guard": 0},
+            json={"toughness": 3, "armor": 0, "magicArmor": 0, "C_HOBGOBLIN": 0},
         ).json()
 
         player = next(enemy for enemy in payload["enemies"] if enemy["template_id"] == "player")
@@ -496,9 +496,9 @@ class BattleApiTests(unittest.TestCase):
 
     def test_quick_attack_endpoint_uses_active_draw_and_supports_undo(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        attacker_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        attacker_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"}).json()
         attacker_id = attacker_snapshot["selectedId"]
-        target_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        target_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()
         target_id = target_snapshot["selectedId"]
         session = self.context.load_session(sid)
         attacker = session.state.enemies[attacker_id]
@@ -508,7 +508,7 @@ class BattleApiTests(unittest.TestCase):
         target.guard_current = 0
         target.armor_current = 0
         target.armor_max = 0
-        attacker.deck_state.hand = ["bandit_s3"]
+        attacker.deck_state.hand = ["C_GOBLIN__S__10"]
         session.active_turn_id = attacker_id
         session.turn_in_progress = True
         session.select(target_id)
@@ -538,7 +538,7 @@ class BattleApiTests(unittest.TestCase):
 
     def test_undo_restores_previous_mutation_state(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        enemy_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        enemy_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"}).json()
         entity_id = enemy_snapshot["selectedId"]
         before = next(enemy for enemy in enemy_snapshot["enemies"] if enemy["instance_id"] == entity_id)
 
@@ -568,7 +568,7 @@ class BattleApiTests(unittest.TestCase):
 
     def test_redo_persists_and_new_mutation_clears_redo_history(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        add_response = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        add_response = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"}).json()
         entity_id = add_response["selectedId"]
         attacked_response = self.client.post(
             f"/api/battle/sessions/{sid}/attack",
@@ -593,7 +593,7 @@ class BattleApiTests(unittest.TestCase):
 
     def test_undo_is_lifo_and_persists_across_session_reload(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        add_response = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        add_response = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"}).json()
         entity_id = add_response["selectedId"]
         attacked_response = self.client.post(
             f"/api/battle/sessions/{sid}/attack",
@@ -601,7 +601,7 @@ class BattleApiTests(unittest.TestCase):
         ).json()
         healed_response = self.client.post(
             f"/api/battle/sessions/{sid}/heal",
-            json={"toughness": 1, "armor": 0, "magicArmor": 0, "guard": 0},
+            json={"toughness": 1, "armor": 0, "magicArmor": 0, "C_HOBGOBLIN": 0},
         ).json()
 
         self.assertEqual(healed_response["undoDepth"], 3)
@@ -630,9 +630,9 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(empty_redo_response.status_code, 400)
         self.assertIn("Nothing to redo", empty_redo_response.json()["detail"])
 
-        first = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        first = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()
         first_id = first["selectedId"]
-        second = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        second = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"}).json()
         second_id = second["selectedId"]
         depth_before_select = second["undoDepth"]
 
@@ -655,14 +655,14 @@ class BattleApiTests(unittest.TestCase):
 
     def test_manual_load_resets_undo_history(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        first = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        first = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()
         self.assertTrue(first["canUndo"])
 
         save_response = self.client.post(f"/api/battle/sessions/{sid}/saves", json={"name": "undo-reset"})
         saves = self.client.get(f"/api/battle/sessions/{sid}/saves").json()["saves"]
         self.assertTrue(save_response.json()["canUndo"])
 
-        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"})
+        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"})
         load_response = self.client.post(
             f"/api/battle/sessions/{sid}/load",
             json={"filename": saves[0]["filename"]},
@@ -707,9 +707,9 @@ class BattleApiTests(unittest.TestCase):
 
     def test_position_endpoint_validates_map_state(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        first = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"}).json()
+        first = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()
         first_id = first["selectedId"]
-        second = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()
+        second = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"}).json()
         second_id = second["selectedId"]
 
         move_response = self.client.post(
@@ -728,7 +728,7 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(occupied_response.status_code, 400)
         self.assertIn("occupied", occupied_response.json()["detail"])
 
-        # Down units don't block — second can stack on the cell where first is downed
+        # Down units don't block â€” second can stack on the cell where first is downed
         self.client.post(f"/api/battle/sessions/{sid}/select", json={"instanceId": first_id})
         down_response = self.client.post(
             f"/api/battle/sessions/{sid}/attack",
@@ -748,8 +748,8 @@ class BattleApiTests(unittest.TestCase):
 
     def test_pending_new_round_flag_and_round_start_endpoint(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"})
-        first_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"}).json()["selectedId"]
+        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"})
+        first_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"}).json()["selectedId"]
         self.client.post(f"/api/battle/sessions/{sid}/select", json={"instanceId": self.client.get(f"/api/battle/sessions/{sid}").json()["order"][0]})
 
         first_next = self.client.post(f"/api/battle/sessions/{sid}/turn/next").json()
@@ -830,8 +830,8 @@ class BattleApiTests(unittest.TestCase):
 
     def test_roll_initiative_endpoint(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"})
-        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "bandit"})
+        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"})
+        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"})
 
         response = self.client.post(f"/api/battle/sessions/{sid}/initiative/roll", json={"modes": {}})
 
@@ -846,7 +846,7 @@ class BattleApiTests(unittest.TestCase):
 
     def test_roll_initiative_blocked_when_encounter_active(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
-        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "goblin"})
+        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"})
         self.client.post(f"/api/battle/sessions/{sid}/encounter/start")
 
         response = self.client.post(f"/api/battle/sessions/{sid}/initiative/roll", json={"modes": {}})

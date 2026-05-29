@@ -6,7 +6,8 @@ import random
 import traceback
 from pathlib import Path
 
-from engine.loader import load_decks, load_enemies
+from engine.excel_creatures import load_creatures_from_workbook
+from engine.loader import load_decks
 from engine.runtime import spawn_enemy, enemy_turn, end_turn
 from engine.turn_hooks import on_turn_start
 from engine.combat import apply_attack, apply_heal
@@ -19,6 +20,9 @@ def build_card_index(decks: dict, enemy_templates: dict) -> dict:
         for c in d.cards:
             idx[c.id] = c
     for et in enemy_templates.values():
+        if et.action_deck:
+            for c in et.action_deck.cards:
+                idx[c.id] = c
         for s in et.specials:
             idx[s.id] = s
     return idx
@@ -28,6 +32,8 @@ def card_to_text(card_index: dict, card_id: str) -> str:
     c = card_index.get(card_id)
     if not c:
         return card_id
+    if c.action_text:
+        return c.action_text
     parts = []
     for eff in c.effects:
         if eff.type == "attack":
@@ -44,7 +50,7 @@ def card_to_text(card_index: dict, card_id: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--enemy", default="goblin", help="enemy template id (e.g. goblin, bandid)")
+    parser.add_argument("--enemy", default="C_GOBLIN", help="enemy template id (e.g. C_GOBLIN)")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument(
         "--strict-images",
@@ -55,7 +61,7 @@ def main() -> int:
 
     root = Path(__file__).parent
     decks_dir = root / "data" / "decks"
-    enemies_dir = root / "data" / "enemies"
+    creatures_workbook = root / "data" / "denizens_creature_database.xlsx"
     images_dir = root / "images"
 
     rnd = random.Random(args.seed)
@@ -63,9 +69,7 @@ def main() -> int:
     try:
         decks = load_decks(decks_dir)
 
-        # Skip image checks by default (so engine tests run even if images are missing)
-        img_dir_for_loader = images_dir if args.strict_images else (root / "__no_images__does_not_exist__")
-        enemies = load_enemies(enemies_dir, decks=decks, images_dir=img_dir_for_loader)
+        enemies = load_creatures_from_workbook(creatures_workbook, images_dir=images_dir)
 
         if args.enemy not in enemies:
             print(f"ERROR: unknown enemy id '{args.enemy}'. Available: {sorted(enemies.keys())}")
@@ -78,7 +82,7 @@ def main() -> int:
         print("=== SPAWNED ===")
         print(f"template_id={tpl.id} name={tpl.name} image={tpl.image}")
         print(
-            f"HP {e.hp_current}/{e.hp_max} | Armor {e.armor_current}/{e.armor_max} | "
+            f"Toughness {e.toughness_current}/{e.toughness_max} | Armor {e.armor_current}/{e.armor_max} | "
             f"Magic {e.magic_armor_current}/{e.magic_armor_max} | "
             f"Guard {getattr(e, 'guard_current', 0)} (base {getattr(e, 'guard_base', 0)})"
         )
@@ -86,7 +90,7 @@ def main() -> int:
         # Ensure we start with base guard (if you spawn with 0, this shows it clearly)
         print("\n=== TURN START (reset guard to base) ===")
         th = on_turn_start(e)
-        print(f"guard: {th.guard_before} -> {th.guard_after} | hp: {th.hp_before} -> {th.hp_after} | dot={th.dot_damage}")
+        print(f"guard: {th.guard_before} -> {th.guard_after} | toughness: {th.toughness_before} -> {th.toughness_after} | dot={th.dot_damage}")
 
         # Simulate a draw turn and auto-apply guard cards (like the UI does)
         print("\n=== ENEMY TURN (draw + auto-apply guard cards) ===")
@@ -106,7 +110,7 @@ def main() -> int:
 
         print(f"auto-guard added from draw: {guard_added}")
         print(
-            f"after draw: HP {e.hp_current}/{e.hp_max} | Guard {e.guard_current} (base {getattr(e,'guard_base',0)})"
+            f"after draw: Toughness {e.toughness_current}/{e.toughness_max} | Guard {e.guard_current} (base {getattr(e,'guard_base',0)})"
         )
 
         # Now test guard as a *consumable pool* with an incoming hit
@@ -115,7 +119,7 @@ def main() -> int:
         log = apply_attack(e, dmg, mods=[])
         print(
             f"in={log.input_damage} guarded_total={log.guarded_total} damage_to_hp={log.damage_to_hp} "
-            f"HP {log.hp_before}->{log.hp_after} | Guard {log.guard_before}->{log.guard_after} | "
+            f"Toughness {log.toughness_before}->{log.toughness_after} | Guard {log.guard_before}->{log.guard_after} | "
             f"Armor {log.armor_before}->{log.armor_after} | Magic {log.magic_armor_before}->{log.magic_armor_after}"
         )
 
@@ -126,7 +130,7 @@ def main() -> int:
         # Next turn start should reset guard back to base again
         print("\n=== NEXT TURN START (guard reset) ===")
         th2 = on_turn_start(e)
-        print(f"guard: {th2.guard_before} -> {th2.guard_after} | hp: {th2.hp_before} -> {th2.hp_after} | dot={th2.dot_damage}")
+        print(f"guard: {th2.guard_before} -> {th2.guard_after} | toughness: {th2.toughness_before} -> {th2.toughness_after} | dot={th2.dot_damage}")
 
         print("\nOK")
         return 0

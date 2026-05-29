@@ -5,7 +5,7 @@ import { pickSearchFlavour } from "./roomSearchFlavour.js";
 
 const ATTACK_MODIFIERS = [
   { key: "stab", label: "Stab" },
-  { key: "pierce", label: "Pierce" },
+  { key: "pierce", label: "Pierce X" },
   { key: "magic_pierce", label: "Magic pierce" },
   { key: "sunder", label: "Sunder" },
 ];
@@ -15,6 +15,20 @@ const ATTACK_STATUSES = [
   { key: "poison", label: "Poison" },
   { key: "slow", label: "Slow" },
   { key: "paralyze", label: "Paralyze" },
+];
+const CREATURE_ACTION_ORDER = ["MISS", "A1", "A2", "A3", "A4", "A5", "S"];
+const CREATURE_SKILL_LABELS = {
+  intelligence: "Int",
+  alertness: "Alert",
+  stealth: "Stealth",
+  social: "Social",
+  arcana: "Arcana",
+  athletics: "Athletics",
+};
+const TEMPLATE_AVAILABILITY_FILTERS = [
+  { id: "spawnable", label: "Spawnable" },
+  { id: "all", label: "All" },
+  { id: "design", label: "To Design" },
 ];
 
 const DEFAULT_ROOM = { columns: 10, rows: 7 };
@@ -55,6 +69,7 @@ const DRAW_REVEAL_TIMING = {
 };
 const EMPTY_ATTACK_FORM = {
   damage: 1,
+  pierceAmount: 1,
   modifiers: {
     stab: false,
     pierce: false,
@@ -182,15 +197,120 @@ function normalizeSearch(value) {
 }
 
 function getTemplateCategory(template) {
-  return template?.category || "Uncategorized";
+  return template?.part || template?.category || "Uncategorized";
 }
 
-function filterTemplates(templates, search, category) {
+function getTemplateSection(template) {
+  return template?.section || "Uncategorized";
+}
+
+function uniqueInOrder(values) {
+  const seen = new Set();
+  return values.filter((value) => {
+    if (seen.has(value)) {
+      return false;
+    }
+    seen.add(value);
+    return true;
+  });
+}
+
+function getTemplateThreatLevel(template) {
+  const value = Number.parseInt(template?.threatLevel, 10);
+  return Number.isFinite(value) ? value : null;
+}
+
+function isTemplateSpawnable(template) {
+  return template?.spawnable !== false;
+}
+
+function isTemplateDesignCandidate(template) {
+  const status = String(template?.playtestStatus || "").toLowerCase();
+  return template?.spawnable === false || status.includes("design");
+}
+
+function summarizeTemplates(templates) {
+  return templates.reduce(
+    (summary, template) => {
+      summary.total += 1;
+      if (isTemplateSpawnable(template)) {
+        summary.spawnable += 1;
+      }
+      if (isTemplateDesignCandidate(template)) {
+        summary.design += 1;
+      }
+      return summary;
+    },
+    { total: 0, spawnable: 0, design: 0 },
+  );
+}
+
+function statCountForAvailability(summary, availability) {
+  if (availability === "spawnable") {
+    return summary.spawnable;
+  }
+  if (availability === "design") {
+    return summary.design;
+  }
+  return summary.total;
+}
+
+function getTemplateStatusLabel(template) {
+  if (!isTemplateSpawnable(template)) {
+    return isTemplateDesignCandidate(template) ? "To Design" : "Blocked";
+  }
+  return template?.playtestStatus ? titleCaseFromSnake(String(template.playtestStatus)) : "Ready";
+}
+
+function getTemplateInitials(template) {
+  const words = String(template?.name || template?.id || "?")
+    .split(/\s+/)
+    .filter(Boolean);
+  return words.slice(0, 2).map((word) => word.charAt(0).toUpperCase()).join("") || "?";
+}
+
+function filterTemplates(templates, filters) {
+  const { search, category, section, availability, threatMin, threatMax } = filters;
   const normalizedSearch = normalizeSearch(search);
+  const minThreat = threatMin === "" ? null : Number(threatMin);
+  const maxThreat = threatMax === "" ? null : Number(threatMax);
+
   return templates.filter((template) => {
     const matchesCategory = category === "All" || getTemplateCategory(template) === category;
-    const haystack = `${template.name} ${template.id}`.toLowerCase();
-    return matchesCategory && (!normalizedSearch || haystack.includes(normalizedSearch));
+    const matchesSection = section === "All" || getTemplateSection(template) === section;
+    const threatLevel = getTemplateThreatLevel(template);
+    const matchesAvailability =
+      availability === "all" ||
+      (availability === "spawnable" && isTemplateSpawnable(template)) ||
+      (availability === "design" && isTemplateDesignCandidate(template));
+    const matchesThreatMin = minThreat === null || (threatLevel !== null && threatLevel >= minThreat);
+    const matchesThreatMax = maxThreat === null || (threatLevel !== null && threatLevel <= maxThreat);
+    const haystack = [
+      template.name,
+      template.id,
+      template.shortFlavour,
+      template.part,
+      template.section,
+      template.threatTier,
+      template.playtestStatus,
+    ].filter(Boolean).join(" ").toLowerCase();
+    return (
+      matchesCategory &&
+      matchesSection &&
+      matchesAvailability &&
+      matchesThreatMin &&
+      matchesThreatMax &&
+      (!normalizedSearch || haystack.includes(normalizedSearch))
+    );
+  }).sort((a, b) => {
+    const spawnSort = Number(isTemplateSpawnable(b)) - Number(isTemplateSpawnable(a));
+    if (spawnSort) return spawnSort;
+
+    const threatA = getTemplateThreatLevel(a) ?? 999;
+    const threatB = getTemplateThreatLevel(b) ?? 999;
+    if (threatA !== threatB) return threatA - threatB;
+
+    return String(a.name || a.id).localeCompare(String(b.name || b.id));
   });
 }
 
@@ -238,7 +358,13 @@ function hasGridPosition(entity, room, dungeon = null) {
 }
 
 function isTemplateLootable(entity) {
-  return Boolean(entity && !entity.is_player && entity.template_id !== "custom" && entity.template_id !== "player");
+  return Boolean(
+    entity &&
+    !entity.is_player &&
+    entity.template_id !== "custom" &&
+    entity.template_id !== "player" &&
+    entity.has_loot !== false
+  );
 }
 
 const ENERGY_TYPE_LABELS = {
@@ -402,6 +528,48 @@ function DopHandPanel({ cards, summary }) {
   );
 }
 
+function CreatureInfoPanel({ info }) {
+  if (!info) return null;
+  const skills = Object.entries(info.skills || {});
+  const actions = CREATURE_ACTION_ORDER
+    .map((key) => [key, info.actions?.[key]])
+    .filter(([, value]) => value);
+
+  return (
+    <div className="unit-inspector-section creature-info-section">
+      <div className="selected-draw-label">Creature</div>
+      <div className="creature-taxonomy-line">
+        {[info.part, info.section, info.threatLevel != null ? `TL ${info.threatLevel}` : null]
+          .filter(Boolean)
+          .join(" / ")}
+      </div>
+      {info.shortFlavour ? <div className="creature-flavour">{info.shortFlavour}</div> : null}
+      {info.traits ? <div className="creature-traits">{info.traits}</div> : null}
+      {skills.length > 0 ? (
+        <div className="creature-skill-grid">
+          {skills.map(([key, value]) => (
+            <span key={key} className="creature-skill-pill">
+              <span>{CREATURE_SKILL_LABELS[key] || titleCaseFromSnake(key)}</span>
+              <strong>{value}</strong>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {actions.length > 0 ? (
+        <details className="creature-actions-list">
+          <summary>Actions</summary>
+          {actions.map(([key, value]) => (
+            <div key={key} className="creature-action-row">
+              <strong>{key}</strong>
+              <span>{value}</span>
+            </div>
+          ))}
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
 function App() {
   const bootstrapped = useRef(false);
   const actionMenuRef = useRef(null);
@@ -419,6 +587,10 @@ function App() {
   const [addUnitTab, setAddUnitTab] = useState("premade");
   const [templateSearch, setTemplateSearch] = useState("");
   const [templateCategory, setTemplateCategory] = useState("All");
+  const [templateSection, setTemplateSection] = useState("All");
+  const [templateAvailability, setTemplateAvailability] = useState("spawnable");
+  const [templateThreatMin, setTemplateThreatMin] = useState("");
+  const [templateThreatMax, setTemplateThreatMax] = useState("");
   const [mapMode, setMapMode] = useState(MAP_MODES.IDLE);
   const [pendingDashMove, setPendingDashMove] = useState(null);
   const [saveName, setSaveName] = useState("session");
@@ -878,13 +1050,49 @@ function App() {
   const initiativeRolledForTarget =
     initiativeTargetRound !== null && initiativeRolledRound === initiativeTargetRound;
   const allTemplates = meta?.enemyTemplates || [];
-  const templateCategories = useMemo(
-    () => ["All", ...Array.from(new Set(allTemplates.map(getTemplateCategory))).sort((a, b) => a.localeCompare(b))],
+  const templateCategories = useMemo(() => ["All", ...uniqueInOrder(allTemplates.map(getTemplateCategory))], [allTemplates]);
+  const templateCategoryStats = useMemo(() => {
+    const stats = new Map();
+    stats.set("All", summarizeTemplates(allTemplates));
+    templateCategories.filter((category) => category !== "All").forEach((category) => {
+      stats.set(category, summarizeTemplates(allTemplates.filter((template) => getTemplateCategory(template) === category)));
+    });
+    return stats;
+  }, [allTemplates, templateCategories]);
+  const templateSections = useMemo(() => {
+    if (templateCategory === "All") {
+      return ["All"];
+    }
+    const scoped = templateCategory === "All"
+      ? allTemplates
+      : allTemplates.filter((template) => getTemplateCategory(template) === templateCategory);
+    return ["All", ...uniqueInOrder(scoped.map(getTemplateSection))];
+  }, [allTemplates, templateCategory]);
+  const templateSectionStats = useMemo(() => {
+    const scoped = templateCategory === "All"
+      ? allTemplates
+      : allTemplates.filter((template) => getTemplateCategory(template) === templateCategory);
+    const stats = new Map();
+    stats.set("All", summarizeTemplates(scoped));
+    templateSections.filter((section) => section !== "All").forEach((section) => {
+      stats.set(section, summarizeTemplates(scoped.filter((template) => getTemplateSection(template) === section)));
+    });
+    return stats;
+  }, [allTemplates, templateCategory, templateSections]);
+  const templateThreatLevels = useMemo(
+    () => Array.from(new Set(allTemplates.map(getTemplateThreatLevel).filter((value) => value !== null))).sort((a, b) => a - b),
     [allTemplates],
   );
   const shownTemplates = useMemo(
-    () => filterTemplates(allTemplates, templateSearch, templateCategory),
-    [allTemplates, templateSearch, templateCategory],
+    () => filterTemplates(allTemplates, {
+      search: templateSearch,
+      category: templateCategory,
+      section: templateSection,
+      availability: templateAvailability,
+      threatMin: templateThreatMin,
+      threatMax: templateThreatMax,
+    }),
+    [allTemplates, templateSearch, templateCategory, templateSection, templateAvailability, templateThreatMin, templateThreatMax],
   );
   const selectedDrawPreviewHighlighted = Boolean(
     drawReveal?.phase === "settle" && selectedEntity?.instance_id === drawReveal.entityId,
@@ -895,6 +1103,10 @@ function App() {
     setAddUnitTab("premade");
     setTemplateSearch("");
     setTemplateCategory("All");
+    setTemplateSection("All");
+    setTemplateAvailability("spawnable");
+    setTemplateThreatMin("");
+    setTemplateThreatMax("");
     setPendingDashMove(null);
     setPendingLargeTileEdit(null);
     setDrawDetail(null);
@@ -1015,6 +1227,10 @@ function App() {
     setAddUnitTab("premade");
     setTemplateSearch("");
     setTemplateCategory("All");
+    setTemplateSection("All");
+    setTemplateAvailability("spawnable");
+    setTemplateThreatMin("");
+    setTemplateThreatMax("");
     setModal("add");
   }
 
@@ -1739,7 +1955,13 @@ function App() {
     event.preventDefault();
     const modifiers = Object.entries(attackForm.modifiers)
       .filter(([, enabled]) => enabled)
-      .map(([key]) => key);
+      .map(([key]) => {
+        if (key === "pierce") {
+          return `pierce:${Math.max(0, Number(attackForm.pierceAmount || 0))}`;
+        }
+        return key;
+      })
+      .filter((key) => key !== "pierce:0");
     const payload = await applySnapshotRequest(
       `/api/battle/sessions/${snapshot.sid}/attack`,
       {
@@ -2669,6 +2891,8 @@ function App() {
                     />
                   ) : null}
 
+                  {!selectedEntity.is_player ? <CreatureInfoPanel info={selectedEntity.template_info} /> : null}
+
                   {selectedHasDraw ? (
                     <div
                       className={`unit-inspector-section unit-inspector-draw-preview ${
@@ -3064,6 +3288,19 @@ function App() {
                 />
               ))}
             </div>
+            {attackForm.modifiers.pierce ? (
+              <label className="field attack-pierce-field">
+                <span>Pierce amount</span>
+                <input
+                  type="number"
+                  min="1"
+                  value={attackForm.pierceAmount}
+                  onChange={(event) =>
+                    setAttackForm((current) => ({ ...current, pierceAmount: event.target.value }))
+                  }
+                />
+              </label>
+            ) : null}
           </div>
 
           <div className="form-section">
@@ -3233,6 +3470,7 @@ function App() {
         title="Add Unit"
         onClose={closeModal}
         size="wide"
+        className="modal-shell-add-unit"
       >
         <div className="panel-body add-unit-body">
           <div className="add-unit-tabs" role="tablist">
@@ -3252,51 +3490,162 @@ function App() {
 
           {addUnitTab === "premade" && (
             <div className="add-unit-tab-panel">
-              <div className="template-library-controls">
-                <label className="field template-search-field">
-                  <span>Search enemies</span>
-                  <input
-                    type="search"
-                    value={templateSearch}
-                    onChange={(event) => setTemplateSearch(event.target.value)}
-                    placeholder="Name or id"
-                  />
-                </label>
-                <div className="template-category-tabs" role="tablist" aria-label="Enemy categories">
-                  {templateCategories.map((category) => (
-                    <button
-                      key={category}
-                      type="button"
-                      className={`template-category-tab ${templateCategory === category ? "template-category-tab-active" : ""}`.trim()}
-                      onClick={() => setTemplateCategory(category)}
-                      role="tab"
-                      aria-selected={templateCategory === category}
-                    >
-                      {category === "All" ? "All" : titleCaseFromSnake(category)}
-                    </button>
-                  ))}
+              <div className="creature-browser">
+                <aside className="creature-browser-sidebar" aria-label="Enemy parts">
+                  {templateCategories.map((category) => {
+                    const stats = templateCategoryStats.get(category) || summarizeTemplates([]);
+                    const count = statCountForAvailability(stats, templateAvailability);
+                    const label = category === "All" ? "All" : titleCaseFromSnake(category);
+                    return (
+                      <button
+                        key={category}
+                        type="button"
+                        className={`creature-part-button ${templateCategory === category ? "creature-part-button-active" : ""}`.trim()}
+                        onClick={() => {
+                          setTemplateCategory(category);
+                          setTemplateSection("All");
+                        }}
+                        aria-pressed={templateCategory === category}
+                        aria-label={`Filter part ${label}`}
+                      >
+                        <span>{label}</span>
+                        <strong>{count}</strong>
+                      </button>
+                    );
+                  })}
+                </aside>
+
+                <div className="creature-browser-main">
+                  <div className="creature-browser-toolbar">
+                    <label className="field template-search-field">
+                      <span>Search enemies</span>
+                      <input
+                        type="search"
+                        value={templateSearch}
+                        onChange={(event) => setTemplateSearch(event.target.value)}
+                        placeholder="Name, id, trait"
+                      />
+                    </label>
+
+                    <div className="creature-status-segment" role="group" aria-label="Enemy availability">
+                      {TEMPLATE_AVAILABILITY_FILTERS.map((filter) => (
+                        <button
+                          key={filter.id}
+                          type="button"
+                          className={`creature-status-button ${templateAvailability === filter.id ? "creature-status-button-active" : ""}`.trim()}
+                          onClick={() => setTemplateAvailability(filter.id)}
+                          aria-pressed={templateAvailability === filter.id}
+                          aria-label={`Show ${filter.label} templates`}
+                        >
+                          {filter.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="creature-threat-filters">
+                      <label className="field creature-threat-field">
+                        <span>TL min</span>
+                        <select
+                          aria-label="Minimum threat level"
+                          value={templateThreatMin}
+                          onChange={(event) => setTemplateThreatMin(event.target.value)}
+                        >
+                          <option value="">Any</option>
+                          {templateThreatLevels.map((level) => (
+                            <option key={level} value={level}>TL {level}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="field creature-threat-field">
+                        <span>TL max</span>
+                        <select
+                          aria-label="Maximum threat level"
+                          value={templateThreatMax}
+                          onChange={(event) => setTemplateThreatMax(event.target.value)}
+                        >
+                          <option value="">Any</option>
+                          {templateThreatLevels.map((level) => (
+                            <option key={level} value={level}>TL {level}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+
+                  {templateCategory !== "All" && templateSections.length > 1 ? (
+                    <div className="creature-section-tabs" role="group" aria-label="Enemy sections">
+                      {templateSections.map((section) => {
+                        const stats = templateSectionStats.get(section) || summarizeTemplates([]);
+                        const count = statCountForAvailability(stats, templateAvailability);
+                        const label = section === "All" ? "All sections" : section;
+                        return (
+                          <button
+                            key={section}
+                            type="button"
+                            className={`creature-section-tab ${templateSection === section ? "creature-section-tab-active" : ""}`.trim()}
+                            onClick={() => setTemplateSection(section)}
+                            aria-pressed={templateSection === section}
+                            aria-label={`Filter section ${label}`}
+                          >
+                            <span>{label}</span>
+                            <strong>{count}</strong>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+
+                  <div className="creature-results-summary">
+                    <span>{shownTemplates.length} results</span>
+                  </div>
+
+                  <div className="creature-result-list">
+                    {shownTemplates.map((template) => {
+                      const isSpawnable = isTemplateSpawnable(template);
+                      const showImage = template.imageUrl && template.imageUrl !== "/images/anonymous.png" && template.imageMissing !== true;
+                      const taxonomy = [getTemplateCategory(template), getTemplateSection(template)].filter(Boolean).join(" / ");
+                      const blockers = template.spawnBlockers || ["Incomplete creature row"];
+                      return (
+                        <div
+                          key={template.id}
+                          className={`creature-result-row ${isSpawnable ? "" : "creature-result-row-disabled"}`.trim()}
+                        >
+                          <div className="creature-result-thumb" aria-hidden="true">
+                            {showImage ? <img src={template.imageUrl} alt="" /> : <span>{getTemplateInitials(template)}</span>}
+                          </div>
+                          <div className="creature-result-main">
+                            <div className="creature-result-topline">
+                              <span>{taxonomy}</span>
+                              <span className={`creature-result-status ${isSpawnable ? "creature-result-status-ready" : "creature-result-status-design"}`.trim()}>
+                                {getTemplateStatusLabel(template)}
+                              </span>
+                            </div>
+                            <div className="creature-result-name-row">
+                              <div className="creature-result-name">{template.name}</div>
+                              <div className="creature-result-tl">TL {template.threatLevel ?? "-"}</div>
+                            </div>
+                            {template.shortFlavour ? <div className="creature-result-flavour">{template.shortFlavour}</div> : null}
+                            {!isSpawnable ? (
+                              <div className="creature-result-blocker">{blockers.slice(0, 2).join(" · ")}</div>
+                            ) : null}
+                          </div>
+                          <button
+                            className="creature-result-add"
+                            type="button"
+                            onClick={() => handleAddEnemyFromTemplate(template.id)}
+                            disabled={busy || !isSpawnable}
+                            aria-label={`Add ${template.name}`}
+                            title={!isSpawnable ? blockers.join(", ") : template.shortFlavour || template.name}
+                          >
+                            <PlusIcon />
+                            <span>Add</span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                    {!shownTemplates.length ? <div className="empty-copy premade-empty">No enemies match these filters.</div> : null}
+                  </div>
                 </div>
-              </div>
-              <div className="premade-grid">
-                {shownTemplates.map((template) => (
-                  <button
-                    key={template.id}
-                    type="button"
-                    className="premade-card"
-                    onClick={() => handleAddEnemyFromTemplate(template.id)}
-                    disabled={busy}
-                  >
-                    <div className="premade-card-art">
-                      <img src={template.imageUrl} alt={template.name} />
-                    </div>
-                    <div className="premade-card-copy">
-                      <div className="premade-card-kicker">{titleCaseFromSnake(getTemplateCategory(template))}</div>
-                      <div className="premade-card-name">{template.name}</div>
-                      <div className="premade-card-meta">{titleCaseFromSnake(template.id)}</div>
-                    </div>
-                  </button>
-                ))}
-                {!shownTemplates.length ? <div className="empty-copy premade-empty">No enemies match these filters.</div> : null}
               </div>
             </div>
           )}

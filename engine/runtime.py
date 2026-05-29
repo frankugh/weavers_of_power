@@ -42,7 +42,7 @@ def spawn_enemy(
 ) -> EnemyInstance:
     rnd = rnd or random
 
-    if template.coreDeck not in decks:
+    if template.action_deck is None and template.coreDeck not in decks:
         raise ValueError(f"Enemy template '{template.id}' refers to missing deck '{template.coreDeck}'")
 
     hp_max = roll_range(template.hp, rnd=rnd)
@@ -50,7 +50,7 @@ def spawn_enemy(
     magic_max = roll_range(template.magicArmor, rnd=rnd)
     base_guard = roll_range(template.baseGuard, rnd=rnd)
 
-    core_deck = decks[template.coreDeck]
+    core_deck = template.action_deck or decks[template.coreDeck]
     card_ids = build_deck_card_ids(core_deck, template.specials)
     rnd.shuffle(card_ids)
 
