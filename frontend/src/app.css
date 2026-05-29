@@ -1860,6 +1860,89 @@ button.draw-card:hover {
   gap: 7px;
 }
 
+/* Draw of Power hand panel */
+.dop-hand-section {
+  padding-top: 4px;
+}
+
+.dop-hand-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.dop-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  padding: 3px 9px 3px 8px;
+  border-radius: 20px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border: 1px solid transparent;
+  line-height: 1.5;
+}
+
+.dop-chip sup {
+  font-size: 0.65em;
+  line-height: 1;
+  vertical-align: super;
+}
+
+.dop-chip-symbol {
+  font-size: 0.75em;
+  margin-left: 2px;
+  opacity: 0.9;
+}
+
+/* Energy type palettes */
+.dop-energy-martial   { background: rgba(180, 50, 40, 0.22); border-color: rgba(184, 60, 44, 0.7); color: #e87060; }
+.dop-energy-elemental { background: rgba(40, 80, 200, 0.22); border-color: rgba(50, 90, 200, 0.7); color: #70a0f0; }
+.dop-energy-radiance  { background: rgba(190, 145, 20, 0.22); border-color: rgba(190, 145, 20, 0.7); color: #e8c040; }
+.dop-energy-void      { background: rgba(130, 40, 200, 0.22); border-color: rgba(130, 40, 200, 0.7); color: #c080f8; }
+.dop-energy-master    { background: rgba(20, 160, 130, 0.22); border-color: rgba(20, 160, 130, 0.7); color: #40d8b8; }
+.dop-energy-race      { background: rgba(40, 110, 170, 0.22); border-color: rgba(40, 110, 170, 0.7); color: #60b0e0; }
+.dop-energy-class     { background: rgba(40, 140, 70, 0.22); border-color: rgba(40, 140, 70, 0.7); color: #60d070; }
+.dop-energy-wound     { background: rgba(160, 40, 30, 0.35); border-color: rgba(160, 40, 30, 0.7); color: #d06458; }
+
+/* Outcome modifiers on top of type color */
+.dop-outcome-fate { opacity: 0.82; border-style: dashed; }
+.dop-outcome-fail { opacity: 0.58; filter: saturate(0.55); }
+
+/* Summary row below chips */
+.dop-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
+}
+
+.dop-summary-energy {
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+
+/* Reuse energy palette for summary pills */
+.dop-energy-martial.dop-summary-energy   { background: rgba(180, 50, 40, 0.18); border-color: rgba(184, 60, 44, 0.5); color: #e87060; }
+.dop-energy-elemental.dop-summary-energy { background: rgba(40, 80, 200, 0.18); border-color: rgba(50, 90, 200, 0.5); color: #70a0f0; }
+.dop-energy-radiance.dop-summary-energy  { background: rgba(190, 145, 20, 0.18); border-color: rgba(190, 145, 20, 0.5); color: #e8c040; }
+.dop-energy-void.dop-summary-energy      { background: rgba(130, 40, 200, 0.18); border-color: rgba(130, 40, 200, 0.5); color: #c080f8; }
+.dop-energy-master.dop-summary-energy    { background: rgba(20, 160, 130, 0.18); border-color: rgba(20, 160, 130, 0.5); color: #40d8b8; }
+.dop-energy-race.dop-summary-energy      { background: rgba(40, 110, 170, 0.18); border-color: rgba(40, 110, 170, 0.5); color: #60b0e0; }
+.dop-energy-class.dop-summary-energy     { background: rgba(40, 140, 70, 0.18); border-color: rgba(40, 140, 70, 0.5); color: #60d070; }
+
+.dop-summary-sep { flex: 1; min-width: 4px; }
+.dop-summary-success { color: var(--tone-good); font-weight: 700; }
+.dop-summary-fate    { color: var(--accent-bright); font-weight: 700; }
+.dop-summary-fail    { color: var(--tone-bad); font-weight: 700; }
+
 .wound-count-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3358,4 +3441,114 @@ button.draw-card:hover {
 
 .dungeon-room-toggle.dungeon-room-toggle-visible:hover:not(:disabled) {
   background: rgba(216, 182, 106, 0.15);
+}
+
+.power-energy-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 8px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 218, 128, 0.38);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at top left, rgba(255, 224, 145, 0.16), transparent 35%),
+    linear-gradient(180deg, rgba(53, 39, 24, 0.96), rgba(24, 17, 11, 0.96));
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+}
+
+.power-energy-copy {
+  min-width: 136px;
+}
+
+.power-energy-kicker {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255, 225, 160, 0.72);
+}
+
+.power-energy-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: #fff1c2;
+}
+
+.power-energy-chips {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.power-energy-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 226, 153, 0.32);
+  border-radius: 999px;
+  background: rgba(255, 222, 142, 0.09);
+  color: #ffe8a6;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.power-energy-chip strong {
+  font-size: 17px;
+  line-height: 1;
+  color: #fff7d6;
+}
+
+.power-energy-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(255, 244, 201, 0.12);
+  font-size: 14px;
+}
+
+.power-energy-master    { border-color: rgba(255, 245, 190, 0.62); }
+.power-energy-martial   { border-color: rgba(255, 154, 104, 0.55); }
+.power-energy-elemental { border-color: rgba(112, 198, 255, 0.55); }
+.power-energy-radiance  { border-color: rgba(255, 232, 102, 0.68); }
+.power-energy-nature    { border-color: rgba(137, 220, 139, 0.58); }
+.power-energy-necromancy { border-color: rgba(191, 145, 255, 0.58); }
+
+.power-energy-free {
+  max-width: 240px;
+  overflow: hidden;
+  color: rgba(255, 235, 184, 0.8);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.power-energy-empty {
+  color: rgba(255, 235, 184, 0.65);
+  font-size: 13px;
+  font-style: italic;
+}
+
+.power-energy-detail-button {
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .power-energy-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .power-energy-copy {
+    min-width: 0;
+  }
+
+  .power-energy-free {
+    max-width: 100%;
+  }
 }

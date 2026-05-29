@@ -1053,7 +1053,7 @@ class BattleSession:
         self._charge_action(entity)
         self.dungeon.searched_room_ids.append(room_id)
 
-        result = draw_additional_cards(entity, 3, rnd=self._rng)
+        result = self._draw_additional_for_player(entity, 3)
         drawn = list(result.drawn)
         self._append_visible_draw_group(entity, drawn)
 
@@ -1210,7 +1210,7 @@ class BattleSession:
 
         self._charge_action(entity)
 
-        result = draw_additional_cards(entity, 3, rnd=self._rng)
+        result = self._draw_additional_for_player(entity, 3)
         drawn = list(result.drawn)
         self._append_visible_draw_group(entity, drawn)
         summary = self._player_draw_summary(drawn)
@@ -2650,7 +2650,7 @@ class BattleSession:
             self._reset_movement_state(entity.instance_id)
 
         self._charge_action(entity)
-        result = draw_additional_cards(entity, count, rnd=self._rng)
+        result = self._draw_additional_for_player(entity, count)
         self.turn_in_progress = True
         entity.quick_attack_used = False
 
@@ -2689,6 +2689,16 @@ class BattleSession:
     def _draw_cards_for_turn(self, entity: EnemyInstance):
         return draw_cards(entity, self._draw_count_for(entity), rnd=self._rng)
 
+    def _draw_additional_for_player(self, entity: EnemyInstance, n: int) -> "DrawResult":
+        """Draw n extra cards; wounds drawn by a player go straight to discard (not kept in hand)."""
+        result = draw_additional_cards(entity, n, rnd=self._rng)
+        if self.is_player(entity):
+            for card_id in result.drawn:
+                if card_id == WOUND_CARD_ID:
+                    entity.deck_state.hand.remove(WOUND_CARD_ID)
+                    entity.deck_state.discard_pile.append(WOUND_CARD_ID)
+        return result
+
     def _resolve_player_draw_effects(self, entity: EnemyInstance, card_ids: list[str]) -> PlayerDrawResolution:
         resolved: list[str] = list(card_ids)
         pending: list[str] = list(card_ids)
@@ -2707,7 +2717,7 @@ class BattleSession:
             if instruction and instruction not in instructions:
                 instructions.append(instruction)
             if card.extra_draw:
-                result = draw_additional_cards(entity, max(0, int(card.extra_draw)), rnd=self._rng)
+                result = self._draw_additional_for_player(entity, max(0, int(card.extra_draw)))
                 if result.drawn:
                     resolved.extend(result.drawn)
                     pending.extend(result.drawn)
@@ -3017,6 +3027,7 @@ class BattleSession:
                 "wounds_in_hand": entity.deck_state.hand.count(WOUND_CARD_ID) if self.is_player(entity) else 0,
                 "power_draw_used": bool(getattr(entity, "power_draw_used", False)),
                 "wound_counts": self._player_wound_counts(entity) if self.is_player(entity) else None,
+                "power_draw_cards": self._power_draw_cards_payload(entity) if self.is_player(entity) else None,
                 "current_draw_attacks": [
                     self._quick_attack_payload(step)
                     for step in self._quick_attack_steps_for(entity)
@@ -3024,6 +3035,26 @@ class BattleSession:
             }
         )
         return payload
+
+    def _power_draw_cards_payload(self, entity: EnemyInstance) -> list:
+        dop_group: list[str] = []
+        draw_groups = getattr(entity, "draw_groups", [])
+        if getattr(entity, "power_draw_used", False) and draw_groups:
+            dop_group = list(draw_groups[0]) if isinstance(draw_groups[0], list) else []
+        result = []
+        for card_id in dop_group:
+            if card_id == WOUND_CARD_ID:
+                result.append({"energy_type": "", "energy_amount": 0, "outcome": "fail", "title": "Wound"})
+            else:
+                card = self.context.card_index.get(card_id)
+                if card:
+                    result.append({
+                        "energy_type": card.energy_type or "",
+                        "energy_amount": int(card.energy_amount or 0),
+                        "outcome": card.outcome or "",
+                        "title": self._player_card_text(card),
+                    })
+        return result
 
     def _add_log(self, message: str) -> None:
         self.combat_log = [message, *self.combat_log][:LOG_LIMIT]

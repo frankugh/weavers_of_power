@@ -241,6 +241,167 @@ function isTemplateLootable(entity) {
   return Boolean(entity && !entity.is_player && entity.template_id !== "custom" && entity.template_id !== "player");
 }
 
+const ENERGY_TYPE_LABELS = {
+  master: "Master",
+  martial: "Martial",
+  elemental: "Elemental",
+  radiance: "Radiance",
+  nature: "Nature",
+  necromancy: "Necromancy",
+  void: "Void",
+  race: "Race",
+  class: "Class",
+};
+
+const POWER_ENERGY_ORDER = ["master", "martial", "elemental", "radiance", "nature", "necromancy"];
+
+const POWER_ENERGY_ICONS = {
+  master: "✦",
+  martial: "⚔",
+  elemental: "✹",
+  radiance: "☀",
+  nature: "☘",
+  necromancy: "☠",
+};
+
+const OUTCOME_SYMBOLS = { success: "✓", fate: "★", fail: "✗" };
+
+function normalizeEnergyKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function getEnergyLabel(typeKey) {
+  return ENERGY_TYPE_LABELS[typeKey] || titleCaseFromSnake(typeKey);
+}
+
+function collectPowerEnergyItems(cards = [], summary = null) {
+  const totals = {};
+  const summaryEnergies = summary?.energies ?? null;
+
+  if (summaryEnergies && typeof summaryEnergies === "object") {
+    Object.entries(summaryEnergies).forEach(([rawType, rawAmount]) => {
+      const typeKey = normalizeEnergyKey(rawType);
+      const amount = Number(rawAmount || 0);
+      if (!typeKey || amount <= 0) return;
+      totals[typeKey] = (totals[typeKey] || 0) + amount;
+    });
+  }
+
+  if (Object.keys(totals).length === 0 && Array.isArray(cards)) {
+    cards.forEach((card) => {
+      const typeKey = normalizeEnergyKey(card?.energy_type);
+      const amount = Number(card?.energy_amount || 0);
+      if (!typeKey || amount <= 0) return;
+      totals[typeKey] = (totals[typeKey] || 0) + amount;
+    });
+  }
+
+  const orderedKeys = [
+    ...POWER_ENERGY_ORDER.filter((typeKey) => totals[typeKey] > 0),
+    ...Object.keys(totals)
+      .filter((typeKey) => !POWER_ENERGY_ORDER.includes(typeKey) && totals[typeKey] > 0)
+      .sort(),
+  ];
+
+  return orderedKeys.map((typeKey) => ({
+    typeKey,
+    amount: totals[typeKey],
+    label: getEnergyLabel(typeKey),
+    icon: POWER_ENERGY_ICONS[typeKey] || "◆",
+  }));
+}
+
+function collectFreePowerCards(cards = []) {
+  return cards
+    .filter((card) => ["class", "race"].includes(normalizeEnergyKey(card?.energy_type)))
+    .map((card) => card.title || getEnergyLabel(normalizeEnergyKey(card?.energy_type)))
+    .filter(Boolean);
+}
+
+function PowerEnergyBar({ entity, summary, onOpenDetail }) {
+  const cards = Array.isArray(entity?.power_draw_cards) ? entity.power_draw_cards : [];
+  const energyItems = collectPowerEnergyItems(cards, summary);
+  const freeCards = collectFreePowerCards(cards);
+
+  return (
+    <section className="power-energy-bar" aria-label={`Draw of Power energy pool for ${entity.name}`}>
+      <div className="power-energy-copy">
+        <div className="power-energy-kicker">Draw of Power</div>
+        <div className="power-energy-title">{entity.name} energy pool</div>
+      </div>
+
+      <div className="power-energy-chips">
+        {energyItems.length > 0 ? (
+          energyItems.map((item) => (
+            <span
+              key={item.typeKey}
+              className={`power-energy-chip power-energy-${item.typeKey}`}
+              title={`${item.amount} ${item.label} energy available`}
+            >
+              <span className="power-energy-icon" aria-hidden="true">{item.icon}</span>
+              <strong>{item.amount}</strong>
+              <span>{item.label}</span>
+            </span>
+          ))
+        ) : (
+          <span className="power-energy-empty">No spendable energy drawn</span>
+        )}
+      </div>
+
+      {freeCards.length > 0 ? (
+        <div className="power-energy-free" title={freeCards.join(", ")}>
+          Free: {freeCards.join(" · ")}
+        </div>
+      ) : null}
+
+      <button className="secondary-button power-energy-detail-button" type="button" onClick={onOpenDetail}>
+        Cards
+      </button>
+    </section>
+  );
+}
+
+function DopHandPanel({ cards, summary }) {
+  const outcomes = summary?.outcomes ?? {};
+  const energies = summary?.energies ?? {};
+  return (
+    <div className="unit-inspector-section dop-hand-section">
+      <div className="selected-draw-label">Draw of Power</div>
+      <div className="dop-hand-chips">
+        {cards.map((card, i) => {
+          const typeKey = normalizeEnergyKey(card.energy_type);
+          const label = ENERGY_TYPE_LABELS[typeKey] || card.energy_type || "Wound";
+          const symbol = OUTCOME_SYMBOLS[card.outcome] ?? "";
+          return (
+            <span
+              key={i}
+              className={`dop-chip dop-energy-${typeKey || "wound"} dop-outcome-${card.outcome || "fail"}`}
+              title={card.title}
+            >
+              {label}
+              {card.energy_amount > 0 ? <sup>{card.energy_amount}</sup> : null}
+              {symbol ? <span className="dop-chip-symbol">{symbol}</span> : null}
+            </span>
+          );
+        })}
+      </div>
+      {(outcomes.success > 0 || outcomes.fate > 0 || outcomes.fail > 0 || Object.keys(energies).length > 0) ? (
+        <div className="dop-summary-row">
+          {Object.entries(energies).map(([type, amount]) => (
+            <span key={type} className={`dop-summary-energy dop-energy-${normalizeEnergyKey(type)}`}>
+              {type} {amount}
+            </span>
+          ))}
+          <span className="dop-summary-sep" />
+          {outcomes.success > 0 && <span className="dop-summary-success">{outcomes.success}✓</span>}
+          {outcomes.fate > 0 && <span className="dop-summary-fate">{outcomes.fate}★</span>}
+          {outcomes.fail > 0 && <span className="dop-summary-fail">{outcomes.fail}✗</span>}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function App() {
   const bootstrapped = useRef(false);
   const actionMenuRef = useRef(null);
@@ -1829,6 +1990,27 @@ function App() {
 
       <main className="main-grid">
         <section className="stage-column">
+          {isPlayerSelected && selectedIsActive && selectedPowerDrawUsed && selectedEntity.power_draw_cards?.length > 0 ? (
+            <PowerEnergyBar
+              entity={selectedEntity}
+              summary={selectedEntity.current_draw_groups?.[0]?.summary ?? selectedEntity.current_draw_summary ?? null}
+              onOpenDetail={() => {
+                const items =
+                  Array.isArray(selectedEntity.current_draw_text) && selectedEntity.current_draw_text.length > 0
+                    ? selectedEntity.current_draw_text
+                    : selectedDrawGroups.flatMap((group) => group.items);
+
+                setDrawDetail({
+                  entityName: selectedEntity.name,
+                  items,
+                  groups: selectedDrawGroups,
+                  kind: "draw of power",
+                });
+                setModal("draw-detail");
+              }}
+            />
+          ) : null}
+
           <section className="battle-stage">
             <BattleRoom
               room={room}
@@ -2479,6 +2661,13 @@ function App() {
                       {activeDetachedEntity ? <span className="selected-meta">{`Turn: ${activeDetachedEntity.name}`}</span> : null}
                     </div>
                   </div>
+
+                  {isPlayerSelected && selectedPowerDrawUsed && selectedEntity.power_draw_cards?.length > 0 ? (
+                    <DopHandPanel
+                      cards={selectedEntity.power_draw_cards}
+                      summary={selectedEntity.current_draw_groups?.[0]?.summary ?? null}
+                    />
+                  ) : null}
 
                   {selectedHasDraw ? (
                     <div

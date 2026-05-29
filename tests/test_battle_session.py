@@ -315,7 +315,8 @@ class BattleSessionTests(unittest.TestCase):
         session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
         session.edit_dungeon_tiles("floor", [[x, y] for x in range(3) for y in range(3)])
         session.analyze_dungeon()
-        session.add_enemy_from_template("bandit")
+        # Player as mover — enemies block cross-faction; same-faction units are passable
+        session.add_player(name="Mira")
         mover_id = session.selected_id
         session.add_enemy_from_template("goblin")
         top_blocker_id = session.selected_id
@@ -940,12 +941,14 @@ class BattleSessionTests(unittest.TestCase):
 
         session.draw_exact_turn(2)
 
-        self.assertEqual(player.deck_state.hand, [WOUND_CARD_ID, WOUND_CARD_ID, "hf_martial_1_success"])
+        # Pre-existing wound in hand stays; drawn wound goes to discard (Draw X rule, not Draw of Power)
+        self.assertEqual(player.deck_state.hand, [WOUND_CARD_ID, "hf_martial_1_success"])
+        self.assertEqual(player.deck_state.discard_pile, [WOUND_CARD_ID])
         self.assertFalse(player.power_draw_used)
         payload = session.snapshot()["enemies"][0]
         self.assertEqual(payload["current_draw_text"], ["Wound", "Martial energy success"])
         self.assertEqual(payload["current_draw_summary"]["outcomes"], {"success": 1, "fate": 0, "fail": 1})
-        self.assertEqual(payload["wound_counts"], {"hand": 2, "discard": 0, "draw_pile": 0, "total": 2})
+        self.assertEqual(payload["wound_counts"], {"hand": 1, "discard": 1, "draw_pile": 0, "total": 2})
 
     def test_player_wounds_persist_in_hand_after_turn_cleanup(self) -> None:
         session = self.context.create_session("player-wound-cleanup")
@@ -959,8 +962,9 @@ class BattleSessionTests(unittest.TestCase):
         session.next_turn()
         session.start_new_round()
 
-        self.assertEqual(player.deck_state.hand, [WOUND_CARD_ID])
-        self.assertEqual(player.deck_state.discard_pile, ["hf_martial_1_success"])
+        # Wounds from Draw X go to discard immediately, so they don't persist in hand after cleanup
+        self.assertEqual(player.deck_state.hand, [])
+        self.assertEqual(player.deck_state.discard_pile, [WOUND_CARD_ID, "hf_martial_1_success"])
         self.assertEqual(session.visible_draw_for(player), [])
 
     def test_strengthen_only_converts_unspent_points_to_draw_bonus(self) -> None:
