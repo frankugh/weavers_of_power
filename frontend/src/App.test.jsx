@@ -672,6 +672,75 @@ describe("App", () => {
     expect(requestBody.teamB[0].overrides.actionOverrides.A1).toBe("Mega - Attack 9 pierce 2");
   });
 
+  it("saves shared template overrides to Excel and clears temporary overrides", async () => {
+    const user = userEvent.setup();
+    const savedMeta = {
+      ...metaPayload,
+      enemyTemplates: metaPayload.enemyTemplates.map((template) => {
+        if (template.id !== "goblin") return template;
+        return {
+          ...template,
+          skills: { ...template.skills, alertness: 8 },
+          simStats: {
+            ...template.simStats,
+            toughness: { min: 12, max: 12, value: 12 },
+            initiativeModifier: 8,
+          },
+          simActions: template.simActions.map((action) =>
+            action.result === "A1"
+              ? {
+                ...action,
+                title: "Mega",
+                text: "Mega - Attack 9 pierce 2",
+                effects: [{ type: "attack", amount: 9, modifiers: ["pierce:2"] }],
+                coverageStatus: "full",
+                coverage: { status: "full", label: "Fully simulated", notes: [] },
+              }
+              : action,
+          ),
+        };
+      }),
+    };
+    let saveBody = null;
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/creature-templates/goblin/save-overrides") {
+          saveBody = JSON.parse(requestOptions.body);
+          return jsonResponse({
+            metadata: savedMeta,
+            backupFilename: "denizens_creature_database__20260530_120000.xlsx",
+          });
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Combat Sim" }));
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    let modal = screen.getByText("Team A: Goblin").closest(".modal-shell");
+    expect(within(modal).getByRole("button", { name: "Save to Excel" })).toBeDisabled();
+
+    await user.type(within(modal).getByLabelText("T"), "12");
+    await user.type(within(modal).getByLabelText(/Alertness/), "8");
+    await user.clear(within(modal).getByLabelText("A1 action text"));
+    await user.type(within(modal).getByLabelText("A1 action text"), "Mega - Attack 9 pierce 2");
+    await user.click(within(modal).getByRole("button", { name: "Save to Excel" }));
+
+    expect(window.confirm).toHaveBeenCalledWith("Save Goblin changes to the Excel source data?");
+    expect(saveBody.statOverrides.toughness).toBe(12);
+    expect(saveBody.skillOverrides.alertness).toBe(8);
+    expect(saveBody.actionOverrides.A1).toBe("Mega - Attack 9 pierce 2");
+    expect(await screen.findByText(/Saved Goblin to Excel/)).toBeInTheDocument();
+    expect(screen.getByText(/denizens_creature_database__20260530_120000.xlsx/)).toBeInTheDocument();
+    expect(screen.getAllByText("T 12").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Init 8").length).toBeGreaterThan(0);
+
+    modal = screen.getByText("Team A: Goblin").closest(".modal-shell");
+    expect(within(modal).getByRole("button", { name: "Save to Excel" })).toBeDisabled();
+  });
+
   it("shows batch draw results and observed precision needs", async () => {
     const user = userEvent.setup();
     const batchResult = {

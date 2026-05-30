@@ -2285,7 +2285,7 @@ function App() {
       </header>
 
       {activeView === APP_VIEWS.SIM ? (
-        <CombatSimView meta={meta} />
+        <CombatSimView meta={meta} onMetaUpdate={setMeta} />
       ) : (
       <main className="main-grid">
         <section className="stage-column">
@@ -4677,7 +4677,7 @@ function outcomeValue(collection, key) {
   return collection[key] ?? collection[key.toUpperCase()] ?? collection[titleCaseFromSnake(key)] ?? 0;
 }
 
-function CombatSimView({ meta }) {
+function CombatSimView({ meta, onMetaUpdate }) {
   const spawnableTemplates = useMemo(
     () => (meta?.enemyTemplates || []).filter((template) => template.spawnable !== false),
     [meta],
@@ -4700,7 +4700,9 @@ function CombatSimView({ meta }) {
   const [maxRounds, setMaxRounds] = useState(100);
   const [simResult, setSimResult] = useState(null);
   const [simError, setSimError] = useState("");
+  const [simNotice, setSimNotice] = useState("");
   const [simBusy, setSimBusy] = useState(false);
+  const [saveBusy, setSaveBusy] = useState(false);
   const [turnIndex, setTurnIndex] = useState(0);
   const [editingEntry, setEditingEntry] = useState(null);
   const [templateOverrides, setTemplateOverrides] = useState({});
@@ -4727,6 +4729,14 @@ function CombatSimView({ meta }) {
       } else {
         next[templateId] = nextOverrides;
       }
+      return next;
+    });
+  }
+
+  function clearTemplateOverrides(templateId) {
+    setTemplateOverrides((current) => {
+      const next = { ...current };
+      delete next[templateId];
       return next;
     });
   }
@@ -4763,6 +4773,7 @@ function CombatSimView({ meta }) {
     }
     setSimBusy(true);
     setSimError("");
+    setSimNotice("");
     try {
       const payload = await requestJson("/api/combat-sim/simulate", {
         method: "POST",
@@ -4789,6 +4800,37 @@ function CombatSimView({ meta }) {
     }
   }
 
+  async function saveTemplateOverrides(templateId) {
+    const template = templateLookup.get(templateId);
+    const overrides = buildCombatOverridesPayload(templateOverrides[templateId], template);
+    if (!template || !overrides) {
+      return;
+    }
+    if (!window.confirm(`Save ${template.name} changes to the Excel source data?`)) {
+      return;
+    }
+    setSaveBusy(true);
+    setSimError("");
+    setSimNotice("");
+    try {
+      const payload = await requestJson(`/api/battle/creature-templates/${encodeURIComponent(templateId)}/save-overrides`, {
+        method: "POST",
+        body: JSON.stringify(overrides),
+      });
+      if (payload.metadata) {
+        onMetaUpdate?.(payload.metadata);
+      }
+      clearTemplateOverrides(templateId);
+      setSimNotice(
+        `Saved ${template.name} to Excel${payload.backupFilename ? `; backup ${payload.backupFilename}` : ""}.`,
+      );
+    } catch (requestError) {
+      setSimError(requestError.message);
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
   const batchResult = simResult?.mode === "batch" ? simResult.result : null;
   const singleResult = simResult?.mode === "single" ? simResult.result : batchResult?.lastCombat || null;
   const currentTurn = mode === "turn" && singleResult && turnIndex > 0 ? singleResult.timeline[turnIndex - 1] : null;
@@ -4798,6 +4840,10 @@ function CombatSimView({ meta }) {
         ? singleResult.initialUnits
         : currentTurn?.units || singleResult.finalUnits
       : singleResult?.finalUnits || [];
+  const editingTeam = editingEntry ? (editingEntry.team === "A" ? teamA : teamB) : [];
+  const editingTeamEntry = editingEntry ? editingTeam[editingEntry.index] : null;
+  const editingTemplateId = editingTeamEntry?.templateId || "";
+  const editingTemplate = editingTemplateId ? templateLookup.get(editingTemplateId) : null;
 
   if (!spawnableTemplates.length) {
     return (
@@ -4917,20 +4963,29 @@ function CombatSimView({ meta }) {
       {editingEntry ? (
         <CombatSimEntryEditorModal
           teamLabel={`Team ${editingEntry.team}`}
-          entry={(editingEntry.team === "A" ? teamA : teamB)[editingEntry.index]}
-          template={templateLookup.get((editingEntry.team === "A" ? teamA : teamB)[editingEntry.index]?.templateId)}
-          overrides={templateOverrides[(editingEntry.team === "A" ? teamA : teamB)[editingEntry.index]?.templateId] || {}}
+          entry={editingTeamEntry}
+          template={editingTemplate}
+          overrides={templateOverrides[editingTemplateId] || {}}
           onClose={() => setEditingEntry(null)}
           onUpdateOverrides={(updater) =>
-            updateTemplateOverrides((editingEntry.team === "A" ? teamA : teamB)[editingEntry.index]?.templateId, updater)
+            updateTemplateOverrides(editingTemplateId, updater)
           }
+          onSaveOverrides={() => saveTemplateOverrides(editingTemplateId)}
+          saveBusy={saveBusy}
         />
       ) : null}
 
-      {simError ? (
-        <div className="status-banner status-error combat-sim-error">
-          <span>{simError}</span>
-          <button className="status-dismiss" type="button" onClick={() => setSimError("")}>
+      {(simError || simNotice) ? (
+        <div className={`status-banner ${simError ? "status-error" : "status-notice"} combat-sim-error`}>
+          <span>{simError || simNotice}</span>
+          <button
+            className="status-dismiss"
+            type="button"
+            onClick={() => {
+              setSimError("");
+              setSimNotice("");
+            }}
+          >
             Close
           </button>
         </div>
@@ -5077,13 +5132,14 @@ function CombatCoverageChip({ coverage }) {
   );
 }
 
-function CombatSimEntryEditorModal({ teamLabel, entry, template, overrides, onClose, onUpdateOverrides }) {
+function CombatSimEntryEditorModal({ teamLabel, entry, template, overrides, onClose, onUpdateOverrides, onSaveOverrides, saveBusy }) {
   if (!entry || !template) return null;
   const statOverrides = overrides?.statOverrides || {};
   const skillOverrides = overrides?.skillOverrides || {};
   const actionOverrides = overrides?.actionOverrides || {};
   const actions = getEffectiveSimActions(template, overrides);
   const coverage = summarizeCombatCoverage(actions);
+  const savePayload = buildCombatOverridesPayload(overrides, template);
 
   function updateStatOverride(key, value) {
     onUpdateOverrides((current) => {
@@ -5234,6 +5290,14 @@ function CombatSimEntryEditorModal({ teamLabel, entry, template, overrides, onCl
         </div>
 
         <div className="modal-actions">
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={onSaveOverrides}
+            disabled={!savePayload || saveBusy}
+          >
+            {saveBusy ? "Saving..." : "Save to Excel"}
+          </button>
           <button className="primary-button" type="button" onClick={onClose}>
             Done
           </button>

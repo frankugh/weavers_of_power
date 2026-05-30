@@ -1,11 +1,13 @@
 ﻿from __future__ import annotations
 
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 
 from battle_api import register_battle_api
 from battle_session import BattleSessionContext
@@ -23,6 +25,32 @@ class BattleApiTests(unittest.TestCase):
         app = FastAPI()
         register_battle_api(app, self.context)
         self.client = TestClient(app)
+
+    def _client_with_temp_workbook(self) -> tuple[TestClient, BattleSessionContext, Path]:
+        workbook_path = Path(self.temp_dir.name) / "denizens_creature_database.xlsx"
+        shutil.copy2(PROJECT_ROOT / "data" / "denizens_creature_database.xlsx", workbook_path)
+        saves_dir = Path(self.temp_dir.name) / "workbook_saves"
+        context = BattleSessionContext(root=PROJECT_ROOT, saves_dir=saves_dir, creatures_workbook=workbook_path)
+        app = FastAPI()
+        register_battle_api(app, context)
+        return TestClient(app), context, workbook_path
+
+    def _workbook_values(self, workbook_path: Path, template_id: str, columns: list[str]) -> dict[str, object]:
+        workbook = load_workbook(workbook_path)
+        try:
+            sheet = workbook["Creatures_Master"]
+            headers = {str(cell.value).strip(): int(cell.column) for cell in sheet[1] if cell.value}
+            id_column = headers["ID"]
+            for row_index in range(2, sheet.max_row + 1):
+                if str(sheet.cell(row=row_index, column=id_column).value or "").strip() != template_id:
+                    continue
+                return {
+                    column: sheet.cell(row=row_index, column=headers[column]).value
+                    for column in columns
+                }
+        finally:
+            workbook.close()
+        raise AssertionError(f"Template {template_id} not found")
 
     def test_meta_endpoint_returns_templates_and_decks(self) -> None:
         response = self.client.get("/api/battle/meta")
@@ -930,6 +958,68 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(after_goblin["simStats"]["toughness"], before_goblin["simStats"]["toughness"])
         self.assertEqual(after_goblin["skills"], before_goblin["skills"])
         self.assertEqual(after_goblin["simActions"], before_goblin["simActions"])
+
+    def test_save_creature_template_overrides_writes_workbook_and_reloads_metadata(self) -> None:
+        client, context, workbook_path = self._client_with_temp_workbook()
+        sid = client.post("/api/battle/sessions").json()["sid"]
+        added = client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()
+        entity_id = added["selectedId"]
+        before_enemy = next(enemy for enemy in added["enemies"] if enemy["instance_id"] == entity_id)
+
+        response = client.post(
+            "/api/battle/creature-templates/C_GOBLIN/save-overrides",
+            json={
+                "statOverrides": {"toughness": 14, "armor": 3},
+                "skillOverrides": {"alertness": 7},
+                "actionOverrides": {"A1": "Saved Strike - Attack 8 pierce 1"},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["backupFilename"].startswith("denizens_creature_database__"))
+        self.assertTrue((context.creature_workbook_backup_dir / payload["backupFilename"]).exists())
+        goblin_meta = next(item for item in payload["metadata"]["enemyTemplates"] if item["id"] == "C_GOBLIN")
+        self.assertEqual(goblin_meta["simStats"]["toughness"]["value"], 14)
+        self.assertEqual(goblin_meta["simStats"]["armor"]["value"], 3)
+        self.assertEqual(goblin_meta["skills"]["alertness"], 7)
+        self.assertEqual(goblin_meta["simStats"]["initiativeModifier"], 7)
+        self.assertEqual(next(action for action in goblin_meta["simActions"] if action["result"] == "A1")["text"], "Saved Strike - Attack 8 pierce 1")
+        self.assertEqual(context.enemy_templates["C_GOBLIN"].initiative_modifier, 7)
+
+        values = self._workbook_values(workbook_path, "C_GOBLIN", ["Toughness", "Armor", "Alertness", "A1"])
+        self.assertEqual(values["Toughness"], 14)
+        self.assertEqual(values["Armor"], 3)
+        self.assertEqual(values["Alertness"], 7)
+        self.assertEqual(values["A1"], "Saved Strike - Attack 8 pierce 1")
+
+        after_session = client.get(f"/api/battle/sessions/{sid}").json()
+        after_enemy = next(enemy for enemy in after_session["enemies"] if enemy["instance_id"] == entity_id)
+        self.assertEqual(after_enemy["toughness_max"], before_enemy["toughness_max"])
+
+    def test_save_creature_template_overrides_rejects_invalid_payloads(self) -> None:
+        client, _context, _workbook_path = self._client_with_temp_workbook()
+
+        bad_init = client.post(
+            "/api/battle/creature-templates/C_GOBLIN/save-overrides",
+            json={"statOverrides": {"initiativeModifier": 4}},
+        )
+        self.assertEqual(bad_init.status_code, 400)
+        self.assertIn("Alertness", bad_init.json()["detail"])
+
+        bad_action = client.post(
+            "/api/battle/creature-templates/C_GOBLIN/save-overrides",
+            json={"actionOverrides": {"A1": "Broken - Attack target"}},
+        )
+        self.assertEqual(bad_action.status_code, 400)
+        self.assertIn("not simulatable", bad_action.json()["detail"])
+
+        bad_template = client.post(
+            "/api/battle/creature-templates/NOPE/save-overrides",
+            json={"statOverrides": {"toughness": 10}},
+        )
+        self.assertEqual(bad_template.status_code, 400)
+        self.assertIn("Unknown template", bad_template.json()["detail"])
 
     def test_combat_sim_batch_endpoint_returns_aggregate_and_last_combat(self) -> None:
         response = self.client.post(

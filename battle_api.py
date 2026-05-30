@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
@@ -189,6 +189,12 @@ class CombatSimEntryOverridesRequest(BaseModel):
     actionOverrides: dict[str, str] = Field(default_factory=dict)
 
 
+class CreatureTemplateSaveOverridesRequest(BaseModel):
+    statOverrides: dict[str, Any] = Field(default_factory=dict)
+    skillOverrides: dict[str, Any] = Field(default_factory=dict)
+    actionOverrides: dict[str, Any] = Field(default_factory=dict)
+
+
 class CombatSimTeamEntryRequest(BaseModel):
     templateId: str
     count: int = 1
@@ -300,6 +306,13 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
             result = simulate_combat_batch(runs=request.runs, precision_target=precision_target, **common)
             return {"mode": "batch", "result": result}
         except CombatSimError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @api_app.post("/api/battle/creature-templates/{templateId}/save-overrides")
+    def save_creature_template_overrides(templateId: str, request: CreatureTemplateSaveOverridesRequest):
+        try:
+            return context.save_creature_template_overrides(templateId, request.model_dump())
+        except BattleSessionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @api_app.post("/api/battle/sessions")

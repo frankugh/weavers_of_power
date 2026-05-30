@@ -1,3 +1,4 @@
 nicegui
 fastapi
-ve  
+openpyxl>=3.1,<4
+ve

@@ -7,10 +7,16 @@ import heapq
 from pathlib import Path
 import random
 import re
+import threading
 import uuid
 from typing import Optional
 
 from engine.combat import WOUND_CARD_ID, AttackMod, apply_attack, apply_heal
+from engine.creature_workbook_save import (
+    BACKUP_DIR_NAME,
+    CreatureWorkbookSaveError,
+    save_creature_overrides_to_workbook,
+)
 from engine.dungeon import analyze as dungeon_analyze
 from engine.dungeon import canonical_edge_key, migrate_to_dungeon, normalize_side
 from engine.excel_creatures import load_creatures_from_workbook, serialize_creature_action_card
@@ -211,14 +217,17 @@ class BattleSessionContext:
         self.images_dir = Path(self.images_dir) if self.images_dir else (self.root / "images")
         self.saves_dir = Path(self.saves_dir) if self.saves_dir else (self.root / "saves")
         self.manual_dir = self.saves_dir / "manual"
+        self.creature_workbook_backup_dir = self.saves_dir / BACKUP_DIR_NAME
+        self._creature_workbook_lock = threading.Lock()
 
         self.saves_dir.mkdir(parents=True, exist_ok=True)
         self.manual_dir.mkdir(parents=True, exist_ok=True)
 
         self.decks = load_decks(self.decks_dir)
         self.player_decks = load_decks(self.player_decks_dir) if self.player_decks_dir.exists() else {}
-        self.enemy_templates = load_creatures_from_workbook(self.creatures_workbook, images_dir=self.images_dir)
-        self.card_index = self._build_card_index()
+        self.enemy_templates = {}
+        self.card_index = {}
+        self.reload_creature_templates()
         self._sessions: dict[str, BattleSession] = {}
 
     def _build_card_index(self) -> dict[str, Card]:
@@ -239,6 +248,31 @@ class BattleSessionContext:
 
     def current_path(self, sid: str) -> Path:
         return self.saves_dir / f"_current_{sid}.json"
+
+    def reload_creature_templates(self) -> None:
+        self.enemy_templates = load_creatures_from_workbook(self.creatures_workbook, images_dir=self.images_dir)
+        self.card_index = self._build_card_index()
+
+    def save_creature_template_overrides(self, template_id: str, overrides: dict) -> dict:
+        if template_id not in self.enemy_templates:
+            raise BattleSessionError(f"Unknown template '{template_id}'")
+        with self._creature_workbook_lock:
+            try:
+                save_result = save_creature_overrides_to_workbook(
+                    workbook_path=self.creatures_workbook,
+                    template_id=template_id,
+                    overrides=overrides,
+                    backup_dir=self.creature_workbook_backup_dir,
+                )
+                self.reload_creature_templates()
+            except CreatureWorkbookSaveError as exc:
+                raise BattleSessionError(str(exc)) from exc
+        return {
+            "metadata": self.metadata(),
+            "backupFilename": save_result["backupFilename"],
+            "backupPath": save_result["backupPath"],
+            "updatedColumns": save_result["updatedColumns"],
+        }
 
     def metadata(self) -> dict:
         templates = [
