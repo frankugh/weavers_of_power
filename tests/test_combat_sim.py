@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from engine.combat_sim import runs_for_rerun_fluctuation, simulate_combat_batch, simulate_combat_once
+from engine.combat_sim import CombatSimError, runs_for_rerun_fluctuation, simulate_combat_batch, simulate_combat_once
+from engine.excel_creatures import parse_creature_action
 from engine.models import Card, Deck, Effect, EnemyTemplate, RangeInt
 
 
@@ -55,6 +56,20 @@ def card_index(templates: dict[str, EnemyTemplate]) -> dict[str, Card]:
 
 
 class CombatSimTests(unittest.TestCase):
+    def test_parser_helper_reports_effects_and_coverage(self) -> None:
+        parsed = parse_creature_action(
+            action_result="A1",
+            action_text="Shield Bash - Attack 3 pierce 1, gain 2 guard, draw 1",
+        )
+
+        self.assertEqual(parsed["result"], "A1")
+        self.assertEqual(parsed["coverageStatus"], "full")
+        self.assertEqual(
+            [(effect["type"], effect["amount"]) for effect in parsed["effects"]],
+            [("attack", 3), ("guard", 2), ("draw", 1)],
+        )
+        self.assertEqual(parsed["effects"][0]["modifiers"], ["pierce:1"])
+
     def test_single_sim_is_deterministic_for_fixed_seed(self) -> None:
         templates = {
             "attacker": make_template("attacker", "Attacker", initiative=3),
@@ -81,6 +96,146 @@ class CombatSimTests(unittest.TestCase):
         )
 
         self.assertEqual(first, second)
+
+    def test_stat_overrides_change_spawned_units_without_mutating_template(self) -> None:
+        templates = {
+            "attacker": make_template("attacker", "Attacker", toughness=10, armor=0, initiative=3),
+            "target": make_template("target", "Target"),
+        }
+
+        result = simulate_combat_once(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[
+                {
+                    "templateId": "attacker",
+                    "count": 1,
+                    "overrides": {"statOverrides": {"toughness": 4, "armor": 2, "power": 0}},
+                }
+            ],
+            team_b=[{"templateId": "target", "count": 1}],
+            seed=42,
+            max_rounds=1,
+        )
+
+        attacker = next(unit for unit in result["initialUnits"] if unit["templateId"] == "attacker")
+        self.assertEqual(attacker["toughnessMax"], 4)
+        self.assertEqual(attacker["armorMax"], 2)
+        self.assertEqual(attacker["power"], 0)
+        self.assertEqual(templates["attacker"].hp.min, 10)
+        self.assertEqual(templates["attacker"].armor.min, 0)
+
+    def test_action_override_is_reparsed_and_used(self) -> None:
+        templates = {
+            "attacker": make_template(
+                "attacker",
+                "Attacker",
+                initiative=10,
+                cards=(
+                    Card(
+                        id="base_a1",
+                        title="Base",
+                        effects=(Effect(type="attack", amount=1),),
+                        action_text="Base - Attack 1",
+                        action_result="A1",
+                    ),
+                ),
+            ),
+            "target": make_template("target", "Target", toughness=6, power=0),
+        }
+
+        result = simulate_combat_once(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[
+                {
+                    "templateId": "attacker",
+                    "count": 1,
+                    "overrides": {"actionOverrides": {"A1": "Heavy Blow - Attack 5"}},
+                }
+            ],
+            team_b=[{"templateId": "target", "count": 1}],
+            seed=7,
+            max_rounds=1,
+        )
+
+        action = result["timeline"][0]["actions"][0]
+        self.assertEqual(action["damage"], 5)
+        self.assertEqual(action["cardTitle"], "Heavy Blow")
+        self.assertEqual(templates["attacker"].action_deck.cards[0].action_text, "Base - Attack 1")
+
+    def test_invalid_overrides_raise_combat_sim_error(self) -> None:
+        templates = {
+            "attacker": make_template(
+                "attacker",
+                "Attacker",
+                cards=(
+                    Card(
+                        id="base_a1",
+                        title="Base",
+                        effects=(Effect(type="attack", amount=1),),
+                        action_text="Base - Attack 1",
+                        action_result="A1",
+                    ),
+                ),
+            ),
+            "target": make_template("target", "Target"),
+        }
+
+        with self.assertRaisesRegex(CombatSimError, "toughness"):
+            simulate_combat_once(
+                templates=templates,
+                decks={},
+                card_index=card_index(templates),
+                team_a=[{"templateId": "attacker", "count": 1, "overrides": {"statOverrides": {"toughness": 0}}}],
+                team_b=[{"templateId": "target", "count": 1}],
+                seed=1,
+            )
+
+        with self.assertRaisesRegex(CombatSimError, "not simulatable"):
+            simulate_combat_once(
+                templates=templates,
+                decks={},
+                card_index=card_index(templates),
+                team_a=[{"templateId": "attacker", "count": 1, "overrides": {"actionOverrides": {"A1": "Bad - Attack target"}}}],
+                team_b=[{"templateId": "target", "count": 1}],
+                seed=1,
+            )
+
+    def test_coverage_summary_counts_manual_actions_and_logs_when_drawn(self) -> None:
+        templates = {
+            "manual": make_template(
+                "manual",
+                "Manual",
+                cards=(
+                    Card(
+                        id="manual_a1",
+                        title="Reposition",
+                        effects=tuple(),
+                        action_text="Reposition - Move target 2",
+                        manual_notes=("Move target 2",),
+                        action_result="A1",
+                    ),
+                ),
+            ),
+            "target": make_template("target", "Target", cards=(Card(id="wait", title="Wait", effects=(Effect(type="guard", amount=1),)),)),
+        }
+
+        result = simulate_combat_once(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[{"templateId": "manual", "count": 1}],
+            team_b=[{"templateId": "target", "count": 1}],
+            seed=9,
+            max_rounds=1,
+        )
+
+        self.assertEqual(result["coverageSummary"]["available"]["manual"], 1)
+        self.assertEqual(result["coverageSummary"]["used"]["manual"], 1)
+        self.assertTrue(any("Simulation note" in line for line in result["combatLog"]))
 
     def test_initiative_orders_by_total_then_modifier(self) -> None:
         templates = {
@@ -142,6 +297,32 @@ class CombatSimTests(unittest.TestCase):
         self.assertEqual(high_toughness["timeline"][0]["actions"][0]["targetName"], "Brute 1")
         self.assertEqual(low_toughness["timeline"][0]["actions"][0]["targetName"], "Weak 1")
         self.assertEqual(high_tl["timeline"][0]["actions"][0]["targetName"], "Weak 1")
+
+    def test_priority_strategy_commits_to_equal_priority_target_until_down(self) -> None:
+        templates = {
+            "attacker": make_template(
+                "attacker",
+                "Attacker",
+                power=2,
+                initiative=10,
+                cards=(Card(id="hit", title="Hit", effects=(Effect(type="attack", amount=1),), weight=2),),
+            ),
+            "twin": make_template("twin", "Twin", toughness=10, power=0),
+        }
+
+        result = simulate_combat_once(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[{"templateId": "attacker", "count": 1}],
+            team_b=[{"templateId": "twin", "count": 2}],
+            strategy_a="highest_toughness",
+            seed=11,
+            max_rounds=1,
+        )
+
+        targets = [action["targetName"] for action in result["timeline"][0]["actions"]]
+        self.assertEqual(targets, ["Twin 1", "Twin 1"])
 
     def test_guard_draw_and_attack_effects_are_resolved(self) -> None:
         templates = {

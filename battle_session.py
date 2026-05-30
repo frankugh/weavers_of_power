@@ -13,7 +13,7 @@ from typing import Optional
 from engine.combat import WOUND_CARD_ID, AttackMod, apply_attack, apply_heal
 from engine.dungeon import analyze as dungeon_analyze
 from engine.dungeon import canonical_edge_key, migrate_to_dungeon, normalize_side
-from engine.excel_creatures import load_creatures_from_workbook
+from engine.excel_creatures import load_creatures_from_workbook, serialize_creature_action_card
 from engine.loader import load_decks
 from engine.loot import roll_loot
 from engine.models import Card, Deck, EnemyTemplate
@@ -258,6 +258,11 @@ class BattleSessionContext:
                 "traits": getattr(template, "traits", None),
                 "skills": dict(getattr(template, "skills", {}) or {}),
                 "actions": dict(getattr(template, "actions", {}) or {}),
+                "simStats": self._template_sim_stats(template),
+                "simActions": [
+                    serialize_creature_action_card(card)
+                    for card in (template.action_deck.cards if template.action_deck else tuple())
+                ],
                 "playtestStatus": getattr(template, "playtest_status", None),
                 "spawnable": bool(getattr(template, "spawnable", True)),
                 "spawnBlockers": list(getattr(template, "spawn_blockers", ()) or ()),
@@ -272,6 +277,25 @@ class BattleSessionContext:
             for deck_id, deck in sorted(self.player_decks.items(), key=lambda item: item[1].name.lower())
         ]
         return {"enemyTemplates": templates, "decks": decks, "playerDecks": player_decks}
+
+    def _template_sim_stats(self, template: EnemyTemplate) -> dict:
+        def range_payload(value) -> dict:
+            return {
+                "min": int(value.min),
+                "max": int(value.max),
+                "value": int(value.min) if int(value.min) == int(value.max) else None,
+            }
+
+        return {
+            "toughness": range_payload(template.hp),
+            "armor": range_payload(template.armor),
+            "magicArmor": range_payload(template.magicArmor),
+            "baseGuard": range_payload(template.baseGuard),
+            "power": int(template.draws),
+            "movement": int(template.movement),
+            "initiativeModifier": int(template.initiative_modifier),
+            "threatLevel": getattr(template, "threat_level", None),
+        }
 
     def template_image_url(self, template: EnemyTemplate) -> str:
         image = (getattr(template, "image", None) or "").replace("\\", "/").lstrip("/")

@@ -46,6 +46,17 @@ const COMBAT_SIM_STRATEGIES = [
   { id: "random_focus", label: "Random focus" },
   { id: "full_random", label: "Full random" },
 ];
+const COMBAT_SIM_STAT_FIELDS = [
+  { key: "threatLevel", label: "TL", min: 0 },
+  { key: "toughness", label: "T", min: 1 },
+  { key: "armor", label: "AR", min: 0 },
+  { key: "magicArmor", label: "MAR", min: 0 },
+  { key: "baseGuard", label: "G", min: 0 },
+  { key: "power", label: "PWR", min: 0 },
+  { key: "initiativeModifier", label: "Init", min: 0 },
+  { key: "movement", label: "Move", min: 0 },
+];
+const COMBAT_SIM_COVERAGE_KEYS = ["full", "manual", "warning", "error"];
 
 const DEFAULT_ROOM = { columns: 10, rows: 7 };
 const MAP_MODES = {
@@ -4369,6 +4380,257 @@ function App() {
   );
 }
 
+function splitCombatActionText(actionText) {
+  const text = String(actionText || "").trim();
+  if (text.includes("\u2014")) {
+    const [title, ...rest] = text.split("\u2014");
+    return { title: title.trim(), body: rest.join("\u2014").trim() };
+  }
+  if (text.includes(" - ")) {
+    const [title, ...rest] = text.split(" - ");
+    return { title: title.trim(), body: rest.join(" - ").trim() };
+  }
+  return { title: text, body: text };
+}
+
+function parseCombatActionPreview(result, actionText, sourceAction = {}) {
+  const text = String(actionText || "").trim();
+  const { title, body } = splitCombatActionText(text);
+  const effects = [];
+  let simplified = body;
+  const attack = body.match(/\b(?:ranged\s+)?(?:magic\s+)?attack\s+(\d+)\b/i);
+  if (attack) {
+    effects.push({ type: "attack", amount: Number(attack[1]), modifiers: parseCombatAttackModifiers(body) });
+    simplified = `${simplified.slice(0, attack.index)}${simplified.slice((attack.index || 0) + attack[0].length)}`;
+  }
+  for (const match of body.matchAll(/\bgain\s+(\d+)\s+guard\b/gi)) {
+    effects.push({ type: "guard", amount: Number(match[1]), modifiers: [] });
+    simplified = simplified.replace(match[0], "");
+  }
+  for (const match of body.matchAll(/\bdraw\s+(\d+)\b/gi)) {
+    effects.push({ type: "draw", amount: Number(match[1]), modifiers: [] });
+    simplified = simplified.replace(match[0], "");
+  }
+  [
+    /\branged\s+magic\s+/gi,
+    /\branged\s+/gi,
+    /\bmagic\s+/gi,
+    /\bpierce\s+\d+\b/gi,
+    /\bstab\b/gi,
+    /\bsunder\b/gi,
+    /\bmagic\s+pierce\b/gi,
+    /\bparaly[sz]e\b/gi,
+  ].forEach((pattern) => {
+    simplified = simplified.replace(pattern, "");
+  });
+  simplified = simplified.replace(/^[\s,.;:\u2014-]+|[\s,.;:\u2014-]+$/g, "").replace(/\s+/g, " ").trim();
+  const manualNotes = simplified ? [simplified] : [];
+  const coverageStatus = combatActionCoverageStatus(text, effects, manualNotes);
+  return {
+    id: sourceAction.id || `${result}-preview`,
+    result,
+    title: title || text || result,
+    text,
+    weight: sourceAction.weight ?? 1,
+    reshuffle: Boolean(sourceAction.reshuffle),
+    effects,
+    manualNotes,
+    coverage: { status: coverageStatus, label: combatCoverageLabel(coverageStatus), notes: manualNotes },
+    coverageStatus,
+  };
+}
+
+function parseCombatAttackModifiers(body) {
+  const modifiers = [];
+  for (const match of body.matchAll(/\bpierce\s+(\d+)\b/gi)) {
+    const amount = Math.max(0, Number(match[1]) || 0);
+    if (amount > 0) modifiers.push(`pierce:${amount}`);
+  }
+  if (/\bstab\b/i.test(body)) modifiers.push("stab");
+  if (/\bsunder\b/i.test(body)) modifiers.push("sunder");
+  if (/\bmagic\s+pierce\b/i.test(body)) modifiers.push("magic_pierce");
+  if (/\bparaly[sz]e\b/i.test(body)) modifiers.push("paralyse");
+  return [...new Set(modifiers)];
+}
+
+function combatActionCoverageStatus(actionText, effects, manualNotes) {
+  const text = String(actionText || "").trim();
+  if (!text) return "error";
+  const { body } = splitCombatActionText(text);
+  if (/\battack\b/i.test(body) && !effects.some((effect) => effect.type === "attack")) {
+    return "error";
+  }
+  if (!manualNotes.length) return "full";
+  return manualNotes.every((note) => combatManualNoteIsKnown(note)) ? "manual" : "warning";
+}
+
+function combatManualNoteIsKnown(note) {
+  return [
+    /\bmove\b/i,
+    /\bmoves\b/i,
+    /\bshift\b/i,
+    /\bteleport\b/i,
+    /\bpush\b/i,
+    /\bpull\b/i,
+    /\bknock\b/i,
+    /\bprone\b/i,
+    /\badjacent\b/i,
+    /\bnearby\b/i,
+    /\bwithin\b/i,
+    /\brange\b/i,
+    /\bline\b/i,
+    /\bcone\b/i,
+    /\barea\b/i,
+    /\ball\b/i,
+    /\beach\b/i,
+    /\btarget\b/i,
+    /\btargets\b/i,
+    /\btaunt\b/i,
+    /\bfear\b/i,
+    /\bstun\b/i,
+    /\bslow\b/i,
+    /\bburn\b/i,
+    /\bpoison\b/i,
+    /\bheal\b/i,
+    /\bsummon\b/i,
+    /\bspawn\b/i,
+    /\buntil\b/i,
+    /\bnext turn\b/i,
+    /\bif\b/i,
+    /\bwhen\b/i,
+    /\bor\b/i,
+    /\bmanual\b/i,
+    /\bchoose\b/i,
+    /\bdisengage\b/i,
+  ].some((pattern) => pattern.test(String(note || "")));
+}
+
+function combatCoverageLabel(status) {
+  if (status === "full") return "Fully simulated";
+  if (status === "manual") return "Manual/ignored";
+  if (status === "warning") return "Parse warning";
+  if (status === "error") return "Sim blocker";
+  return status || "Unknown";
+}
+
+function getTemplateSimActions(template) {
+  if (Array.isArray(template?.simActions) && template.simActions.length) {
+    return template.simActions.map((action) => normalizeSimAction(action));
+  }
+  const rawActions = template?.actions || {};
+  return CREATURE_ACTION_ORDER.filter((result) => rawActions[result]).map((result) =>
+    parseCombatActionPreview(result, rawActions[result]),
+  );
+}
+
+function normalizeSimAction(action) {
+  const coverageStatus = action.coverageStatus || action.coverage?.status || "full";
+  return {
+    ...action,
+    result: action.result || action.actionResult,
+    text: action.text || action.actionText || "",
+    effects: action.effects || [],
+    manualNotes: action.manualNotes || [],
+    coverage: action.coverage || { status: coverageStatus, label: combatCoverageLabel(coverageStatus), notes: action.manualNotes || [] },
+    coverageStatus,
+  };
+}
+
+function getSourceActionText(template, result) {
+  const action = getTemplateSimActions(template).find((item) => item.result === result);
+  return action?.text || "";
+}
+
+function getEffectiveSimActions(template, overrides = {}) {
+  const actionOverrides = overrides?.actionOverrides || {};
+  return getTemplateSimActions(template).map((action) => {
+    if (!Object.prototype.hasOwnProperty.call(actionOverrides, action.result)) {
+      return action;
+    }
+    return parseCombatActionPreview(action.result, actionOverrides[action.result], action);
+  });
+}
+
+function summarizeCombatCoverage(actions = []) {
+  const counts = { total: actions.length, full: 0, manual: 0, warning: 0, error: 0 };
+  actions.forEach((action) => {
+    const status = action.coverageStatus || action.coverage?.status || "full";
+    counts[status] = (counts[status] || 0) + 1;
+  });
+  return counts;
+}
+
+function sourceSimStatValue(template, key) {
+  if (!template) return "";
+  if (key === "threatLevel") return template.simStats?.threatLevel ?? template.threatLevel ?? "";
+  const source = template.simStats?.[key];
+  if (source && typeof source === "object") {
+    if (source.value != null) return source.value;
+    if (source.min != null && source.max != null && source.min === source.max) return source.min;
+    if (source.min != null && source.max != null) return `${source.min}-${source.max}`;
+  }
+  if (source != null) return source;
+  return "";
+}
+
+function effectiveSimStatValue(template, overrides, key) {
+  const statOverrides = overrides?.statOverrides || {};
+  if (Object.prototype.hasOwnProperty.call(statOverrides, key) && statOverrides[key] !== "" && statOverrides[key] != null) {
+    return statOverrides[key];
+  }
+  return sourceSimStatValue(template, key);
+}
+
+function buildCombatOverridesPayload(overrides, template) {
+  overrides = overrides || {};
+  const statOverrides = {};
+  Object.entries(overrides.statOverrides || {}).forEach(([key, value]) => {
+    if (value === "" || value == null) return;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return;
+    const sourceValue = Number(sourceSimStatValue(template, key));
+    if (Number.isFinite(sourceValue) && sourceValue === numeric) return;
+    statOverrides[key] = numeric;
+  });
+
+  const actionOverrides = {};
+  Object.entries(overrides.actionOverrides || {}).forEach(([result, value]) => {
+    const text = String(value ?? "");
+    if (text === getSourceActionText(template, result)) return;
+    actionOverrides[result] = text;
+  });
+
+  const payload = {};
+  if (Object.keys(statOverrides).length) payload.statOverrides = statOverrides;
+  if (Object.keys(actionOverrides).length) payload.actionOverrides = actionOverrides;
+  return Object.keys(payload).length ? payload : null;
+}
+
+function isEmptyCombatOverrides(overrides) {
+  return (
+    !Object.keys(overrides?.statOverrides || {}).length &&
+    !Object.keys(overrides?.actionOverrides || {}).length
+  );
+}
+
+function formatCombatEffect(effect) {
+  if (!effect) return "-";
+  if (effect.type === "attack") {
+    const modifiers = (effect.modifiers || []).map(formatCombatModifier);
+    return modifiers.length ? `Attack ${effect.amount} (${modifiers.join(", ")})` : `Attack ${effect.amount}`;
+  }
+  if (effect.type === "guard") return `Guard ${effect.amount}`;
+  if (effect.type === "draw") return `Draw ${effect.amount}`;
+  return `${effect.type} ${effect.amount ?? ""}`.trim();
+}
+
+function formatCombatModifier(modifier) {
+  if (String(modifier).startsWith("pierce:")) return `Pierce ${String(modifier).split(":")[1]}`;
+  if (modifier === "magic_pierce") return "Magic pierce";
+  if (modifier === "paralyse") return "Paralyze";
+  return titleCaseFromSnake(String(modifier));
+}
+
 function CombatSimView({ meta }) {
   const spawnableTemplates = useMemo(
     () => (meta?.enemyTemplates || []).filter((template) => template.spawnable !== false),
@@ -4394,6 +4656,8 @@ function CombatSimView({ meta }) {
   const [simError, setSimError] = useState("");
   const [simBusy, setSimBusy] = useState(false);
   const [turnIndex, setTurnIndex] = useState(0);
+  const [editingEntry, setEditingEntry] = useState(null);
+  const [templateOverrides, setTemplateOverrides] = useState({});
 
   useEffect(() => {
     if (!firstTemplateId) {
@@ -4407,6 +4671,20 @@ function CombatSimView({ meta }) {
     setTeam((current) => current.map((entry, entryIndex) => (entryIndex === index ? { ...entry, ...patch } : entry)));
   }
 
+  function updateTemplateOverrides(templateId, updater) {
+    if (!templateId) return;
+    setTemplateOverrides((current) => {
+      const nextOverrides = updater(current[templateId] || {});
+      const next = { ...current };
+      if (isEmptyCombatOverrides(nextOverrides)) {
+        delete next[templateId];
+      } else {
+        next[templateId] = nextOverrides;
+      }
+      return next;
+    });
+  }
+
   function addTeamEntry(setTeam) {
     setTeam((current) => [...current, { templateId: firstTemplateId, count: 1 }]);
   }
@@ -4418,10 +4696,15 @@ function CombatSimView({ meta }) {
   function normalizeTeam(entries) {
     return entries
       .filter((entry) => entry.templateId)
-      .map((entry) => ({
-        templateId: entry.templateId,
-        count: Math.max(1, Math.min(20, Number(entry.count) || 1)),
-      }));
+      .map((entry) => {
+        const template = templateLookup.get(entry.templateId);
+        const overrides = buildCombatOverridesPayload(templateOverrides[entry.templateId], template);
+        return {
+          templateId: entry.templateId,
+          count: Math.max(1, Math.min(20, Number(entry.count) || 1)),
+          ...(overrides ? { overrides } : {}),
+        };
+      });
   }
 
   async function submitSimulation(event) {
@@ -4555,25 +4838,48 @@ function CombatSimView({ meta }) {
             team={teamA}
             templates={spawnableTemplates}
             templateLookup={templateLookup}
+            templateOverrides={templateOverrides}
             strategy={strategyA}
             setStrategy={setStrategyA}
             onUpdate={(index, patch) => updateTeam(setTeamA, index, patch)}
+            onEdit={(index) => setEditingEntry({ team: "A", index })}
             onAdd={() => addTeamEntry(setTeamA)}
-            onRemove={(index) => removeTeamEntry(setTeamA, index)}
+            onRemove={(index) => {
+              removeTeamEntry(setTeamA, index);
+              setEditingEntry(null);
+            }}
           />
           <CombatSimTeamBuilder
             title="Team B"
             team={teamB}
             templates={spawnableTemplates}
             templateLookup={templateLookup}
+            templateOverrides={templateOverrides}
             strategy={strategyB}
             setStrategy={setStrategyB}
             onUpdate={(index, patch) => updateTeam(setTeamB, index, patch)}
+            onEdit={(index) => setEditingEntry({ team: "B", index })}
             onAdd={() => addTeamEntry(setTeamB)}
-            onRemove={(index) => removeTeamEntry(setTeamB, index)}
+            onRemove={(index) => {
+              removeTeamEntry(setTeamB, index);
+              setEditingEntry(null);
+            }}
           />
         </div>
       </form>
+
+      {editingEntry ? (
+        <CombatSimEntryEditorModal
+          teamLabel={`Team ${editingEntry.team}`}
+          entry={(editingEntry.team === "A" ? teamA : teamB)[editingEntry.index]}
+          template={templateLookup.get((editingEntry.team === "A" ? teamA : teamB)[editingEntry.index]?.templateId)}
+          overrides={templateOverrides[(editingEntry.team === "A" ? teamA : teamB)[editingEntry.index]?.templateId] || {}}
+          onClose={() => setEditingEntry(null)}
+          onUpdateOverrides={(updater) =>
+            updateTemplateOverrides((editingEntry.team === "A" ? teamA : teamB)[editingEntry.index]?.templateId, updater)
+          }
+        />
+      ) : null}
 
       {simError ? (
         <div className="status-banner status-error combat-sim-error">
@@ -4610,9 +4916,11 @@ function CombatSimTeamBuilder({
   team,
   templates,
   templateLookup,
+  templateOverrides,
   strategy,
   setStrategy,
   onUpdate,
+  onEdit,
   onAdd,
   onRemove,
 }) {
@@ -4640,6 +4948,9 @@ function CombatSimTeamBuilder({
         <div className="combat-team-entries">
           {team.map((entry, index) => {
             const template = templateLookup.get(entry.templateId);
+            const overrides = templateOverrides[entry.templateId] || {};
+            const actions = getEffectiveSimActions(template, overrides);
+            const coverage = summarizeCombatCoverage(actions);
             return (
               <div className="combat-team-entry" key={`${entry.templateId}-${index}`}>
                 <div className="combat-team-entry-image">
@@ -4669,6 +4980,16 @@ function CombatSimTeamBuilder({
                     onChange={(event) => onUpdate(index, { count: event.target.value })}
                   />
                 </label>
+                <div className="combat-team-entry-tools">
+                  <button
+                    className="secondary-button panel-header-button"
+                    type="button"
+                    onClick={() => onEdit(index)}
+                  >
+                    Edit
+                  </button>
+                  <CombatCoverageChip coverage={coverage} />
+                </div>
                 <button
                   className="icon-button combat-team-remove"
                   type="button"
@@ -4678,12 +4999,164 @@ function CombatSimTeamBuilder({
                 >
                   <TrashIcon />
                 </button>
+                <div className="combat-team-stat-preview">
+                  {COMBAT_SIM_STAT_FIELDS.filter((field) => field.key !== "movement").map((field) => (
+                    <span key={field.key}>
+                      {field.label} {effectiveSimStatValue(template, overrides, field.key) || "-"}
+                    </span>
+                  ))}
+                </div>
               </div>
             );
           })}
         </div>
       </div>
     </Panel>
+  );
+}
+
+function CombatCoverageChip({ coverage }) {
+  if (!coverage?.total) return null;
+  const parts = [];
+  if (coverage.error) parts.push(`${coverage.error} error`);
+  if (coverage.warning) parts.push(`${coverage.warning} warning`);
+  if (coverage.manual) parts.push(`${coverage.manual} manual`);
+  if (!parts.length) return null;
+  const tone = coverage.error ? "error" : coverage.warning ? "warning" : "manual";
+  return (
+    <span className={`combat-coverage-chip combat-coverage-${tone}`} title={`${coverage.full || 0}/${coverage.total} fully simulated`}>
+      {parts.join(" | ")}
+    </span>
+  );
+}
+
+function CombatSimEntryEditorModal({ teamLabel, entry, template, overrides, onClose, onUpdateOverrides }) {
+  if (!entry || !template) return null;
+  const statOverrides = overrides?.statOverrides || {};
+  const actionOverrides = overrides?.actionOverrides || {};
+  const actions = getEffectiveSimActions(template, overrides);
+  const coverage = summarizeCombatCoverage(actions);
+
+  function updateStatOverride(key, value) {
+    onUpdateOverrides((current) => {
+      const nextStats = { ...(current.statOverrides || {}) };
+      if (value === "") {
+        delete nextStats[key];
+      } else {
+        nextStats[key] = value;
+      }
+      return { ...current, statOverrides: nextStats };
+    });
+  }
+
+  function updateActionOverride(result, value) {
+    onUpdateOverrides((current) => ({
+      ...current,
+      actionOverrides: {
+        ...(current.actionOverrides || {}),
+        [result]: value,
+      },
+    }));
+  }
+
+  function resetActionOverride(result) {
+    onUpdateOverrides((current) => {
+      const nextActions = { ...(current.actionOverrides || {}) };
+      delete nextActions[result];
+      return { ...current, actionOverrides: nextActions };
+    });
+  }
+
+  return (
+    <ModalShell
+      open
+      title={`${teamLabel}: ${template.name}`}
+      subtitle={`Temporary simulation overrides for every ${template.name}. Source data is unchanged.`}
+      onClose={onClose}
+      size="wide"
+      className="combat-sim-editor-modal"
+    >
+      <div className="combat-sim-editor">
+        <div className="combat-editor-header">
+          <div className="combat-editor-title-row">
+            <span className="pill pill-muted">{template.id}</span>
+            <CombatCoverageChip coverage={coverage} />
+          </div>
+          <button className="secondary-button panel-header-button" type="button" onClick={() => onUpdateOverrides(() => ({}))}>
+            Reset all
+          </button>
+        </div>
+
+        <div className="combat-editor-grid">
+          <section className="combat-editor-section">
+            <div className="selected-draw-label">Stats</div>
+            <div className="combat-stat-editor-grid">
+              {COMBAT_SIM_STAT_FIELDS.map((field) => (
+                <label className="field" key={field.key}>
+                  <span>{field.label}</span>
+                  <input
+                    type="number"
+                    min={field.min}
+                    value={statOverrides[field.key] ?? ""}
+                    placeholder={String(sourceSimStatValue(template, field.key) || "-")}
+                    onChange={(event) => updateStatOverride(field.key, event.target.value)}
+                  />
+                </label>
+              ))}
+            </div>
+          </section>
+
+          <section className="combat-editor-section combat-action-editor-section">
+            <div className="selected-draw-label">Actions</div>
+            <div className="combat-action-editor-list">
+              {actions.map((action) => {
+                const sourceText = getSourceActionText(template, action.result);
+                const isOverridden = Object.prototype.hasOwnProperty.call(actionOverrides, action.result);
+                const status = action.coverageStatus || action.coverage?.status || "full";
+                return (
+                  <div className={`combat-action-editor-card combat-coverage-${status}`} key={action.result}>
+                    <div className="combat-action-editor-head">
+                      <div>
+                        <strong>{action.result}</strong>
+                        <span>{action.title}</span>
+                      </div>
+                      <button
+                        className="secondary-button panel-header-button"
+                        type="button"
+                        disabled={!isOverridden}
+                        onClick={() => resetActionOverride(action.result)}
+                      >
+                        Reset
+                      </button>
+                    </div>
+                    <textarea
+                      aria-label={`${action.result} action text`}
+                      value={isOverridden ? actionOverrides[action.result] : sourceText}
+                      onChange={(event) => updateActionOverride(action.result, event.target.value)}
+                      rows={2}
+                    />
+                    <div className="combat-action-parse-preview">
+                      <span className={`combat-coverage-dot combat-coverage-${status}`}>{combatCoverageLabel(status)}</span>
+                      <span>
+                        {action.effects?.length ? action.effects.map(formatCombatEffect).join(" + ") : "No automatic effects"}
+                      </span>
+                      {action.manualNotes?.length ? <span>Manual: {action.manualNotes.join("; ")}</span> : null}
+                    </div>
+                  </div>
+                );
+              })}
+              {!actions.length ? <div className="subtle-copy">No action cards available.</div> : null}
+            </div>
+          </section>
+        </div>
+
+        <div className="modal-actions">
+          <button className="primary-button" type="button" onClick={onClose}>
+            Done
+          </button>
+        </div>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -4705,6 +5178,7 @@ function CombatSimBatchSummary({ result }) {
         <MetricCard label="Winner T left" value={summary.avgWinnerRemainingToughness == null ? "-" : formatAverage(summary.avgWinnerRemainingToughness)} />
       </div>
       <CombatSimPrecisionSummary precision={precision} />
+      <CombatSimCoverageSummary summary={result.lastCombat?.coverageSummary} />
       <div className="combat-batch-team-grid">
         {["A", "B"].map((team) => (
           <div className="combat-batch-team" key={team}>
@@ -4719,6 +5193,25 @@ function CombatSimBatchSummary({ result }) {
         ))}
       </div>
     </Panel>
+  );
+}
+
+function CombatSimCoverageSummary({ summary }) {
+  if (!summary?.available) return null;
+  const available = summary.available;
+  const used = summary.used || {};
+  const issueText = COMBAT_SIM_COVERAGE_KEYS
+    .filter((key) => key !== "full" && ((available[key] || 0) > 0 || (used[key] || 0) > 0))
+    .map((key) => `${available[key] || 0} ${key}`)
+    .join(" | ");
+  return (
+    <div className="combat-sim-coverage-summary">
+      <span>
+        Simulation coverage: {available.full || 0}/{available.total || 0} available actions fully simulated
+      </span>
+      <span>{used.total ? `${used.full || 0}/${used.total} used this combat fully simulated` : "No actions used yet"}</span>
+      {issueText ? <span>{issueText}</span> : null}
+    </div>
   );
 }
 
@@ -4777,6 +5270,7 @@ function CombatSimDetails({ result, mode, turnIndex, currentTurn, visibleUnits, 
           <MetricCard label="Turns" value={result.turns} />
           <MetricCard label="Attack actions" value={result.attackActions} />
         </div>
+        <CombatSimCoverageSummary summary={result.coverageSummary} />
         {isTurnMode ? (
           <div className="combat-turn-controls">
             <button className="primary-button" type="button" onClick={onNextTurn} disabled={atEnd}>

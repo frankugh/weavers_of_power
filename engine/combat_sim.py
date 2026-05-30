@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 import random
 from typing import Callable, Iterable, Optional
 
 from engine.combat import AttackMod, CombatLog, apply_attack, apply_heal
-from engine.models import Card, Deck, EnemyTemplate
+from engine.excel_creatures import (
+    SIM_COVERAGE_ERROR,
+    SIM_COVERAGE_FULL,
+    SIM_COVERAGE_MANUAL,
+    SIM_COVERAGE_WARNING,
+    action_card_coverage,
+    build_creature_action_card,
+)
+from engine.models import Card, Deck, EnemyTemplate, RangeInt
 from engine.runtime import draw_additional_cards, draw_cards, spawn_enemy, start_turn, end_turn
 from engine.runtime_models import EnemyInstance
 
@@ -33,6 +41,8 @@ class CombatSimError(ValueError):
 class TeamEntry:
     template_id: str
     count: int = 1
+    stat_overrides: dict[str, int] = field(default_factory=dict)
+    action_overrides: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -54,6 +64,7 @@ class SimState:
     team_totals: dict[str, dict] = field(default_factory=dict)
     log: list[str] = field(default_factory=list)
     timeline: list[dict] = field(default_factory=list)
+    used_card_ids: set[str] = field(default_factory=set)
     turns: int = 0
     attack_actions: int = 0
 
@@ -79,7 +90,8 @@ def simulate_combat_once(
     if max_rounds <= 0:
         raise CombatSimError("maxRounds must be > 0")
 
-    units = _spawn_units(templates, decks, entries_a, entries_b, rng=rng)
+    sim_card_index = dict(card_index)
+    units = _spawn_units(templates, decks, entries_a, entries_b, rng=rng, card_index=sim_card_index)
     if not units:
         raise CombatSimError("At least one unit is required")
 
@@ -87,7 +99,7 @@ def simulate_combat_once(
     state = SimState(
         units=units,
         order=order,
-        card_index=card_index,
+        card_index=sim_card_index,
         rng=rng,
         strategy_by_team={"A": strategy_a, "B": strategy_b},
         team_totals={
@@ -97,7 +109,7 @@ def simulate_combat_once(
     )
 
     state.log.append("Initiative: " + ", ".join(_initiative_label(unit.entity) for unit in order))
-    initial_units = _serialize_units(units, card_index=card_index, image_url_for=image_url_for)
+    initial_units = _serialize_units(units, card_index=sim_card_index, image_url_for=image_url_for)
 
     winner = _winner(units)
     round_number = 0
@@ -120,7 +132,7 @@ def simulate_combat_once(
     else:
         state.log.append(f"Team {winner} wins in round {round_number}.")
 
-    final_units = _serialize_units(units, card_index=card_index, image_url_for=image_url_for)
+    final_units = _serialize_units(units, card_index=sim_card_index, image_url_for=image_url_for)
     _finalize_team_totals(state, units)
 
     return {
@@ -134,6 +146,7 @@ def simulate_combat_once(
         "timeline": state.timeline,
         "combatLog": list(state.log),
         "teamTotals": state.team_totals,
+        "coverageSummary": _coverage_summary(units, sim_card_index, state.used_card_ids),
     }
 
 
@@ -264,9 +277,18 @@ def _normalize_team(entries: Iterable[dict | TeamEntry], *, label: str) -> list[
         if isinstance(raw, TeamEntry):
             entry = raw
         else:
+            overrides = raw.get("overrides") or {}
             entry = TeamEntry(
                 template_id=str(raw.get("templateId") or raw.get("template_id") or "").strip(),
                 count=int(raw.get("count", 1)),
+                stat_overrides=_normalize_stat_overrides(
+                    overrides.get("statOverrides") or raw.get("statOverrides") or {},
+                    label=label,
+                ),
+                action_overrides=_normalize_action_overrides(
+                    overrides.get("actionOverrides") or raw.get("actionOverrides") or {},
+                    label=label,
+                ),
             )
         if not entry.template_id:
             raise CombatSimError(f"{label}: templateId is required")
@@ -278,6 +300,67 @@ def _normalize_team(entries: Iterable[dict | TeamEntry], *, label: str) -> list[
     if not normalized:
         raise CombatSimError(f"{label} must contain at least one creature")
     return normalized
+
+
+STAT_OVERRIDE_MINIMUMS = {
+    "toughness": 1,
+    "armor": 0,
+    "magicArmor": 0,
+    "baseGuard": 0,
+    "power": 0,
+    "movement": 0,
+    "initiativeModifier": 0,
+    "threatLevel": 0,
+}
+
+
+def _normalize_stat_overrides(raw: object, *, label: str) -> dict[str, int]:
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise CombatSimError(f"{label}: statOverrides must be an object")
+    result: dict[str, int] = {}
+    for key, value in raw.items():
+        if value is None or value == "":
+            continue
+        if key not in STAT_OVERRIDE_MINIMUMS:
+            raise CombatSimError(f"{label}: unknown stat override '{key}'")
+        try:
+            number = int(value)
+        except (TypeError, ValueError) as exc:
+            raise CombatSimError(f"{label}: {key} override must be an integer") from exc
+        minimum = STAT_OVERRIDE_MINIMUMS[key]
+        if number < minimum:
+            raise CombatSimError(f"{label}: {key} override must be >= {minimum}")
+        result[key] = number
+    return result
+
+
+def _normalize_action_overrides(raw: object, *, label: str) -> dict[str, str]:
+    if not raw:
+        return {}
+    result: dict[str, str] = {}
+    if isinstance(raw, dict):
+        iterable = raw.items()
+    elif isinstance(raw, list):
+        iterable = []
+        pairs: list[tuple[str, object]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                raise CombatSimError(f"{label}: actionOverrides items must be objects")
+            pairs.append((str(item.get("result") or item.get("actionResult") or ""), item.get("text") or item.get("actionText") or ""))
+        iterable = pairs
+    else:
+        raise CombatSimError(f"{label}: actionOverrides must be an object or list")
+    for raw_result, raw_text in iterable:
+        result_key = str(raw_result or "").strip().upper()
+        text = str(raw_text or "").strip()
+        if not result_key:
+            raise CombatSimError(f"{label}: action override result is required")
+        if not text:
+            raise CombatSimError(f"{label}: {result_key} action override text is required")
+        result[result_key] = text
+    return result
 
 
 def _validate_strategy(strategy: str) -> None:
@@ -292,17 +375,24 @@ def _spawn_units(
     entries_b: list[TeamEntry],
     *,
     rng: random.Random,
+    card_index: dict[str, Card],
 ) -> list[SimUnit]:
     units: list[SimUnit] = []
     template_counts: dict[tuple[str, str], int] = defaultdict(int)
 
     for team, entries in (("A", entries_a), ("B", entries_b)):
-        for entry in entries:
+        for entry_index, entry in enumerate(entries):
             template = templates.get(entry.template_id)
             if template is None:
                 raise CombatSimError(f"Unknown template '{entry.template_id}'")
             if not getattr(template, "spawnable", True):
                 raise CombatSimError(f"Template '{template.name}' is not spawnable")
+            template = _effective_template_for_entry(
+                template,
+                entry,
+                entry_key=f"{team}_{entry_index}_{entry.template_id}",
+                card_index=card_index,
+            )
             for _ in range(entry.count):
                 template_counts[(team, template.id)] += 1
                 copy_index = template_counts[(team, template.id)]
@@ -311,6 +401,91 @@ def _spawn_units(
                 entity.name = f"{template.name} {copy_index}"
                 units.append(SimUnit(entity=entity, team=team, template=template, order_index=len(units)))
     return units
+
+
+def _effective_template_for_entry(
+    template: EnemyTemplate,
+    entry: TeamEntry,
+    *,
+    entry_key: str,
+    card_index: dict[str, Card],
+) -> EnemyTemplate:
+    if entry.stat_overrides:
+        template = _apply_stat_overrides(template, entry.stat_overrides)
+    if entry.action_overrides:
+        template = _apply_action_overrides(template, entry.action_overrides, entry_key=entry_key, card_index=card_index)
+    if template.action_deck:
+        for card in template.action_deck.cards:
+            card_index[card.id] = card
+    return template
+
+
+def _apply_stat_overrides(template: EnemyTemplate, overrides: dict[str, int]) -> EnemyTemplate:
+    changes = {}
+    if "toughness" in overrides:
+        changes["hp"] = RangeInt(overrides["toughness"], overrides["toughness"])
+    if "armor" in overrides:
+        changes["armor"] = RangeInt(overrides["armor"], overrides["armor"])
+    if "magicArmor" in overrides:
+        changes["magicArmor"] = RangeInt(overrides["magicArmor"], overrides["magicArmor"])
+    if "baseGuard" in overrides:
+        changes["baseGuard"] = RangeInt(overrides["baseGuard"], overrides["baseGuard"])
+    if "power" in overrides:
+        changes["draws"] = overrides["power"]
+    if "movement" in overrides:
+        changes["movement"] = overrides["movement"]
+    if "initiativeModifier" in overrides:
+        changes["initiative_modifier"] = overrides["initiativeModifier"]
+    if "threatLevel" in overrides:
+        changes["threat_level"] = overrides["threatLevel"]
+    return replace(template, **changes) if changes else template
+
+
+def _apply_action_overrides(
+    template: EnemyTemplate,
+    overrides: dict[str, str],
+    *,
+    entry_key: str,
+    card_index: dict[str, Card],
+) -> EnemyTemplate:
+    if template.action_deck is None:
+        raise CombatSimError(f"Template '{template.name}' has no action deck")
+    cards_by_result = {
+        str(card.action_result or "").upper(): card
+        for card in template.action_deck.cards
+        if card.action_result
+    }
+    unknown_results = sorted(set(overrides) - set(cards_by_result))
+    if unknown_results:
+        raise CombatSimError(f"Template '{template.name}' has no action result '{unknown_results[0]}'")
+
+    cards: list[Card] = []
+    for card in template.action_deck.cards:
+        result = str(card.action_result or "").upper()
+        if result in overrides:
+            override_card = build_creature_action_card(
+                creature_id=template.id,
+                action_result=result,
+                action_text=overrides[result],
+                card_id=f"{template.id}__sim_{entry_key}__{result}",
+                weight=card.weight,
+                reshuffle=card.reshuffle,
+            )
+            coverage = action_card_coverage(override_card)
+            if coverage["status"] == SIM_COVERAGE_ERROR:
+                raise CombatSimError(f"Template '{template.name}' {result} override is not simulatable")
+            cards.append(override_card)
+            card_index[override_card.id] = override_card
+        else:
+            cards.append(card)
+            card_index[card.id] = card
+
+    deck = replace(
+        template.action_deck,
+        id=f"{template.action_deck.id}__sim_{entry_key}",
+        cards=tuple(cards),
+    )
+    return replace(template, action_deck=deck)
 
 
 def _roll_initiative(units: list[SimUnit], *, rng: random.Random) -> list[SimUnit]:
@@ -357,6 +532,7 @@ def _run_unit_turn(
     draw_count = _draw_count_for(entity)
     draw_result = draw_cards(entity, draw_count, rnd=state.rng)
     draw_resolution = _resolve_draw_effects(state, entity, draw_result.drawn)
+    state.used_card_ids.update(draw_resolution["cardIds"])
     drawn_text = [_card_text(state.card_index, card_id) for card_id in draw_resolution["cardIds"]]
     if drawn_text:
         suffix_parts = []
@@ -368,6 +544,7 @@ def _run_unit_turn(
         lines.append(f"{entity.name} draws: {', '.join(drawn_text)}{suffix}.")
     else:
         lines.append(f"{entity.name} draws no cards.")
+    lines.extend(_draw_coverage_notes(entity.name, draw_resolution["cardIds"], state.card_index))
 
     for card_id in list(entity.deck_state.hand):
         card = state.card_index.get(card_id)
@@ -511,11 +688,18 @@ def _choose_target(state: SimState, attacker: SimUnit) -> Optional[SimUnit]:
         state.focus_by_team[attacker.team] = target.entity.instance_id
         return target
 
+    focused_id = state.focus_by_team.get(attacker.team)
+    focused = next((unit for unit in candidates if unit.entity.instance_id == focused_id), None)
+    if focused is not None:
+        return focused
+
     if strategy == "lowest_toughness":
-        return min(candidates, key=lambda unit: (unit.entity.toughness_current, unit.entity.toughness_max, unit.order_index))
+        target = min(candidates, key=lambda unit: (unit.entity.toughness_current, unit.entity.toughness_max, unit.order_index))
+        state.focus_by_team[attacker.team] = target.entity.instance_id
+        return target
 
     if strategy == "highest_tl":
-        return max(
+        target = max(
             candidates,
             key=lambda unit: (
                 int(getattr(unit.template, "threat_level", 0) or 0),
@@ -524,8 +708,12 @@ def _choose_target(state: SimState, attacker: SimUnit) -> Optional[SimUnit]:
                 -unit.order_index,
             ),
         )
+        state.focus_by_team[attacker.team] = target.entity.instance_id
+        return target
 
-    return max(candidates, key=lambda unit: (unit.entity.toughness_max, unit.entity.toughness_current, -unit.order_index))
+    target = max(candidates, key=lambda unit: (unit.entity.toughness_max, unit.entity.toughness_current, -unit.order_index))
+    state.focus_by_team[attacker.team] = target.entity.instance_id
+    return target
 
 
 def _winner(units: list[SimUnit]) -> Optional[str]:
@@ -555,6 +743,52 @@ def _empty_team_totals() -> dict:
         "remainingToughness": 0,
         "units": 0,
     }
+
+
+def _draw_coverage_notes(entity_name: str, card_ids: list[str], card_index: dict[str, Card]) -> list[str]:
+    notes: list[str] = []
+    seen: set[str] = set()
+    for card_id in card_ids:
+        if card_id in seen:
+            continue
+        seen.add(card_id)
+        card = card_index.get(card_id)
+        if not card:
+            continue
+        coverage = action_card_coverage(card)
+        if coverage["status"] == SIM_COVERAGE_FULL:
+            continue
+        result = card.action_result or card.title or card.id
+        details = "; ".join(card.manual_notes) if card.manual_notes else coverage["label"]
+        notes.append(f"Simulation note: {entity_name} {result} has {coverage['label'].lower()}: {details}.")
+    return notes
+
+
+def _coverage_summary(units: list[SimUnit], card_index: dict[str, Card], used_card_ids: set[str]) -> dict:
+    available_card_ids: list[str] = []
+    for unit in units:
+        if unit.template.action_deck:
+            available_card_ids.extend(card.id for card in unit.template.action_deck.cards)
+    return {
+        "available": _coverage_counts(available_card_ids, card_index),
+        "used": _coverage_counts(list(used_card_ids), card_index),
+    }
+
+
+def _coverage_counts(card_ids: list[str], card_index: dict[str, Card]) -> dict:
+    unique_ids = list(dict.fromkeys(card_ids))
+    counts = {
+        "total": len(unique_ids),
+        SIM_COVERAGE_FULL: 0,
+        SIM_COVERAGE_MANUAL: 0,
+        SIM_COVERAGE_WARNING: 0,
+        SIM_COVERAGE_ERROR: 0,
+    }
+    for card_id in unique_ids:
+        card = card_index.get(card_id)
+        status = action_card_coverage(card)["status"] if card else SIM_COVERAGE_WARNING
+        counts[status] = counts.get(status, 0) + 1
+    return counts
 
 
 def _precision_summary(
@@ -712,8 +946,15 @@ def _serialize_unit(
             "hand": len(deck_state.hand),
             "discard": len(deck_state.discard_pile),
         },
+        "actionCoverage": _unit_action_coverage(unit.template, card_index),
         "isDown": _is_down(entity),
     }
+
+
+def _unit_action_coverage(template: EnemyTemplate, card_index: dict[str, Card]) -> dict:
+    if not template.action_deck:
+        return _coverage_counts([], card_index)
+    return _coverage_counts([card.id for card in template.action_deck.cards], card_index)
 
 
 def _status_text(entity: EnemyInstance) -> str:

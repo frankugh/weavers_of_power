@@ -43,6 +43,11 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(templates_by_id["C_GOBLIN"]["category"], "Changelings")
         self.assertEqual(templates_by_id["C_GOBLIN"]["section"], "Greenskins")
         self.assertTrue(templates_by_id["C_GOBLIN"]["spawnable"])
+        self.assertIn("simStats", templates_by_id["C_GOBLIN"])
+        self.assertIn("toughness", templates_by_id["C_GOBLIN"]["simStats"])
+        self.assertIn("simActions", templates_by_id["C_GOBLIN"])
+        self.assertIn("effects", templates_by_id["C_GOBLIN"]["simActions"][0])
+        self.assertIn("coverageStatus", templates_by_id["C_GOBLIN"]["simActions"][0])
         self.assertEqual(templates_by_id["C_WOLF"]["category"], "Changelings")
 
     def test_create_and_load_session(self) -> None:
@@ -878,6 +883,44 @@ class BattleApiTests(unittest.TestCase):
         self.assertGreaterEqual(len(result["timeline"]), 1)
         self.assertIn("initiativeText", result["initialUnits"][0])
         self.assertIn("teamTotals", result)
+        self.assertIn("coverageSummary", result)
+
+    def test_combat_sim_endpoint_accepts_entry_overrides_without_mutating_metadata(self) -> None:
+        before_meta = self.client.get("/api/battle/meta").json()
+        before_goblin = next(item for item in before_meta["enemyTemplates"] if item["id"] == "C_GOBLIN")
+        source_toughness = before_goblin["simStats"]["toughness"]["value"] or before_goblin["simStats"]["toughness"]["min"]
+        action_result = before_goblin["simActions"][0]["result"]
+
+        response = self.client.post(
+            "/api/combat-sim/simulate",
+            json={
+                "teamA": [
+                    {
+                        "templateId": "C_GOBLIN",
+                        "count": 1,
+                        "overrides": {
+                            "statOverrides": {"toughness": source_toughness + 5, "armor": 3},
+                            "actionOverrides": {action_result: "Test Strike - Attack 9"},
+                        },
+                    }
+                ],
+                "teamB": [{"templateId": "C_WOLF", "count": 1}],
+                "strategy": "highest_toughness",
+                "seed": 500,
+                "runs": 1,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        result = response.json()["result"]
+        goblin = next(unit for unit in result["initialUnits"] if unit["templateId"] == "C_GOBLIN")
+        self.assertEqual(goblin["toughnessMax"], source_toughness + 5)
+        self.assertEqual(goblin["armorMax"], 3)
+
+        after_meta = self.client.get("/api/battle/meta").json()
+        after_goblin = next(item for item in after_meta["enemyTemplates"] if item["id"] == "C_GOBLIN")
+        self.assertEqual(after_goblin["simStats"]["toughness"], before_goblin["simStats"]["toughness"])
+        self.assertEqual(after_goblin["simActions"], before_goblin["simActions"])
 
     def test_combat_sim_batch_endpoint_returns_aggregate_and_last_combat(self) -> None:
         response = self.client.post(
@@ -957,6 +1000,17 @@ class BattleApiTests(unittest.TestCase):
         )
         self.assertEqual(bad_runs.status_code, 400)
         self.assertIn("runs", bad_runs.json()["detail"])
+
+        bad_override = self.client.post(
+            "/api/combat-sim/simulate",
+            json={
+                "teamA": [{"templateId": "C_GOBLIN", "count": 1, "overrides": {"statOverrides": {"toughness": 0}}}],
+                "teamB": [{"templateId": "C_WOLF", "count": 1}],
+                "runs": 1,
+            },
+        )
+        self.assertEqual(bad_override.status_code, 400)
+        self.assertIn("toughness", bad_override.json()["detail"])
 
 
 if __name__ == "__main__":

@@ -172,9 +172,26 @@ class InteractSuspectRequest(BaseModel):
     edgeKey: str
 
 
+class CombatSimStatOverridesRequest(BaseModel):
+    toughness: Optional[int] = None
+    armor: Optional[int] = None
+    magicArmor: Optional[int] = None
+    baseGuard: Optional[int] = None
+    power: Optional[int] = None
+    movement: Optional[int] = None
+    initiativeModifier: Optional[int] = None
+    threatLevel: Optional[int] = None
+
+
+class CombatSimEntryOverridesRequest(BaseModel):
+    statOverrides: Optional[CombatSimStatOverridesRequest] = None
+    actionOverrides: dict[str, str] = Field(default_factory=dict)
+
+
 class CombatSimTeamEntryRequest(BaseModel):
     templateId: str
     count: int = 1
+    overrides: Optional[CombatSimEntryOverridesRequest] = None
 
 
 class CombatSimRequest(BaseModel):

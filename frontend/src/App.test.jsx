@@ -109,8 +109,80 @@ function buildMovementState(overrides = {}) {
 
 const metaPayload = {
   enemyTemplates: [
-    { id: "goblin", name: "Goblin", imageUrl: "/images/Greenskins/goblin.png", category: "Greenskins" },
-    { id: "bandit", name: "Bandit", imageUrl: "/images/Outlaws/bandit.png", category: "Outlaws" },
+    {
+      id: "goblin",
+      name: "Goblin",
+      imageUrl: "/images/Greenskins/goblin.png",
+      category: "Greenskins",
+      threatLevel: 1,
+      simStats: {
+        toughness: { min: 6, max: 6, value: 6 },
+        armor: { min: 1, max: 1, value: 1 },
+        magicArmor: { min: 0, max: 0, value: 0 },
+        baseGuard: { min: 0, max: 0, value: 0 },
+        power: 1,
+        movement: 6,
+        initiativeModifier: 3,
+        threatLevel: 1,
+      },
+      simActions: [
+        {
+          id: "goblin_a1",
+          result: "A1",
+          title: "Stab",
+          text: "Stab - Attack 2",
+          weight: 1,
+          reshuffle: false,
+          effects: [{ type: "attack", amount: 2, modifiers: [] }],
+          manualNotes: [],
+          coverageStatus: "full",
+          coverage: { status: "full", label: "Fully simulated", notes: [] },
+        },
+        {
+          id: "goblin_s",
+          result: "S",
+          title: "Skitter",
+          text: "Skitter - Move target 2",
+          weight: 1,
+          reshuffle: false,
+          effects: [],
+          manualNotes: ["Move target 2"],
+          coverageStatus: "manual",
+          coverage: { status: "manual", label: "Manual/ignored", notes: ["Move target 2"] },
+        },
+      ],
+    },
+    {
+      id: "bandit",
+      name: "Bandit",
+      imageUrl: "/images/Outlaws/bandit.png",
+      category: "Outlaws",
+      threatLevel: 2,
+      simStats: {
+        toughness: { min: 7, max: 7, value: 7 },
+        armor: { min: 1, max: 1, value: 1 },
+        magicArmor: { min: 0, max: 0, value: 0 },
+        baseGuard: { min: 0, max: 0, value: 0 },
+        power: 1,
+        movement: 6,
+        initiativeModifier: 2,
+        threatLevel: 2,
+      },
+      simActions: [
+        {
+          id: "bandit_a1",
+          result: "A1",
+          title: "Slash",
+          text: "Slash - Attack 3",
+          weight: 1,
+          reshuffle: false,
+          effects: [{ type: "attack", amount: 3, modifiers: [] }],
+          manualNotes: [],
+          coverageStatus: "full",
+          coverage: { status: "full", label: "Fully simulated", notes: [] },
+        },
+      ],
+    },
     { id: "guard", name: "Guard", imageUrl: "/images/Realms_and_order/guard.png", category: "Realms_and_order" },
     { id: "soldier", name: "Soldier", imageUrl: "/images/Realms_and_order/soldier.png", category: "Realms_and_order" },
     { id: "wraith", name: "Wraith", imageUrl: "/images/anonymous.png", category: "Uncategorized" },
@@ -529,6 +601,67 @@ describe("App", () => {
     await screen.findByText("Team A wins in round 1.");
     expect(screen.getAllByText("Init 8 (5+3)").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Bandit 1").length).toBeGreaterThan(0);
+  });
+
+  it("shows sim stats and sends shared template stat/action overrides", async () => {
+    const user = userEvent.setup();
+    const simResult = {
+      mode: "single",
+      result: {
+        seed: 321,
+        winner: "A",
+        rounds: 1,
+        turns: 1,
+        attackActions: 1,
+        initialUnits: [],
+        finalUnits: [],
+        timeline: [],
+        combatLog: ["Team A wins in round 1."],
+        teamTotals: {
+          A: { damageDealt: 9, damagePrevented: 0, unitsLost: 0, remainingToughness: 12, units: 1 },
+          B: { damageDealt: 0, damagePrevented: 0, unitsLost: 1, remainingToughness: 0, units: 1 },
+        },
+        coverageSummary: {
+          available: { total: 2, full: 1, manual: 1, warning: 0, error: 0 },
+          used: { total: 1, full: 1, manual: 0, warning: 0, error: 0 },
+        },
+      },
+    };
+    let requestBody = null;
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/combat-sim/simulate") {
+          requestBody = JSON.parse(requestOptions.body);
+          return jsonResponse(simResult);
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Combat Sim" }));
+    await user.selectOptions(screen.getAllByLabelText("Creature")[1], "goblin");
+    expect(screen.getAllByText("T 6").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("1 manual").length).toBeGreaterThan(0);
+
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    const modal = screen.getByText("Team A: Goblin").closest(".modal-shell");
+    expect(within(modal).getByDisplayValue("Stab - Attack 2")).toBeInTheDocument();
+    await user.type(within(modal).getByLabelText("T"), "12");
+    await user.clear(within(modal).getByLabelText("A1 action text"));
+    await user.type(within(modal).getByLabelText("A1 action text"), "Mega - Attack 9 pierce 2");
+    expect(within(modal).getByText("Attack 9 (Pierce 2)")).toBeInTheDocument();
+    await user.click(within(modal).getByRole("button", { name: "Done" }));
+    expect(screen.getAllByText("T 12").length).toBeGreaterThanOrEqual(2);
+
+    await user.click(screen.getByRole("button", { name: "Quick Simulate" }));
+
+    await screen.findByText("Team A wins in round 1.");
+    expect(requestBody.teamA[0].overrides.statOverrides.toughness).toBe(12);
+    expect(requestBody.teamA[0].overrides.actionOverrides.A1).toBe("Mega - Attack 9 pierce 2");
+    expect(requestBody.teamB[0].templateId).toBe("goblin");
+    expect(requestBody.teamB[0].overrides.statOverrides.toughness).toBe(12);
+    expect(requestBody.teamB[0].overrides.actionOverrides.A1).toBe("Mega - Attack 9 pierce 2");
   });
 
   it("deletes manual saves from the load modal", async () => {
