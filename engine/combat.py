@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
+import re
 from typing import Iterable, Optional
 
 from engine.runtime_models import EnemyInstance
@@ -78,7 +79,9 @@ def apply_attack(
     Rules:
       - armor and magic_armor are *persistent* flat reductions
       - guard is a *consumable pool* that resets each turn
-      - sunder: destroys 1 regular armor (not guard)
+      - overwhelm: ignore guard for this attack without consuming it
+      - sunder:X: remove X * 2 guard before this attack resolves
+      - shatter: destroys 1 regular armor
       - stab: ignore 1 regular armor reduction
       - pierce: legacy modifier; ignore all regular reduction (guard + armor)
       - pierce:X: ignore X armor first, then X remaining guard
@@ -89,62 +92,52 @@ def apply_attack(
     if damage < 0:
         raise ValueError("damage must be >= 0")
 
-    raw_mods = [str(mod).strip().lower() for mod in (mods or []) if str(mod).strip()]
+    raw_mods = [_normalise_attack_mod(str(mod)) for mod in (mods or []) if str(mod).strip()]
     mods_set = set(raw_mods)
-    pierce_amount = 0
-    for mod in raw_mods:
-        if mod.startswith("pierce:"):
-            try:
-                pierce_amount += max(0, int(mod.split(":", 1)[1]))
-            except ValueError:
-                continue
+    pierce_amount = _sum_modifier_amount(raw_mods, "pierce")
+    sunder_amount = _sum_modifier_amount(raw_mods, "sunder", default_for_bare=1)
 
     toughness_b = enemy.toughness_current
     guard_b = enemy.guard_current
     armor_b = enemy.armor_current
     magic_b = enemy.magic_armor_current
 
-    # 1) sunder (always affects regular armor only)
-    armor_after_sunder = armor_b
-    if "sunder" in mods_set and armor_after_sunder > 0:
-        armor_after_sunder -= 1
-
-    guard_now = guard_b
-    armor_now = armor_after_sunder
+    # 1) destructive modifiers happen before temporary bypass modifiers.
+    guard_removed = min(guard_b, sunder_amount * 2)
+    guard_now = max(0, guard_b - guard_removed)
+    armor_now = max(0, armor_b - 1) if "shatter" in mods_set else armor_b
     magic_now = magic_b
 
     # 2) compute ignores (bypass reductions; do NOT destroy them)
     ignored_regular = 0
     ignored_magic = 0
 
-    if "pierce" in mods_set:
-        ignored_regular = guard_now + armor_now
-    elif pierce_amount > 0:
-        ignored_armor = min(pierce_amount, armor_now)
-        ignored_guard = min(max(0, pierce_amount - ignored_armor), guard_now)
-        ignored_regular = ignored_armor + ignored_guard
-    elif "stab" in mods_set:
-        ignored_regular = min(1, armor_now)
-
-    if "magic_pierce" in mods_set:
-        ignored_magic = magic_now
-
     guard_eff = guard_now
     armor_eff = armor_now
 
     if "pierce" in mods_set:
+        ignored_regular += guard_eff + armor_eff
         guard_eff = 0
         armor_eff = 0
-    elif pierce_amount > 0:
-        ignored_armor = min(pierce_amount, armor_eff)
-        armor_eff = max(0, armor_eff - ignored_armor)
-        guard_eff = max(0, guard_eff - min(max(0, pierce_amount - ignored_armor), guard_eff))
+    else:
+        if pierce_amount > 0:
+            ignored_armor = min(pierce_amount, armor_eff)
+            armor_eff = max(0, armor_eff - ignored_armor)
+            ignored_guard = min(max(0, pierce_amount - ignored_armor), guard_eff)
+            guard_eff = max(0, guard_eff - ignored_guard)
+            ignored_regular += ignored_armor + ignored_guard
+
         if "stab" in mods_set:
             stab_ignore = min(1, armor_eff)
             armor_eff = max(0, armor_eff - stab_ignore)
             ignored_regular += stab_ignore
-    elif "stab" in mods_set:
-        armor_eff = max(0, armor_eff - 1)
+
+        if "overwhelm" in mods_set:
+            ignored_regular += guard_eff
+            guard_eff = 0
+
+    if "magic_pierce" in mods_set:
+        ignored_magic = magic_now
 
     magic_eff = max(0, magic_now - ignored_magic)
 
@@ -153,7 +146,7 @@ def apply_attack(
     guard_used = min(guard_eff, damage_after_fixed)
     dmg_to_hp = damage_after_fixed - guard_used
 
-    guard_after = max(0, guard_b - guard_used)
+    guard_after = max(0, guard_now - guard_used)
 
     # 4) apply
     wounds_added = 0
@@ -164,7 +157,7 @@ def apply_attack(
     else:
         enemy.toughness_current = max(0, toughness_b - dmg_to_hp)
     enemy.guard_current = guard_after
-    enemy.armor_current = armor_now  # includes sunder effect
+    enemy.armor_current = armor_now  # includes shatter effect
     # magic armor unchanged by attacks for now
 
     applied_statuses: list[str] = []
@@ -198,6 +191,31 @@ def apply_attack(
 
         applied_statuses=tuple(applied_statuses),
     )
+
+
+def _normalise_attack_mod(modifier: str) -> str:
+    text = modifier.strip().lower().replace("-", "_")
+    text = re.sub(r"\s+", " ", text)
+    if text == "magic pierce":
+        return "magic_pierce"
+    if text == "paralyze":
+        return "paralyse"
+    amount_match = re.match(r"^(pierce|sunder)[:\s]+(\d+)$", text)
+    if amount_match:
+        return f"{amount_match.group(1)}:{int(amount_match.group(2))}"
+    return text
+
+
+def _sum_modifier_amount(raw_mods: Iterable[str], name: str, *, default_for_bare: int = 0) -> int:
+    total = 0
+    for mod in raw_mods:
+        if mod == name:
+            total += max(0, default_for_bare)
+            continue
+        amount_match = re.match(rf"^{re.escape(name)}:(\d+)$", mod)
+        if amount_match:
+            total += max(0, int(amount_match.group(1)))
+    return total
 
 
 def apply_heal(

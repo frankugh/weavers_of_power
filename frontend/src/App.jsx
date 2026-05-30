@@ -7,7 +7,9 @@ const ATTACK_MODIFIERS = [
   { key: "stab", label: "Stab" },
   { key: "pierce", label: "Pierce X" },
   { key: "magic_pierce", label: "Magic pierce" },
-  { key: "sunder", label: "Sunder" },
+  { key: "overwhelm", label: "Overwhelm" },
+  { key: "sunder", label: "Sunder X" },
+  { key: "shatter", label: "Shatter" },
 ];
 
 const ATTACK_STATUSES = [
@@ -104,11 +106,14 @@ const DRAW_REVEAL_TIMING = {
 const EMPTY_ATTACK_FORM = {
   damage: 1,
   pierceAmount: 1,
+  sunderAmount: 1,
   modifiers: {
     stab: false,
     pierce: false,
     magic_pierce: false,
+    overwhelm: false,
     sunder: false,
+    shatter: false,
   },
   statuses: {
     burn: false,
@@ -1994,9 +1999,12 @@ function App() {
         if (key === "pierce") {
           return `pierce:${Math.max(0, Number(attackForm.pierceAmount || 0))}`;
         }
+        if (key === "sunder") {
+          return `sunder:${Math.max(0, Number(attackForm.sunderAmount || 0))}`;
+        }
         return key;
       })
-      .filter((key) => key !== "pierce:0");
+      .filter((key) => !["pierce:0", "sunder:0"].includes(key));
     const payload = await applySnapshotRequest(
       `/api/battle/sessions/${snapshot.sid}/attack`,
       {
@@ -3379,6 +3387,19 @@ function App() {
                 />
               </label>
             ) : null}
+            {attackForm.modifiers.sunder ? (
+              <label className="field attack-pierce-field">
+                <span>Sunder amount</span>
+                <input
+                  type="number"
+                  min="1"
+                  value={attackForm.sunderAmount}
+                  onChange={(event) =>
+                    setAttackForm((current) => ({ ...current, sunderAmount: event.target.value }))
+                  }
+                />
+              </label>
+            ) : null}
           </div>
 
           <div className="form-section">
@@ -4420,13 +4441,16 @@ function parseCombatActionPreview(result, actionText, sourceAction = {}) {
   }
   [
     /\branged\s+magic\s+/gi,
-    /\branged\s+/gi,
-    /\bmagic\s+/gi,
+    /\bmagic\s+pierce\b/gi,
     /\bpierce\s+\d+\b/gi,
+    /\bsunder\s+\d+\b/gi,
     /\bstab\b/gi,
     /\bsunder\b/gi,
-    /\bmagic\s+pierce\b/gi,
+    /\boverwhelm\b/gi,
+    /\bshatter\b/gi,
     /\bparaly[sz]e\b/gi,
+    /\branged\s+/gi,
+    /\bmagic\s+/gi,
   ].forEach((pattern) => {
     simplified = simplified.replace(pattern, "");
   });
@@ -4454,7 +4478,12 @@ function parseCombatAttackModifiers(body) {
     if (amount > 0) modifiers.push(`pierce:${amount}`);
   }
   if (/\bstab\b/i.test(body)) modifiers.push("stab");
-  if (/\bsunder\b/i.test(body)) modifiers.push("sunder");
+  for (const match of body.matchAll(/\bsunder(?:\s+(\d+))?\b/gi)) {
+    const amount = Math.max(0, Number(match[1] || 1) || 0);
+    if (amount > 0) modifiers.push(`sunder:${amount}`);
+  }
+  if (/\boverwhelm\b/i.test(body)) modifiers.push("overwhelm");
+  if (/\bshatter\b/i.test(body)) modifiers.push("shatter");
   if (/\bmagic\s+pierce\b/i.test(body)) modifiers.push("magic_pierce");
   if (/\bparaly[sz]e\b/i.test(body)) modifiers.push("paralyse");
   return [...new Set(modifiers)];
@@ -4667,7 +4696,10 @@ function formatCombatEffect(effect) {
 
 function formatCombatModifier(modifier) {
   if (String(modifier).startsWith("pierce:")) return `Pierce ${String(modifier).split(":")[1]}`;
+  if (String(modifier).startsWith("sunder:")) return `Sunder ${String(modifier).split(":")[1]}`;
   if (modifier === "magic_pierce") return "Magic pierce";
+  if (modifier === "overwhelm") return "Overwhelm";
+  if (modifier === "shatter") return "Shatter";
   if (modifier === "paralyse") return "Paralyze";
   return titleCaseFromSnake(String(modifier));
 }

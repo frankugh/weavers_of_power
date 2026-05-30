@@ -72,6 +72,16 @@ class CombatSimTests(unittest.TestCase):
         )
         self.assertEqual(parsed["effects"][0]["modifiers"], ["pierce:1"])
 
+    def test_parser_helper_reports_guard_and_armor_attack_modifiers(self) -> None:
+        parsed = parse_creature_action(
+            action_result="A4",
+            action_text="Breaker - Attack 4 overwhelm, sunder 2, shatter",
+        )
+
+        self.assertEqual(parsed["coverageStatus"], "full")
+        self.assertEqual(parsed["manualNotes"], [])
+        self.assertEqual(parsed["effects"][0]["modifiers"], ["sunder:2", "overwhelm", "shatter"])
+
     def test_single_sim_is_deterministic_for_fixed_seed(self) -> None:
         templates = {
             "attacker": make_template("attacker", "Attacker", initiative=3),

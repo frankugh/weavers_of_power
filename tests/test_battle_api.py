@@ -12,6 +12,7 @@ from openpyxl import load_workbook
 from battle_api import register_battle_api
 from battle_session import BattleSessionContext
 from engine.combat import WOUND_CARD_ID
+from engine.models import Card, Effect
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -546,7 +547,12 @@ class BattleApiTests(unittest.TestCase):
         target.guard_current = 0
         target.armor_current = 0
         target.armor_max = 0
-        attacker.deck_state.hand = ["C_GOBLIN__S__10"]
+        self.context.card_index["test_stab_5"] = Card(
+            id="test_stab_5",
+            title="Test Stab",
+            effects=(Effect(type="attack", amount=5, modifiers=("stab",)),),
+        )
+        attacker.deck_state.hand = ["test_stab_5"]
         session.active_turn_id = attacker_id
         session.turn_in_progress = True
         session.select(target_id)

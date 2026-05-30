@@ -416,13 +416,16 @@ def _parse_action_effects(body: str) -> tuple[tuple[Effect, ...], tuple[str, ...
 
     for pattern in (
         r"\branged\s+magic\s+",
-        r"\branged\s+",
-        r"\bmagic\s+",
+        r"\bmagic\s+pierce\b",
         r"\bpierce\s+\d+\b",
+        r"\bsunder\s+\d+\b",
         r"\bstab\b",
         r"\bsunder\b",
-        r"\bmagic\s+pierce\b",
+        r"\boverwhelm\b",
+        r"\bshatter\b",
         r"\bparaly[sz]e\b",
+        r"\branged\s+",
+        r"\bmagic\s+",
     ):
         simplified = re.sub(pattern, "", simplified, flags=re.I)
     simplified = re.sub(r"^[\s,.;:—-]+|[\s,.;:—-]+$", "", simplified)
@@ -439,8 +442,14 @@ def _parse_attack_modifiers(body: str) -> tuple[str, ...]:
             modifiers.append(f"pierce:{amount}")
     if re.search(r"\bstab\b", body, flags=re.I):
         modifiers.append("stab")
-    if re.search(r"\bsunder\b", body, flags=re.I):
-        modifiers.append("sunder")
+    for match in re.finditer(r"\bsunder(?:\s+(\d+))?\b", body, flags=re.I):
+        amount = max(0, int(match.group(1) or "1"))
+        if amount > 0:
+            modifiers.append(f"sunder:{amount}")
+    if re.search(r"\boverwhelm\b", body, flags=re.I):
+        modifiers.append("overwhelm")
+    if re.search(r"\bshatter\b", body, flags=re.I):
+        modifiers.append("shatter")
     if re.search(r"\bmagic\s+pierce\b", body, flags=re.I):
         modifiers.append("magic_pierce")
     if re.search(r"\bparaly[sz]e\b", body, flags=re.I):

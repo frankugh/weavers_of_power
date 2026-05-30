@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, replace
 import math
 import random
+import re
 from typing import Callable, Iterable, Optional
 
 from engine.combat import AttackMod, CombatLog, apply_attack, apply_heal
@@ -1128,6 +1129,14 @@ def _normalize_modifiers(modifiers: Iterable[str]) -> list[AttackMod]:
             text = "magic_pierce"
         if text in {"paralyze", "paralyse"}:
             text = "paralyse"
+        amount_match = re.match(r"^(pierce|sunder)[:\s]+(\d+)$", text)
+        if amount_match:
+            amount = max(0, int(amount_match.group(2)))
+            if amount <= 0:
+                continue
+            text = f"{amount_match.group(1)}:{amount}"
+        elif text == "sunder":
+            text = "sunder:1"
         if text not in result:
             result.append(text)
     return result
@@ -1136,6 +1145,8 @@ def _normalize_modifiers(modifiers: Iterable[str]) -> list[AttackMod]:
 def _format_modifier(modifier: str) -> str:
     if modifier.startswith("pierce:"):
         return f"pierce {modifier.split(':', 1)[1]}"
+    if modifier.startswith("sunder:"):
+        return f"sunder {modifier.split(':', 1)[1]}"
     return modifier
 
 

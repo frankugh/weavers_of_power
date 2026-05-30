@@ -654,8 +654,8 @@ describe("App", () => {
     await user.type(within(modal).getByLabelText("T"), "12");
     await user.type(within(modal).getByLabelText(/Alertness/), "8");
     await user.clear(within(modal).getByLabelText("A1 action text"));
-    await user.type(within(modal).getByLabelText("A1 action text"), "Mega - Attack 9 pierce 2");
-    expect(within(modal).getByText("Attack 9 (Pierce 2)")).toBeInTheDocument();
+    await user.type(within(modal).getByLabelText("A1 action text"), "Mega - Attack 9 sunder 2, overwhelm, shatter");
+    expect(within(modal).getByText("Attack 9 (Sunder 2, Overwhelm, Shatter)")).toBeInTheDocument();
     await user.click(within(modal).getByRole("button", { name: "Done" }));
     expect(screen.getAllByText("T 12").length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText("Init 8").length).toBeGreaterThanOrEqual(2);
@@ -665,11 +665,11 @@ describe("App", () => {
     await screen.findByText("Team A wins in round 1.");
     expect(requestBody.teamA[0].overrides.statOverrides.toughness).toBe(12);
     expect(requestBody.teamA[0].overrides.skillOverrides.alertness).toBe(8);
-    expect(requestBody.teamA[0].overrides.actionOverrides.A1).toBe("Mega - Attack 9 pierce 2");
+    expect(requestBody.teamA[0].overrides.actionOverrides.A1).toBe("Mega - Attack 9 sunder 2, overwhelm, shatter");
     expect(requestBody.teamB[0].templateId).toBe("goblin");
     expect(requestBody.teamB[0].overrides.statOverrides.toughness).toBe(12);
     expect(requestBody.teamB[0].overrides.skillOverrides.alertness).toBe(8);
-    expect(requestBody.teamB[0].overrides.actionOverrides.A1).toBe("Mega - Attack 9 pierce 2");
+    expect(requestBody.teamB[0].overrides.actionOverrides.A1).toBe("Mega - Attack 9 sunder 2, overwhelm, shatter");
   });
 
   it("saves shared template overrides to Excel and clears temporary overrides", async () => {

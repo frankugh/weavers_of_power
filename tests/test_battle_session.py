@@ -557,7 +557,12 @@ class BattleSessionTests(unittest.TestCase):
         target.guard_current = 0
         target.armor_current = 0
         target.armor_max = 0
-        attacker.deck_state.hand = ["C_GOBLIN__S__10"]
+        self.context.card_index["test_stab_5"] = Card(
+            id="test_stab_5",
+            title="Test Stab",
+            effects=(Effect(type="attack", amount=5, modifiers=("stab",)),),
+        )
+        attacker.deck_state.hand = ["test_stab_5"]
         session.active_turn_id = attacker_id
         session.turn_in_progress = True
         session.select(target_id)
@@ -672,6 +677,36 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(result["quickAttack"]["attacks"][0]["label"], "Attack 5 (pierce 3)")
         self.assertEqual(target.toughness_current, 7)
         self.assertEqual(target.guard_current, 1)
+
+    def test_quick_attack_supports_overwhelm_sunder_and_shatter(self) -> None:
+        session = self.context.create_session("quick-breaker")
+        session.add_enemy_from_template("C_BUGBEAR")
+        attacker_id = session.selected_id
+        attacker = session.state.enemies[attacker_id]
+        session.add_enemy_from_template("C_GOBLIN")
+        target_id = session.selected_id
+        target = session.state.enemies[target_id]
+        target.toughness_current = 10
+        target.toughness_max = 10
+        target.guard_current = 4
+        target.armor_current = 2
+        target.armor_max = 2
+        self.context.card_index["test_breaker"] = Card(
+            id="test_breaker",
+            title="Breaker",
+            effects=(Effect(type="attack", amount=5, modifiers=("overwhelm", "sunder:2", "shatter")),),
+        )
+        attacker.deck_state.hand = ["test_breaker"]
+        session.active_turn_id = attacker_id
+        session.turn_in_progress = True
+        session.select(target_id)
+
+        result = session.apply_quick_attack_from_active_draw()
+
+        self.assertEqual(result["quickAttack"]["attacks"][0]["label"], "Attack 5 (overwhelm, sunder 2, shatter)")
+        self.assertEqual(target.toughness_current, 6)
+        self.assertEqual(target.guard_current, 0)
+        self.assertEqual(target.armor_current, 1)
 
     def test_quick_attack_rejects_invalid_state(self) -> None:
         no_active = self.context.create_session("quick-no-active")
@@ -895,6 +930,60 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(entity.toughness_current, 3)
         self.assertEqual(entity.armor_current, 2)
         self.assertEqual(entity.guard_current, 2)
+
+    def test_overwhelm_ignores_guard_without_consuming_it(self) -> None:
+        session = self.context.create_session("overwhelm")
+        session.add_enemy_from_template("C_GOBLIN")
+        entity = session.state.enemies[session.selected_id]
+        entity.toughness_current = 10
+        entity.toughness_max = 10
+        entity.guard_current = 4
+        entity.armor_current = 1
+        entity.armor_max = 1
+
+        log = apply_attack(entity, 5, mods=["overwhelm"])
+
+        self.assertEqual(log.ignored_regular, 4)
+        self.assertEqual(log.damage_to_hp, 4)
+        self.assertEqual(log.guarded_total, 1)
+        self.assertEqual(entity.toughness_current, 6)
+        self.assertEqual(entity.armor_current, 1)
+        self.assertEqual(entity.guard_current, 4)
+
+    def test_sunder_removes_guard_before_damage_resolves(self) -> None:
+        session = self.context.create_session("sunder")
+        session.add_enemy_from_template("C_GOBLIN")
+        entity = session.state.enemies[session.selected_id]
+        entity.toughness_current = 10
+        entity.toughness_max = 10
+        entity.guard_current = 6
+        entity.armor_current = 0
+        entity.armor_max = 0
+
+        log = apply_attack(entity, 3, mods=["sunder:2"])
+
+        self.assertEqual(log.ignored_regular, 0)
+        self.assertEqual(log.damage_to_hp, 1)
+        self.assertEqual(log.guarded_total, 2)
+        self.assertEqual(entity.toughness_current, 9)
+        self.assertEqual(entity.guard_current, 0)
+
+    def test_shatter_destroys_one_regular_armor_before_damage_resolves(self) -> None:
+        session = self.context.create_session("shatter")
+        session.add_enemy_from_template("C_GOBLIN")
+        entity = session.state.enemies[session.selected_id]
+        entity.toughness_current = 10
+        entity.toughness_max = 10
+        entity.guard_current = 0
+        entity.armor_current = 2
+        entity.armor_max = 2
+
+        log = apply_attack(entity, 3, mods=["shatter"])
+
+        self.assertEqual(log.damage_to_hp, 2)
+        self.assertEqual(log.guarded_total, 1)
+        self.assertEqual(entity.toughness_current, 8)
+        self.assertEqual(entity.armor_current, 1)
 
     def test_attack_and_heal_can_target_player_cards(self) -> None:
         session = self.context.create_session("player-attack-heal")

@@ -51,7 +51,8 @@ SUPPORTED_QUICK_ATTACK_MODIFIERS: dict[str, AttackMod] = {
     "stab": "stab",
     "pierce": "pierce",
     "magic_pierce": "magic_pierce",
-    "sunder": "sunder",
+    "overwhelm": "overwhelm",
+    "shatter": "shatter",
     "paralyse": "paralyse",
     "paralyze": "paralyse",
 }
@@ -2460,7 +2461,8 @@ class BattleSession:
         for effect in card.effects:
             if effect.type == "attack":
                 if effect.modifiers:
-                    parts.append(f"Attack {effect.amount} ({', '.join(effect.modifiers)})")
+                    modifiers = ", ".join(self._format_attack_modifier(modifier) for modifier in effect.modifiers)
+                    parts.append(f"Attack {effect.amount} ({modifiers})")
                 else:
                     parts.append(f"Attack {effect.amount}")
             elif effect.type == "guard":
@@ -2576,6 +2578,10 @@ class BattleSession:
         if pierce_match:
             amount = max(0, int(pierce_match.group(1)))
             return f"pierce:{amount}" if amount > 0 else None
+        sunder_match = re.match(r"^sunder(?:[:\s]+(\d+))?$", lowered)
+        if sunder_match:
+            amount = max(0, int(sunder_match.group(1) or "1"))
+            return f"sunder:{amount}" if amount > 0 else None
         return SUPPORTED_QUICK_ATTACK_MODIFIERS.get(lowered)
 
     def _quick_attack_payload(self, step: QuickAttackStep) -> dict:
@@ -2599,6 +2605,8 @@ class BattleSession:
         text = str(modifier)
         if text.startswith("pierce:"):
             return f"pierce {text.split(':', 1)[1]}"
+        if text.startswith("sunder:"):
+            return f"sunder {text.split(':', 1)[1]}"
         return text
 
     @staticmethod
