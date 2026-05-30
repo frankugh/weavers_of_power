@@ -115,6 +115,7 @@ const metaPayload = {
       imageUrl: "/images/Greenskins/goblin.png",
       category: "Greenskins",
       threatLevel: 1,
+      skills: { intelligence: 1, alertness: 3, stealth: 2, social: 0, arcana: 0, athletics: 1 },
       simStats: {
         toughness: { min: 6, max: 6, value: 6 },
         armor: { min: 1, max: 1, value: 1 },
@@ -158,6 +159,7 @@ const metaPayload = {
       imageUrl: "/images/Outlaws/bandit.png",
       category: "Outlaws",
       threatLevel: 2,
+      skills: { intelligence: 1, alertness: 2, stealth: 1, social: 1, arcana: 0, athletics: 2 },
       simStats: {
         toughness: { min: 7, max: 7, value: 7 },
         armor: { min: 1, max: 1, value: 1 },
@@ -603,7 +605,7 @@ describe("App", () => {
     expect(screen.getAllByText("Bandit 1").length).toBeGreaterThan(0);
   });
 
-  it("shows sim stats and sends shared template stat/action overrides", async () => {
+  it("shows sim stats and sends shared template stat/action/skill overrides", async () => {
     const user = userEvent.setup();
     const simResult = {
       mode: "single",
@@ -642,26 +644,109 @@ describe("App", () => {
     await user.click(await screen.findByRole("button", { name: "Combat Sim" }));
     await user.selectOptions(screen.getAllByLabelText("Creature")[1], "goblin");
     expect(screen.getAllByText("T 6").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("Init 3").length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText("1 manual").length).toBeGreaterThan(0);
 
     await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
     const modal = screen.getByText("Team A: Goblin").closest(".modal-shell");
     expect(within(modal).getByDisplayValue("Stab - Attack 2")).toBeInTheDocument();
+    expect(within(modal).getByLabelText(/Stealth/)).toBeInTheDocument();
     await user.type(within(modal).getByLabelText("T"), "12");
+    await user.type(within(modal).getByLabelText(/Alertness/), "8");
     await user.clear(within(modal).getByLabelText("A1 action text"));
     await user.type(within(modal).getByLabelText("A1 action text"), "Mega - Attack 9 pierce 2");
     expect(within(modal).getByText("Attack 9 (Pierce 2)")).toBeInTheDocument();
     await user.click(within(modal).getByRole("button", { name: "Done" }));
     expect(screen.getAllByText("T 12").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("Init 8").length).toBeGreaterThanOrEqual(2);
 
     await user.click(screen.getByRole("button", { name: "Quick Simulate" }));
 
     await screen.findByText("Team A wins in round 1.");
     expect(requestBody.teamA[0].overrides.statOverrides.toughness).toBe(12);
+    expect(requestBody.teamA[0].overrides.skillOverrides.alertness).toBe(8);
     expect(requestBody.teamA[0].overrides.actionOverrides.A1).toBe("Mega - Attack 9 pierce 2");
     expect(requestBody.teamB[0].templateId).toBe("goblin");
     expect(requestBody.teamB[0].overrides.statOverrides.toughness).toBe(12);
+    expect(requestBody.teamB[0].overrides.skillOverrides.alertness).toBe(8);
     expect(requestBody.teamB[0].overrides.actionOverrides.A1).toBe("Mega - Attack 9 pierce 2");
+  });
+
+  it("shows batch draw results and observed precision needs", async () => {
+    const user = userEvent.setup();
+    const batchResult = {
+      mode: "batch",
+      result: {
+        seed: 900,
+        runs: 42,
+        runCap: 1000,
+        summary: {
+          wins: { A: 1, B: 39, draw: 2 },
+          winRates: { A: 1 / 42, B: 39 / 42, draw: 2 / 42 },
+          avgRounds: 2,
+          avgTurns: 4,
+          avgAttackActions: 3,
+          avgWinnerRemainingToughness: 5,
+          teamAverages: {
+            A: { damageDealt: 3, damagePrevented: 1, unitsLost: 1, remainingToughness: 0 },
+            B: { damageDealt: 7, damagePrevented: 2, unitsLost: 0, remainingToughness: 5 },
+          },
+          precision: {
+            verdict: "Target met",
+            targetMet: true,
+            targetRerunFluctuation: 0.05,
+            adjustedRerunFluctuation95: 0.04,
+            observedRequiredRunsForTarget: 42,
+            requiredRunsForTarget: 42,
+            worstCaseRequiredRunsForTarget: 769,
+            worstCaseRerunFluctuation95: 0.151,
+            runCap: 1000,
+            outcomes: {
+              A: { rate: 1 / 42, ciLow: 0.004, ciHigh: 0.12, std: 0.15, rerunFluctuation95: 0.09 },
+              B: { rate: 39 / 42, ciLow: 0.8, ciHigh: 0.98, std: 0.25, rerunFluctuation95: 0.11 },
+              draw: { rate: 2 / 42, ciLow: 0.01, ciHigh: 0.16, std: 0.21, rerunFluctuation95: 0.09 },
+            },
+          },
+        },
+        lastCombat: {
+          seed: 941,
+          winner: "B",
+          rounds: 2,
+          turns: 4,
+          attackActions: 3,
+          initialUnits: [],
+          finalUnits: [],
+          timeline: [],
+          combatLog: ["Team B wins in round 2."],
+          teamTotals: {
+            A: { damageDealt: 3, damagePrevented: 1, unitsLost: 1, remainingToughness: 0, units: 1 },
+            B: { damageDealt: 7, damagePrevented: 2, unitsLost: 0, remainingToughness: 5, units: 1 },
+          },
+          coverageSummary: {
+            available: { total: 2, full: 2, manual: 0, warning: 0, error: 0 },
+            used: { total: 1, full: 1, manual: 0, warning: 0, error: 0 },
+          },
+        },
+      },
+    };
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/combat-sim/simulate") {
+          return jsonResponse(batchResult);
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Combat Sim" }));
+    await user.click(screen.getByRole("button", { name: "Batch" }));
+    await user.click(screen.getByRole("button", { name: "Run Batch" }));
+
+    expect(await screen.findByText("2 (4.8%)")).toBeInTheDocument();
+    expect(screen.getByText("Draw result")).toBeInTheDocument();
+    expect(screen.getByText("Worst needed")).toBeInTheDocument();
+    expect(screen.getByText("769")).toBeInTheDocument();
   });
 
   it("deletes manual saves from the load modal", async () => {

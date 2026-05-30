@@ -185,6 +185,7 @@ class CombatSimStatOverridesRequest(BaseModel):
 
 class CombatSimEntryOverridesRequest(BaseModel):
     statOverrides: Optional[CombatSimStatOverridesRequest] = None
+    skillOverrides: dict[str, Optional[int]] = Field(default_factory=dict)
     actionOverrides: dict[str, str] = Field(default_factory=dict)
 
 

@@ -198,7 +198,7 @@ def _template_from_row(
         magicArmor=RangeInt(magic_armor or 0, magic_armor or 0),
         draws=power or 0,
         movement=movement or 0,
-        initiative_modifier=2,
+        initiative_modifier=skills.get("alertness", 0),
         coreDeck=EXCEL_CORE_DECK_ID,
         specials=tuple(),
         loot=tuple(),

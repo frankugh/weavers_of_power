@@ -30,6 +30,7 @@ TARGET_STRATEGIES = {
 MAX_BATCH_RUNS = 1000
 DEFAULT_BATCH_RUNS = 100
 DEFAULT_MAX_ROUNDS = 100
+MIN_PRECISION_RUNS = 30
 Z_95 = 1.959963984540054
 
 
@@ -42,6 +43,7 @@ class TeamEntry:
     template_id: str
     count: int = 1
     stat_overrides: dict[str, int] = field(default_factory=dict)
+    skill_overrides: dict[str, int] = field(default_factory=dict)
     action_overrides: dict[str, str] = field(default_factory=dict)
 
 
@@ -168,12 +170,14 @@ def simulate_combat_batch(
     if runs < 1 or runs > MAX_BATCH_RUNS:
         raise CombatSimError(f"runs must be between 1 and {MAX_BATCH_RUNS}")
     run_cap = runs
-    required_runs = None
+    worst_case_required_runs = None
     if precision_target is not None:
         if precision_target <= 0:
             raise CombatSimError("precision target must be > 0")
-        required_runs = runs_for_rerun_fluctuation(precision_target)
-        runs = min(run_cap, required_runs)
+        worst_case_required_runs = runs_for_rerun_fluctuation(precision_target)
+        run_limit = min(run_cap, worst_case_required_runs)
+    else:
+        run_limit = run_cap
 
     results: list[dict] = []
     wins = {"A": 0, "B": 0, "draw": 0}
@@ -189,8 +193,9 @@ def simulate_combat_batch(
     }
     winner_remaining_total = 0.0
     winner_remaining_count = 0
+    observed_required_runs = None
 
-    for run_index in range(runs):
+    for run_index in range(run_limit):
         run_seed = int(seed) + run_index
         result = simulate_combat_once(
             templates=templates,
@@ -222,36 +227,55 @@ def simulate_combat_batch(
         if winner in ("A", "B"):
             winner_remaining_total += result["teamTotals"][winner]["remainingToughness"]
             winner_remaining_count += 1
+        completed_runs = run_index + 1
+        if precision_target is not None and completed_runs >= min(MIN_PRECISION_RUNS, run_limit):
+            observed_required_runs = runs_for_observed_rerun_fluctuation(
+                wins=wins,
+                runs=completed_runs,
+                target=precision_target,
+            )
+            if completed_runs >= observed_required_runs:
+                break
+
+    runs_completed = len(results)
+    if precision_target is not None:
+        observed_required_runs = runs_for_observed_rerun_fluctuation(
+            wins=wins,
+            runs=runs_completed,
+            target=precision_target,
+        )
 
     return {
         "seed": int(seed),
-        "runs": runs,
+        "runs": runs_completed,
         "runCap": run_cap,
-        "requiredRunsForTarget": required_runs,
+        "requiredRunsForTarget": observed_required_runs,
+        "worstCaseRequiredRunsForTarget": worst_case_required_runs,
         "summary": {
             "wins": wins,
-            "winRates": {key: _ratio(value, runs) for key, value in wins.items()},
-            "avgRounds": _ratio(sums["rounds"], runs),
-            "avgTurns": _ratio(sums["turns"], runs),
-            "avgAttackActions": _ratio(sums["attackActions"], runs),
+            "winRates": {key: _ratio(value, runs_completed) for key, value in wins.items()},
+            "avgRounds": _ratio(sums["rounds"], runs_completed),
+            "avgTurns": _ratio(sums["turns"], runs_completed),
+            "avgAttackActions": _ratio(sums["attackActions"], runs_completed),
             "metricStats": {key: _metric_stats(values) for key, values in metric_values.items()},
             "avgWinnerRemainingToughness": (
                 _ratio(winner_remaining_total, winner_remaining_count) if winner_remaining_count else None
             ),
             "teamAverages": {
                 team: {
-                    "damageDealt": _ratio(values["damageDealt"], runs),
-                    "damagePrevented": _ratio(values["damagePrevented"], runs),
-                    "unitsLost": _ratio(values["unitsLost"], runs),
-                    "remainingToughness": _ratio(values["remainingToughness"], runs),
+                    "damageDealt": _ratio(values["damageDealt"], runs_completed),
+                    "damagePrevented": _ratio(values["damagePrevented"], runs_completed),
+                    "unitsLost": _ratio(values["unitsLost"], runs_completed),
+                    "remainingToughness": _ratio(values["remainingToughness"], runs_completed),
                 }
                 for team, values in team_sums.items()
             },
             "precision": _precision_summary(
                 wins=wins,
-                runs=runs,
+                runs=runs_completed,
                 run_cap=run_cap,
-                required_runs=required_runs,
+                required_runs=observed_required_runs,
+                worst_case_required_runs=worst_case_required_runs,
                 precision_target=precision_target,
             ),
         },
@@ -271,6 +295,23 @@ def runs_for_rerun_fluctuation(target: float) -> int:
     return max(1, math.ceil((Z_95 * Z_95 * 0.5) / (target * target)))
 
 
+def runs_for_observed_rerun_fluctuation(*, wins: dict[str, int], runs: int, target: float) -> int:
+    """
+    Wilson-adjusted observed run count for a 95% rerun-to-rerun fluctuation target.
+
+    This varies by matchup, but avoids treating tiny all-win samples as perfectly stable.
+    """
+    if target <= 0:
+        raise CombatSimError("precision target must be > 0")
+    if runs <= 0:
+        return 1
+    max_variance = max(
+        _max_bernoulli_variance_in_interval(*_wilson_interval(count, runs))
+        for count in wins.values()
+    )
+    return max(1, math.ceil((Z_95 * Z_95 * 2 * max_variance) / (target * target)))
+
+
 def _normalize_team(entries: Iterable[dict | TeamEntry], *, label: str) -> list[TeamEntry]:
     normalized: list[TeamEntry] = []
     for raw in entries or []:
@@ -283,6 +324,10 @@ def _normalize_team(entries: Iterable[dict | TeamEntry], *, label: str) -> list[
                 count=int(raw.get("count", 1)),
                 stat_overrides=_normalize_stat_overrides(
                     overrides.get("statOverrides") or raw.get("statOverrides") or {},
+                    label=label,
+                ),
+                skill_overrides=_normalize_skill_overrides(
+                    overrides.get("skillOverrides") or raw.get("skillOverrides") or {},
                     label=label,
                 ),
                 action_overrides=_normalize_action_overrides(
@@ -313,6 +358,15 @@ STAT_OVERRIDE_MINIMUMS = {
     "threatLevel": 0,
 }
 
+SKILL_OVERRIDE_MINIMUMS = {
+    "intelligence": 0,
+    "alertness": 0,
+    "stealth": 0,
+    "social": 0,
+    "arcana": 0,
+    "athletics": 0,
+}
+
 
 def _normalize_stat_overrides(raw: object, *, label: str) -> dict[str, int]:
     if not raw:
@@ -332,6 +386,28 @@ def _normalize_stat_overrides(raw: object, *, label: str) -> dict[str, int]:
         minimum = STAT_OVERRIDE_MINIMUMS[key]
         if number < minimum:
             raise CombatSimError(f"{label}: {key} override must be >= {minimum}")
+        result[key] = number
+    return result
+
+
+def _normalize_skill_overrides(raw: object, *, label: str) -> dict[str, int]:
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise CombatSimError(f"{label}: skillOverrides must be an object")
+    result: dict[str, int] = {}
+    for key, value in raw.items():
+        if value is None or value == "":
+            continue
+        if key not in SKILL_OVERRIDE_MINIMUMS:
+            raise CombatSimError(f"{label}: unknown skill override '{key}'")
+        try:
+            number = int(value)
+        except (TypeError, ValueError) as exc:
+            raise CombatSimError(f"{label}: {key} skill override must be an integer") from exc
+        minimum = SKILL_OVERRIDE_MINIMUMS[key]
+        if number < minimum:
+            raise CombatSimError(f"{label}: {key} skill override must be >= {minimum}")
         result[key] = number
     return result
 
@@ -412,6 +488,8 @@ def _effective_template_for_entry(
 ) -> EnemyTemplate:
     if entry.stat_overrides:
         template = _apply_stat_overrides(template, entry.stat_overrides)
+    if entry.skill_overrides:
+        template = _apply_skill_overrides(template, entry.skill_overrides)
     if entry.action_overrides:
         template = _apply_action_overrides(template, entry.action_overrides, entry_key=entry_key, card_index=card_index)
     if template.action_deck:
@@ -439,6 +517,15 @@ def _apply_stat_overrides(template: EnemyTemplate, overrides: dict[str, int]) ->
     if "threatLevel" in overrides:
         changes["threat_level"] = overrides["threatLevel"]
     return replace(template, **changes) if changes else template
+
+
+def _apply_skill_overrides(template: EnemyTemplate, overrides: dict[str, int]) -> EnemyTemplate:
+    skills = dict(getattr(template, "skills", {}) or {})
+    skills.update(overrides)
+    changes = {"skills": skills}
+    if "alertness" in overrides:
+        changes["initiative_modifier"] = overrides["alertness"]
+    return replace(template, **changes)
 
 
 def _apply_action_overrides(
@@ -797,14 +884,22 @@ def _precision_summary(
     runs: int,
     run_cap: int,
     required_runs: int | None,
+    worst_case_required_runs: int | None,
     precision_target: float | None,
 ) -> dict:
     outcomes = {
         key: _winrate_stats(count, runs)
         for key, count in wins.items()
     }
+    observed_rerun = max((stats["rerunFluctuation95"] for stats in outcomes.values()), default=0.0)
+    adjusted_rerun = _adjusted_observed_rerun_fluctuation(wins=wins, runs=runs)
     worst_case_rerun = _worst_case_rerun_fluctuation(runs)
-    target_met = precision_target is not None and worst_case_rerun <= precision_target
+    target_met = (
+        precision_target is not None
+        and required_runs is not None
+        and runs >= required_runs
+    )
+    worst_case_target_met = precision_target is not None and worst_case_rerun <= precision_target
     cap_reached_before_target = (
         precision_target is not None
         and required_runs is not None
@@ -821,10 +916,16 @@ def _precision_summary(
     return {
         "confidenceLevel": 0.95,
         "targetRerunFluctuation": precision_target,
+        "observedRerunFluctuation95": observed_rerun,
+        "adjustedRerunFluctuation95": adjusted_rerun,
         "worstCaseRerunFluctuation95": worst_case_rerun,
         "requiredRunsForTarget": required_runs,
+        "observedRequiredRunsForTarget": required_runs,
+        "worstCaseRequiredRunsForTarget": worst_case_required_runs,
         "runCap": run_cap,
         "targetMet": target_met,
+        "observedTargetMet": target_met,
+        "worstCaseTargetMet": worst_case_target_met,
         "capReachedBeforeTarget": cap_reached_before_target,
         "verdict": verdict,
         "outcomes": outcomes,
@@ -869,6 +970,26 @@ def _wilson_interval(wins: int, runs: int) -> tuple[float, float]:
         / denominator
     )
     return (max(0.0, center - half_width), min(1.0, center + half_width))
+
+
+def _max_bernoulli_variance_in_interval(low: float, high: float) -> float:
+    low = max(0.0, min(1.0, low))
+    high = max(0.0, min(1.0, high))
+    if low > high:
+        low, high = high, low
+    if low <= 0.5 <= high:
+        return 0.25
+    return max(low * (1 - low), high * (1 - high))
+
+
+def _adjusted_observed_rerun_fluctuation(*, wins: dict[str, int], runs: int) -> float:
+    if runs <= 0:
+        return 0.0
+    max_variance = max(
+        _max_bernoulli_variance_in_interval(*_wilson_interval(count, runs))
+        for count in wins.values()
+    )
+    return Z_95 * math.sqrt((2 * max_variance) / runs)
 
 
 def _worst_case_rerun_fluctuation(runs: int) -> float:

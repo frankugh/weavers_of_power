@@ -4337,6 +4337,12 @@ button.draw-card:hover {
   gap: 10px;
 }
 
+.combat-editor-side {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
 .combat-editor-section {
   display: grid;
   align-content: start;
@@ -4351,6 +4357,12 @@ button.draw-card:hover {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.combat-stat-editor-grid small {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
 }
 
 .combat-action-editor-list {

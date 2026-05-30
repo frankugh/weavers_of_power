@@ -53,8 +53,15 @@ const COMBAT_SIM_STAT_FIELDS = [
   { key: "magicArmor", label: "MAR", min: 0 },
   { key: "baseGuard", label: "G", min: 0 },
   { key: "power", label: "PWR", min: 0 },
-  { key: "initiativeModifier", label: "Init", min: 0 },
   { key: "movement", label: "Move", min: 0 },
+];
+const COMBAT_SIM_SKILL_FIELDS = [
+  { key: "intelligence", label: "Intelligence" },
+  { key: "alertness", label: "Alertness", note: "Init" },
+  { key: "stealth", label: "Stealth" },
+  { key: "social", label: "Social" },
+  { key: "arcana", label: "Arcana" },
+  { key: "athletics", label: "Athletics" },
 ];
 const COMBAT_SIM_COVERAGE_KEYS = ["full", "manual", "warning", "error"];
 
@@ -4573,12 +4580,34 @@ function sourceSimStatValue(template, key) {
   return "";
 }
 
+function sourceSimSkillValue(template, key) {
+  if (!template) return "";
+  return template.skills?.[key] ?? "";
+}
+
 function effectiveSimStatValue(template, overrides, key) {
   const statOverrides = overrides?.statOverrides || {};
   if (Object.prototype.hasOwnProperty.call(statOverrides, key) && statOverrides[key] !== "" && statOverrides[key] != null) {
     return statOverrides[key];
   }
   return sourceSimStatValue(template, key);
+}
+
+function effectiveSimSkillValue(template, overrides, key) {
+  const skillOverrides = overrides?.skillOverrides || {};
+  if (Object.prototype.hasOwnProperty.call(skillOverrides, key) && skillOverrides[key] !== "" && skillOverrides[key] != null) {
+    return skillOverrides[key];
+  }
+  return sourceSimSkillValue(template, key);
+}
+
+function effectiveSimInitiativeValue(template, overrides) {
+  const alertness = effectiveSimSkillValue(template, overrides, "alertness");
+  return alertness === "" || alertness == null ? sourceSimStatValue(template, "initiativeModifier") : alertness;
+}
+
+function displaySimValue(value) {
+  return value === "" || value == null ? "-" : value;
 }
 
 function buildCombatOverridesPayload(overrides, template) {
@@ -4593,6 +4622,16 @@ function buildCombatOverridesPayload(overrides, template) {
     statOverrides[key] = numeric;
   });
 
+  const skillOverrides = {};
+  Object.entries(overrides.skillOverrides || {}).forEach(([key, value]) => {
+    if (value === "" || value == null) return;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return;
+    const sourceValue = Number(sourceSimSkillValue(template, key));
+    if (Number.isFinite(sourceValue) && sourceValue === numeric) return;
+    skillOverrides[key] = numeric;
+  });
+
   const actionOverrides = {};
   Object.entries(overrides.actionOverrides || {}).forEach(([result, value]) => {
     const text = String(value ?? "");
@@ -4602,6 +4641,7 @@ function buildCombatOverridesPayload(overrides, template) {
 
   const payload = {};
   if (Object.keys(statOverrides).length) payload.statOverrides = statOverrides;
+  if (Object.keys(skillOverrides).length) payload.skillOverrides = skillOverrides;
   if (Object.keys(actionOverrides).length) payload.actionOverrides = actionOverrides;
   return Object.keys(payload).length ? payload : null;
 }
@@ -4609,6 +4649,7 @@ function buildCombatOverridesPayload(overrides, template) {
 function isEmptyCombatOverrides(overrides) {
   return (
     !Object.keys(overrides?.statOverrides || {}).length &&
+    !Object.keys(overrides?.skillOverrides || {}).length &&
     !Object.keys(overrides?.actionOverrides || {}).length
   );
 }
@@ -4629,6 +4670,11 @@ function formatCombatModifier(modifier) {
   if (modifier === "magic_pierce") return "Magic pierce";
   if (modifier === "paralyse") return "Paralyze";
   return titleCaseFromSnake(String(modifier));
+}
+
+function outcomeValue(collection, key) {
+  if (!collection) return 0;
+  return collection[key] ?? collection[key.toUpperCase()] ?? collection[titleCaseFromSnake(key)] ?? 0;
 }
 
 function CombatSimView({ meta }) {
@@ -5002,9 +5048,10 @@ function CombatSimTeamBuilder({
                 <div className="combat-team-stat-preview">
                   {COMBAT_SIM_STAT_FIELDS.filter((field) => field.key !== "movement").map((field) => (
                     <span key={field.key}>
-                      {field.label} {effectiveSimStatValue(template, overrides, field.key) || "-"}
+                      {field.label} {displaySimValue(effectiveSimStatValue(template, overrides, field.key))}
                     </span>
                   ))}
+                  <span>Init {displaySimValue(effectiveSimInitiativeValue(template, overrides))}</span>
                 </div>
               </div>
             );
@@ -5033,6 +5080,7 @@ function CombatCoverageChip({ coverage }) {
 function CombatSimEntryEditorModal({ teamLabel, entry, template, overrides, onClose, onUpdateOverrides }) {
   if (!entry || !template) return null;
   const statOverrides = overrides?.statOverrides || {};
+  const skillOverrides = overrides?.skillOverrides || {};
   const actionOverrides = overrides?.actionOverrides || {};
   const actions = getEffectiveSimActions(template, overrides);
   const coverage = summarizeCombatCoverage(actions);
@@ -5046,6 +5094,18 @@ function CombatSimEntryEditorModal({ teamLabel, entry, template, overrides, onCl
         nextStats[key] = value;
       }
       return { ...current, statOverrides: nextStats };
+    });
+  }
+
+  function updateSkillOverride(key, value) {
+    onUpdateOverrides((current) => {
+      const nextSkills = { ...(current.skillOverrides || {}) };
+      if (value === "") {
+        delete nextSkills[key];
+      } else {
+        nextSkills[key] = value;
+      }
+      return { ...current, skillOverrides: nextSkills };
     });
   }
 
@@ -5088,23 +5148,46 @@ function CombatSimEntryEditorModal({ teamLabel, entry, template, overrides, onCl
         </div>
 
         <div className="combat-editor-grid">
-          <section className="combat-editor-section">
-            <div className="selected-draw-label">Stats</div>
-            <div className="combat-stat-editor-grid">
-              {COMBAT_SIM_STAT_FIELDS.map((field) => (
-                <label className="field" key={field.key}>
-                  <span>{field.label}</span>
-                  <input
-                    type="number"
-                    min={field.min}
-                    value={statOverrides[field.key] ?? ""}
-                    placeholder={String(sourceSimStatValue(template, field.key) || "-")}
-                    onChange={(event) => updateStatOverride(field.key, event.target.value)}
-                  />
-                </label>
-              ))}
-            </div>
-          </section>
+          <div className="combat-editor-side">
+            <section className="combat-editor-section">
+              <div className="selected-draw-label">Stats</div>
+              <div className="combat-stat-editor-grid">
+                {COMBAT_SIM_STAT_FIELDS.map((field) => (
+                  <label className="field" key={field.key}>
+                    <span>{field.label}</span>
+                    <input
+                      type="number"
+                      min={field.min}
+                      value={statOverrides[field.key] ?? ""}
+                      placeholder={String(displaySimValue(sourceSimStatValue(template, field.key)))}
+                      onChange={(event) => updateStatOverride(field.key, event.target.value)}
+                    />
+                  </label>
+                ))}
+              </div>
+            </section>
+
+            <section className="combat-editor-section">
+              <div className="selected-draw-label">Skills</div>
+              <div className="combat-stat-editor-grid">
+                {COMBAT_SIM_SKILL_FIELDS.map((field) => (
+                  <label className="field" key={field.key}>
+                    <span>
+                      {field.label}
+                      {field.note ? <small> {field.note}</small> : null}
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={skillOverrides[field.key] ?? ""}
+                      placeholder={String(displaySimValue(sourceSimSkillValue(template, field.key)))}
+                      onChange={(event) => updateSkillOverride(field.key, event.target.value)}
+                    />
+                  </label>
+                ))}
+              </div>
+            </section>
+          </div>
 
           <section className="combat-editor-section combat-action-editor-section">
             <div className="selected-draw-label">Actions</div>
@@ -5169,9 +5252,9 @@ function CombatSimBatchSummary({ result }) {
   return (
     <Panel title="Batch Summary" detail={`Runs ${result.runs}, seed ${result.seed}`}>
       <div className="combat-sim-metrics">
-        <MetricCard label="Team A wins" value={`${wins.A || 0} (${formatPercent(winRates.A)})`} />
-        <MetricCard label="Team B wins" value={`${wins.B || 0} (${formatPercent(winRates.B)})`} />
-        <MetricCard label="Draws" value={`${wins.draw || 0} (${formatPercent(winRates.draw)})`} />
+        <MetricCard label="Team A wins" value={`${outcomeValue(wins, "A")} (${formatPercent(outcomeValue(winRates, "A"))})`} />
+        <MetricCard label="Team B wins" value={`${outcomeValue(wins, "B")} (${formatPercent(outcomeValue(winRates, "B"))})`} />
+        <MetricCard label="Draw result" value={`${outcomeValue(wins, "draw")} (${formatPercent(outcomeValue(winRates, "draw"))})`} />
         <MetricCard label="Avg rounds" value={formatAverage(summary.avgRounds)} />
         <MetricCard label="Avg turns" value={formatAverage(summary.avgTurns)} />
         <MetricCard label="Avg attacks" value={formatAverage(summary.avgAttackActions)} />
@@ -5218,6 +5301,7 @@ function CombatSimCoverageSummary({ summary }) {
 function CombatSimPrecisionSummary({ precision }) {
   const target = precision.targetRerunFluctuation;
   const outcomes = precision.outcomes || {};
+  const rerunEstimate = precision.adjustedRerunFluctuation95 ?? precision.observedRerunFluctuation95 ?? precision.worstCaseRerunFluctuation95;
   return (
     <div className="combat-precision-panel">
       <div className="combat-precision-header">
@@ -5226,14 +5310,15 @@ function CombatSimPrecisionSummary({ precision }) {
           <div className="combat-precision-title">{precision.verdict || "Fixed runs"}</div>
         </div>
         <span className={`pill ${precision.targetMet ? "pill-turn" : "pill-muted"}`}>
-          95% rerun +/- {formatPercent(precision.worstCaseRerunFluctuation95)}
+          95% rerun +/- {formatPercent(rerunEstimate)}
         </span>
       </div>
       <div className="combat-sim-metrics combat-precision-metrics">
         <MetricCard label="Target" value={target == null ? "Fixed" : `+/- ${formatPercent(target)}`} />
         <MetricCard label="Run cap" value={precision.runCap ?? "-"} />
-        <MetricCard label="Needed" value={precision.requiredRunsForTarget ?? "-"} />
-        <MetricCard label="+/- 5%" value={precision.runsForRerunFluctuation?.["5pct"] ?? "-"} />
+        <MetricCard label="Needed" value={precision.observedRequiredRunsForTarget ?? precision.requiredRunsForTarget ?? "-"} />
+        <MetricCard label="Worst needed" value={precision.worstCaseRequiredRunsForTarget ?? "-"} />
+        <MetricCard label="Worst-case now" value={formatPercent(precision.worstCaseRerunFluctuation95)} />
       </div>
       <div className="combat-precision-outcomes">
         {["A", "B", "draw"].map((key) => {

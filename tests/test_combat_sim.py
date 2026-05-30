@@ -18,6 +18,7 @@ def make_template(
     initiative: int = 0,
     threat_level: int = 1,
     cards: tuple[Card, ...] | None = None,
+    skills: dict[str, int] | None = None,
 ) -> EnemyTemplate:
     action_cards = cards or (
         Card(
@@ -44,6 +45,7 @@ def make_template(
         source="excel",
         action_deck=Deck(id=f"{template_id}_deck", name=f"{name} Deck", cards=action_cards),
         threat_level=threat_level,
+        skills=skills if skills is not None else {"alertness": initiative},
     )
 
 
@@ -166,6 +168,49 @@ class CombatSimTests(unittest.TestCase):
         self.assertEqual(action["cardTitle"], "Heavy Blow")
         self.assertEqual(templates["attacker"].action_deck.cards[0].action_text, "Base - Attack 1")
 
+    def test_skill_override_alertness_changes_initiative_without_mutating_template(self) -> None:
+        templates = {
+            "slow": make_template(
+                "slow",
+                "Slow",
+                initiative=0,
+                skills={"alertness": 0, "stealth": 1},
+                cards=(Card(id="slow_guard", title="Guard", effects=(Effect(type="guard", amount=1),)),),
+            ),
+            "fast": make_template(
+                "fast",
+                "Fast",
+                initiative=0,
+                skills={"alertness": 0, "stealth": 1},
+                cards=(Card(id="fast_guard", title="Guard", effects=(Effect(type="guard", amount=1),)),),
+            ),
+        }
+
+        result = simulate_combat_once(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[
+                {
+                    "templateId": "slow",
+                    "count": 1,
+                    "overrides": {
+                        "statOverrides": {"initiativeModifier": 1},
+                        "skillOverrides": {"alertness": 20, "stealth": 4},
+                    },
+                }
+            ],
+            team_b=[{"templateId": "fast", "count": 1}],
+            seed=1,
+            max_rounds=1,
+        )
+
+        slow = next(unit for unit in result["initialUnits"] if unit["templateId"] == "slow")
+        self.assertEqual(result["timeline"][0]["actorName"], "Slow 1")
+        self.assertEqual(slow["initiativeModifier"], 20)
+        self.assertEqual(templates["slow"].initiative_modifier, 0)
+        self.assertEqual(templates["slow"].skills, {"alertness": 0, "stealth": 1})
+
     def test_invalid_overrides_raise_combat_sim_error(self) -> None:
         templates = {
             "attacker": make_template(
@@ -190,6 +235,16 @@ class CombatSimTests(unittest.TestCase):
                 decks={},
                 card_index=card_index(templates),
                 team_a=[{"templateId": "attacker", "count": 1, "overrides": {"statOverrides": {"toughness": 0}}}],
+                team_b=[{"templateId": "target", "count": 1}],
+                seed=1,
+            )
+
+        with self.assertRaisesRegex(CombatSimError, "alertness"):
+            simulate_combat_once(
+                templates=templates,
+                decks={},
+                card_index=card_index(templates),
+                team_a=[{"templateId": "attacker", "count": 1, "overrides": {"skillOverrides": {"alertness": -1}}}],
                 team_b=[{"templateId": "target", "count": 1}],
                 seed=1,
             )
@@ -401,6 +456,54 @@ class CombatSimTests(unittest.TestCase):
         self.assertIn("A", precision["outcomes"])
         self.assertIn("ciLow", precision["outcomes"]["A"])
         self.assertIn("std", precision["outcomes"]["A"])
+
+    def test_batch_precision_needed_varies_by_observed_outcome_stability(self) -> None:
+        templates = {
+            "attacker": make_template(
+                "attacker",
+                "Attacker",
+                initiative=10,
+                cards=(Card(id="heavy", title="Heavy", effects=(Effect(type="attack", amount=20),)),),
+            ),
+            "target": make_template("target", "Target", toughness=1, power=0),
+        }
+
+        result = simulate_combat_batch(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[{"templateId": "attacker", "count": 1}],
+            team_b=[{"templateId": "target", "count": 1}],
+            seed=100,
+            runs=500,
+            precision_target=0.10,
+            max_rounds=2,
+        )
+
+        precision = result["summary"]["precision"]
+        self.assertLess(precision["observedRequiredRunsForTarget"], precision["worstCaseRequiredRunsForTarget"])
+        self.assertLess(result["runs"], precision["worstCaseRequiredRunsForTarget"])
+        self.assertEqual(precision["verdict"], "Target met")
+
+    def test_batch_counts_draw_results(self) -> None:
+        templates = {
+            "left": make_template("left", "Left", cards=(Card(id="left_guard", title="Guard", effects=(Effect(type="guard", amount=1),)),)),
+            "right": make_template("right", "Right", cards=(Card(id="right_guard", title="Guard", effects=(Effect(type="guard", amount=1),)),)),
+        }
+
+        result = simulate_combat_batch(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[{"templateId": "left", "count": 1}],
+            team_b=[{"templateId": "right", "count": 1}],
+            seed=5,
+            runs=5,
+            max_rounds=2,
+        )
+
+        self.assertEqual(result["summary"]["wins"]["draw"], 5)
+        self.assertEqual(result["summary"]["winRates"]["draw"], 1.0)
 
     def test_max_rounds_returns_draw(self) -> None:
         templates = {
