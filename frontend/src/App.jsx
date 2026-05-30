@@ -30,6 +30,22 @@ const TEMPLATE_AVAILABILITY_FILTERS = [
   { id: "all", label: "All" },
   { id: "design", label: "To Design" },
 ];
+const APP_VIEWS = {
+  BATTLE: "battle",
+  SIM: "sim",
+};
+const COMBAT_SIM_MODES = [
+  { id: "quick", label: "Quick" },
+  { id: "turn", label: "Turn-based" },
+  { id: "batch", label: "Batch" },
+];
+const COMBAT_SIM_STRATEGIES = [
+  { id: "highest_toughness", label: "Highest toughness" },
+  { id: "highest_tl", label: "Highest TL" },
+  { id: "lowest_toughness", label: "Lowest toughness" },
+  { id: "random_focus", label: "Random focus" },
+  { id: "full_random", label: "Full random" },
+];
 
 const DEFAULT_ROOM = { columns: 10, rows: 7 };
 const MAP_MODES = {
@@ -583,6 +599,7 @@ function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [modal, setModal] = useState(null);
+  const [activeView, setActiveView] = useState(APP_VIEWS.BATTLE);
   const [flavourText, setFlavourText] = useState(null);
   const [addUnitTab, setAddUnitTab] = useState("premade");
   const [templateSearch, setTemplateSearch] = useState("");
@@ -792,16 +809,16 @@ function App() {
   }, [unitContextMenu]);
 
   useEffect(() => {
-    if (snapshot?.pendingNewRound) {
+    if (activeView === APP_VIEWS.BATTLE && snapshot?.pendingNewRound) {
       setModal("new-round");
     }
-  }, [snapshot?.pendingNewRound]);
+  }, [activeView, snapshot?.pendingNewRound]);
 
   useEffect(() => {
-    if (snapshot?.pendingSearch?.hasFate) {
+    if (activeView === APP_VIEWS.BATTLE && snapshot?.pendingSearch?.hasFate) {
       setModal("search-resolve");
     }
-  }, [snapshot?.pendingSearch?.hasFate]);
+  }, [activeView, snapshot?.pendingSearch?.hasFate]);
 
   useEffect(() => {
     setActionWarningAcknowledged(false);
@@ -2141,19 +2158,54 @@ function App() {
         </div>
 
         <div className="round-cluster">
-          <span className="pill">Round {snapshot.round}</span>
-          <span className={`pill ${selectedEntity ? "pill-selected" : "pill-muted"}`}>
-            {selectedEntity ? `Selected: ${selectedEntity.name}` : "Selected: none"}
-          </span>
-          {activeEntity ? (
-            <span className={`pill pill-turn ${selectedEntityState?.isActive ? "pill-turn-current" : ""}`}>
-              {`Active Turn: ${activeEntity.name}`}
-            </span>
-          ) : null}
-          <span className="pill pill-muted">sid {snapshot.sid}</span>
+          {activeView === APP_VIEWS.SIM ? (
+            <>
+              <span className="pill pill-turn">Combat Sim</span>
+              <span className="pill pill-muted">No positioning</span>
+              <span className="pill pill-muted">Initiative once</span>
+            </>
+          ) : (
+            <>
+              <span className="pill">Round {snapshot.round}</span>
+              <span className={`pill ${selectedEntity ? "pill-selected" : "pill-muted"}`}>
+                {selectedEntity ? `Selected: ${selectedEntity.name}` : "Selected: none"}
+              </span>
+              {activeEntity ? (
+                <span className={`pill pill-turn ${selectedEntityState?.isActive ? "pill-turn-current" : ""}`}>
+                  {`Active Turn: ${activeEntity.name}`}
+                </span>
+              ) : null}
+              <span className="pill pill-muted">sid {snapshot.sid}</span>
+            </>
+          )}
         </div>
 
         <div className="menu-actions">
+          <div className="view-switch" role="group" aria-label="App view">
+            <button
+              className={`menu-button ${activeView === APP_VIEWS.BATTLE ? "menu-button-active" : ""}`.trim()}
+              type="button"
+              onClick={() => {
+                setActiveView(APP_VIEWS.BATTLE);
+                setModal(null);
+              }}
+              disabled={busy}
+            >
+              Battle Map
+            </button>
+            <button
+              className={`menu-button ${activeView === APP_VIEWS.SIM ? "menu-button-active" : ""}`.trim()}
+              type="button"
+              onClick={() => {
+                setActiveView(APP_VIEWS.SIM);
+                setModal(null);
+                setUnitContextMenu(null);
+              }}
+              disabled={busy}
+            >
+              Combat Sim
+            </button>
+          </div>
           <label className="brightness-control">
             <span>Light</span>
             <input
@@ -2167,49 +2219,56 @@ function App() {
             />
             <output>{displayBrightness}%</output>
           </label>
-          <button className="menu-button" onClick={requestNewSession} disabled={busy}>
-            New
-          </button>
-          <button className="menu-button" onClick={handleUndo} disabled={busy || !snapshot.canUndo}>
-            Undo
-          </button>
-          <button className="menu-button" onClick={handleRedo} disabled={busy || !snapshot.canRedo}>
-            Redo
-          </button>
-          <button
-            className="menu-button"
-            onClick={() => {
-              setSaveName("session");
-              setModal("save");
-            }}
-            disabled={busy}
-          >
-            Save
-          </button>
-          <button className="menu-button" onClick={openLoadModal} disabled={busy}>
-            Load
-          </button>
-          <button
-            className={`menu-button gm-reposition-button ${isGmRepositionMode ? "gm-reposition-active" : ""}`.trim()}
-            type="button"
-            title="Click a unit, then click an empty map cell to reposition it."
-            onClick={toggleGmRepositionMode}
-            disabled={busy || !canUseGmReposition}
-          >
-            {isGmRepositionMode ? "Exit GM" : "GM Reposition"}
-          </button>
-          <button
-            className={`menu-button gm-dungeon-button ${isGmDungeonMode ? "gm-dungeon-active" : ""}`.trim()}
-            type="button"
-            title="Edit dungeon terrain, walls, and doors."
-            onClick={toggleGmDungeonMode}
-            disabled={busy}
-          >
-            {isGmDungeonMode ? "Exit Dungeon GM" : "GM Dungeon"}
-          </button>
+          {activeView === APP_VIEWS.BATTLE ? (
+            <>
+              <button className="menu-button" onClick={requestNewSession} disabled={busy}>
+                New
+              </button>
+              <button className="menu-button" onClick={handleUndo} disabled={busy || !snapshot.canUndo}>
+                Undo
+              </button>
+              <button className="menu-button" onClick={handleRedo} disabled={busy || !snapshot.canRedo}>
+                Redo
+              </button>
+              <button
+                className="menu-button"
+                onClick={() => {
+                  setSaveName("session");
+                  setModal("save");
+                }}
+                disabled={busy}
+              >
+                Save
+              </button>
+              <button className="menu-button" onClick={openLoadModal} disabled={busy}>
+                Load
+              </button>
+              <button
+                className={`menu-button gm-reposition-button ${isGmRepositionMode ? "gm-reposition-active" : ""}`.trim()}
+                type="button"
+                title="Click a unit, then click an empty map cell to reposition it."
+                onClick={toggleGmRepositionMode}
+                disabled={busy || !canUseGmReposition}
+              >
+                {isGmRepositionMode ? "Exit GM" : "GM Reposition"}
+              </button>
+              <button
+                className={`menu-button gm-dungeon-button ${isGmDungeonMode ? "gm-dungeon-active" : ""}`.trim()}
+                type="button"
+                title="Edit dungeon terrain, walls, and doors."
+                onClick={toggleGmDungeonMode}
+                disabled={busy}
+              >
+                {isGmDungeonMode ? "Exit Dungeon GM" : "GM Dungeon"}
+              </button>
+            </>
+          ) : null}
         </div>
       </header>
 
+      {activeView === APP_VIEWS.SIM ? (
+        <CombatSimView meta={meta} />
+      ) : (
       <main className="main-grid">
         <section className="stage-column">
           {isPlayerSelected && selectedIsActive && selectedPowerDrawUsed && selectedEntity.power_draw_cards?.length > 0 ? (
@@ -3157,6 +3216,7 @@ function App() {
           )}
         </aside>
       </main>
+      )}
 
       {unitContextMenu && contextMenuEntity ? (
         <div
@@ -4307,6 +4367,533 @@ function App() {
       </ModalShell>
     </div>
   );
+}
+
+function CombatSimView({ meta }) {
+  const spawnableTemplates = useMemo(
+    () => (meta?.enemyTemplates || []).filter((template) => template.spawnable !== false),
+    [meta],
+  );
+  const templateLookup = useMemo(
+    () => new Map(spawnableTemplates.map((template) => [template.id, template])),
+    [spawnableTemplates],
+  );
+  const firstTemplateId = spawnableTemplates[0]?.id || "";
+  const secondTemplateId = spawnableTemplates[1]?.id || firstTemplateId;
+
+  const [mode, setMode] = useState("quick");
+  const [teamA, setTeamA] = useState([]);
+  const [teamB, setTeamB] = useState([]);
+  const [strategyA, setStrategyA] = useState("highest_toughness");
+  const [strategyB, setStrategyB] = useState("highest_toughness");
+  const [seed, setSeed] = useState("");
+  const [runs, setRuns] = useState(1000);
+  const [precisionTargetPercent, setPrecisionTargetPercent] = useState("5");
+  const [maxRounds, setMaxRounds] = useState(100);
+  const [simResult, setSimResult] = useState(null);
+  const [simError, setSimError] = useState("");
+  const [simBusy, setSimBusy] = useState(false);
+  const [turnIndex, setTurnIndex] = useState(0);
+
+  useEffect(() => {
+    if (!firstTemplateId) {
+      return;
+    }
+    setTeamA((current) => current.length ? current : [{ templateId: firstTemplateId, count: 1 }]);
+    setTeamB((current) => current.length ? current : [{ templateId: secondTemplateId, count: 1 }]);
+  }, [firstTemplateId, secondTemplateId]);
+
+  function updateTeam(setTeam, index, patch) {
+    setTeam((current) => current.map((entry, entryIndex) => (entryIndex === index ? { ...entry, ...patch } : entry)));
+  }
+
+  function addTeamEntry(setTeam) {
+    setTeam((current) => [...current, { templateId: firstTemplateId, count: 1 }]);
+  }
+
+  function removeTeamEntry(setTeam, index) {
+    setTeam((current) => current.filter((_, entryIndex) => entryIndex !== index));
+  }
+
+  function normalizeTeam(entries) {
+    return entries
+      .filter((entry) => entry.templateId)
+      .map((entry) => ({
+        templateId: entry.templateId,
+        count: Math.max(1, Math.min(20, Number(entry.count) || 1)),
+      }));
+  }
+
+  async function submitSimulation(event) {
+    event.preventDefault();
+    const normalizedA = normalizeTeam(teamA);
+    const normalizedB = normalizeTeam(teamB);
+    if (!normalizedA.length || !normalizedB.length) {
+      setSimError("Both teams need at least one creature.");
+      return;
+    }
+    setSimBusy(true);
+    setSimError("");
+    try {
+      const payload = await requestJson("/api/combat-sim/simulate", {
+        method: "POST",
+        body: JSON.stringify({
+          teamA: normalizedA,
+          teamB: normalizedB,
+          strategyA,
+          strategyB,
+          seed: seed === "" ? null : Number(seed),
+          runs: mode === "batch" ? Math.max(1, Math.min(1000, Number(runs) || 100)) : 1,
+          precisionTargetPercent:
+            mode === "batch" && precisionTargetPercent !== ""
+              ? Math.max(0.1, Number(precisionTargetPercent) || 5)
+              : null,
+          maxRounds: Math.max(1, Number(maxRounds) || 100),
+        }),
+      });
+      setSimResult(payload);
+      setTurnIndex(0);
+    } catch (requestError) {
+      setSimError(requestError.message);
+    } finally {
+      setSimBusy(false);
+    }
+  }
+
+  const batchResult = simResult?.mode === "batch" ? simResult.result : null;
+  const singleResult = simResult?.mode === "single" ? simResult.result : batchResult?.lastCombat || null;
+  const currentTurn = mode === "turn" && singleResult && turnIndex > 0 ? singleResult.timeline[turnIndex - 1] : null;
+  const visibleUnits =
+    mode === "turn" && singleResult
+      ? turnIndex === 0
+        ? singleResult.initialUnits
+        : currentTurn?.units || singleResult.finalUnits
+      : singleResult?.finalUnits || [];
+
+  if (!spawnableTemplates.length) {
+    return (
+      <main className="combat-sim-view">
+        <Panel title="Combat Sim">
+          <div className="subtle-copy">No spawnable creature templates are available.</div>
+        </Panel>
+      </main>
+    );
+  }
+
+  return (
+    <main className="combat-sim-view">
+      <form className="combat-sim-controls" onSubmit={submitSimulation}>
+        <Panel title="Combat Sim" detail="Creature vs creature simulation without movement or positioning.">
+          <div className="combat-sim-mode-row">
+            <div className="combat-sim-segment" role="group" aria-label="Simulation mode">
+              {COMBAT_SIM_MODES.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`combat-sim-segment-button ${mode === item.id ? "active" : ""}`.trim()}
+                  onClick={() => {
+                    setMode(item.id);
+                    setSimResult(null);
+                    setTurnIndex(0);
+                  }}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            <label className="field combat-sim-seed-field">
+              <span>Seed</span>
+              <input
+                type="number"
+                value={seed}
+                onChange={(event) => setSeed(event.target.value)}
+                placeholder="Auto"
+              />
+            </label>
+            {mode === "batch" ? (
+              <label className="field combat-sim-runs-field">
+                <span>Target +/- %</span>
+                <input
+                  type="number"
+                  min="0.1"
+                  step="0.1"
+                  value={precisionTargetPercent}
+                  onChange={(event) => setPrecisionTargetPercent(event.target.value)}
+                />
+              </label>
+            ) : null}
+            {mode === "batch" ? (
+              <label className="field combat-sim-runs-field">
+                <span>Max runs</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="1000"
+                  value={runs}
+                  onChange={(event) => setRuns(event.target.value)}
+                />
+              </label>
+            ) : null}
+            <label className="field combat-sim-runs-field">
+              <span>Max rounds</span>
+              <input
+                type="number"
+                min="1"
+                value={maxRounds}
+                onChange={(event) => setMaxRounds(event.target.value)}
+              />
+            </label>
+            <button className="primary-button combat-sim-run-button" type="submit" disabled={simBusy}>
+              {mode === "batch" ? "Run Batch" : mode === "turn" ? "Start Playback" : "Quick Simulate"}
+            </button>
+          </div>
+        </Panel>
+
+        <div className="combat-team-grid">
+          <CombatSimTeamBuilder
+            title="Team A"
+            team={teamA}
+            templates={spawnableTemplates}
+            templateLookup={templateLookup}
+            strategy={strategyA}
+            setStrategy={setStrategyA}
+            onUpdate={(index, patch) => updateTeam(setTeamA, index, patch)}
+            onAdd={() => addTeamEntry(setTeamA)}
+            onRemove={(index) => removeTeamEntry(setTeamA, index)}
+          />
+          <CombatSimTeamBuilder
+            title="Team B"
+            team={teamB}
+            templates={spawnableTemplates}
+            templateLookup={templateLookup}
+            strategy={strategyB}
+            setStrategy={setStrategyB}
+            onUpdate={(index, patch) => updateTeam(setTeamB, index, patch)}
+            onAdd={() => addTeamEntry(setTeamB)}
+            onRemove={(index) => removeTeamEntry(setTeamB, index)}
+          />
+        </div>
+      </form>
+
+      {simError ? (
+        <div className="status-banner status-error combat-sim-error">
+          <span>{simError}</span>
+          <button className="status-dismiss" type="button" onClick={() => setSimError("")}>
+            Close
+          </button>
+        </div>
+      ) : null}
+
+      {batchResult ? <CombatSimBatchSummary result={batchResult} /> : null}
+
+      {singleResult ? (
+        <CombatSimDetails
+          result={singleResult}
+          mode={mode}
+          turnIndex={turnIndex}
+          currentTurn={currentTurn}
+          visibleUnits={visibleUnits}
+          onNextTurn={() => setTurnIndex((current) => Math.min(current + 1, singleResult.timeline.length))}
+          onResetTurn={() => setTurnIndex(0)}
+        />
+      ) : (
+        <Panel title="Simulation Output">
+          <div className="subtle-copy">Run a quick simulation, playback, or batch to inspect results.</div>
+        </Panel>
+      )}
+    </main>
+  );
+}
+
+function CombatSimTeamBuilder({
+  title,
+  team,
+  templates,
+  templateLookup,
+  strategy,
+  setStrategy,
+  onUpdate,
+  onAdd,
+  onRemove,
+}) {
+  return (
+    <Panel
+      title={title}
+      actions={
+        <button className="secondary-button panel-header-button" type="button" onClick={onAdd}>
+          Add
+        </button>
+      }
+    >
+      <div className="combat-team-builder">
+        <label className="field">
+          <span>Target priority</span>
+          <select value={strategy} onChange={(event) => setStrategy(event.target.value)}>
+            {COMBAT_SIM_STRATEGIES.map((item) => (
+              <option value={item.id} key={item.id}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="combat-team-entries">
+          {team.map((entry, index) => {
+            const template = templateLookup.get(entry.templateId);
+            return (
+              <div className="combat-team-entry" key={`${entry.templateId}-${index}`}>
+                <div className="combat-team-entry-image">
+                  {template?.imageUrl ? <img src={template.imageUrl} alt="" aria-hidden="true" /> : null}
+                </div>
+                <label className="field combat-team-template-field">
+                  <span>Creature</span>
+                  <select
+                    value={entry.templateId}
+                    onChange={(event) => onUpdate(index, { templateId: event.target.value })}
+                  >
+                    {templates.map((templateOption) => (
+                      <option value={templateOption.id} key={templateOption.id}>
+                        {templateOption.name}
+                        {templateOption.threatLevel != null ? ` (TL ${templateOption.threatLevel})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field combat-team-count-field">
+                  <span>Count</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="20"
+                    value={entry.count}
+                    onChange={(event) => onUpdate(index, { count: event.target.value })}
+                  />
+                </label>
+                <button
+                  className="icon-button combat-team-remove"
+                  type="button"
+                  aria-label={`Remove ${title} creature ${index + 1}`}
+                  onClick={() => onRemove(index)}
+                  disabled={team.length <= 1}
+                >
+                  <TrashIcon />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function CombatSimBatchSummary({ result }) {
+  const summary = result.summary || {};
+  const wins = summary.wins || {};
+  const winRates = summary.winRates || {};
+  const averages = summary.teamAverages || {};
+  const precision = summary.precision || {};
+  return (
+    <Panel title="Batch Summary" detail={`Runs ${result.runs}, seed ${result.seed}`}>
+      <div className="combat-sim-metrics">
+        <MetricCard label="Team A wins" value={`${wins.A || 0} (${formatPercent(winRates.A)})`} />
+        <MetricCard label="Team B wins" value={`${wins.B || 0} (${formatPercent(winRates.B)})`} />
+        <MetricCard label="Draws" value={`${wins.draw || 0} (${formatPercent(winRates.draw)})`} />
+        <MetricCard label="Avg rounds" value={formatAverage(summary.avgRounds)} />
+        <MetricCard label="Avg turns" value={formatAverage(summary.avgTurns)} />
+        <MetricCard label="Avg attacks" value={formatAverage(summary.avgAttackActions)} />
+        <MetricCard label="Winner T left" value={summary.avgWinnerRemainingToughness == null ? "-" : formatAverage(summary.avgWinnerRemainingToughness)} />
+      </div>
+      <CombatSimPrecisionSummary precision={precision} />
+      <div className="combat-batch-team-grid">
+        {["A", "B"].map((team) => (
+          <div className="combat-batch-team" key={team}>
+            <div className="selected-draw-label">Team {team} averages</div>
+            <div className="loot-grid">
+              <LootBlock label="Damage" value={formatAverage(averages[team]?.damageDealt)} />
+              <LootBlock label="Prevented" value={formatAverage(averages[team]?.damagePrevented)} />
+              <LootBlock label="Lost" value={formatAverage(averages[team]?.unitsLost)} />
+              <LootBlock label="T left" value={formatAverage(averages[team]?.remainingToughness)} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function CombatSimPrecisionSummary({ precision }) {
+  const target = precision.targetRerunFluctuation;
+  const outcomes = precision.outcomes || {};
+  return (
+    <div className="combat-precision-panel">
+      <div className="combat-precision-header">
+        <div>
+          <div className="selected-draw-label">Batch precision</div>
+          <div className="combat-precision-title">{precision.verdict || "Fixed runs"}</div>
+        </div>
+        <span className={`pill ${precision.targetMet ? "pill-turn" : "pill-muted"}`}>
+          95% rerun +/- {formatPercent(precision.worstCaseRerunFluctuation95)}
+        </span>
+      </div>
+      <div className="combat-sim-metrics combat-precision-metrics">
+        <MetricCard label="Target" value={target == null ? "Fixed" : `+/- ${formatPercent(target)}`} />
+        <MetricCard label="Run cap" value={precision.runCap ?? "-"} />
+        <MetricCard label="Needed" value={precision.requiredRunsForTarget ?? "-"} />
+        <MetricCard label="+/- 5%" value={precision.runsForRerunFluctuation?.["5pct"] ?? "-"} />
+      </div>
+      <div className="combat-precision-outcomes">
+        {["A", "B", "draw"].map((key) => {
+          const stats = outcomes[key];
+          if (!stats) {
+            return null;
+          }
+          const label = key === "draw" ? "Draw" : `Team ${key}`;
+          return (
+            <div className="combat-precision-row" key={key}>
+              <strong>{label}</strong>
+              <span>WR {formatPercent(stats.rate)}</span>
+              <span>CI {formatPercent(stats.ciLow)}-{formatPercent(stats.ciHigh)}</span>
+              <span>Std {formatPercent(stats.std)}</span>
+              <span>Rerun +/- {formatPercent(stats.rerunFluctuation95)}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CombatSimDetails({ result, mode, turnIndex, currentTurn, visibleUnits, onNextTurn, onResetTurn }) {
+  const isTurnMode = mode === "turn";
+  const atEnd = turnIndex >= (result.timeline?.length || 0);
+  const logEntries = isTurnMode && currentTurn ? currentTurn.log : result.combatLog || [];
+  return (
+    <div className="combat-sim-results">
+      <Panel title={isTurnMode ? "Turn Playback" : "Result"} detail={`Seed ${result.seed}`}>
+        <div className="combat-sim-metrics">
+          <MetricCard label="Winner" value={result.winner === "draw" ? "Draw" : `Team ${result.winner}`} />
+          <MetricCard label="Rounds" value={result.rounds} />
+          <MetricCard label="Turns" value={result.turns} />
+          <MetricCard label="Attack actions" value={result.attackActions} />
+        </div>
+        {isTurnMode ? (
+          <div className="combat-turn-controls">
+            <button className="primary-button" type="button" onClick={onNextTurn} disabled={atEnd}>
+              Next Turn
+            </button>
+            <button className="secondary-button" type="button" onClick={onResetTurn} disabled={turnIndex === 0}>
+              Reset
+            </button>
+            <span className="pill pill-muted">
+              {turnIndex === 0 ? "Initial state" : `Turn ${turnIndex}/${result.timeline.length}`}
+            </span>
+            {currentTurn ? <span className="pill pill-turn">{currentTurn.actorName}</span> : null}
+          </div>
+        ) : null}
+      </Panel>
+
+      {!isTurnMode ? (
+        <div className="combat-unit-grid">
+          <CombatSimUnitTable title="Initial Team A" units={(result.initialUnits || []).filter((unit) => unit.team === "A")} />
+          <CombatSimUnitTable title="Initial Team B" units={(result.initialUnits || []).filter((unit) => unit.team === "B")} />
+        </div>
+      ) : null}
+
+      <div className="combat-unit-grid">
+        <CombatSimUnitTable
+          title={isTurnMode ? "Team A" : "Final Team A"}
+          units={(visibleUnits || []).filter((unit) => unit.team === "A")}
+          activeActorId={currentTurn?.actorId}
+        />
+        <CombatSimUnitTable
+          title={isTurnMode ? "Team B" : "Final Team B"}
+          units={(visibleUnits || []).filter((unit) => unit.team === "B")}
+          activeActorId={currentTurn?.actorId}
+        />
+      </div>
+
+      <Panel title={isTurnMode ? "Turn Log" : "Combat Log"}>
+        <CombatSimLog entries={logEntries} />
+      </Panel>
+    </div>
+  );
+}
+
+function CombatSimUnitTable({ title, units, activeActorId = null }) {
+  return (
+    <Panel title={title}>
+      <div className="combat-unit-list">
+        {units.map((unit) => (
+          <div
+            className={`combat-unit-row ${unit.isDown ? "combat-unit-down" : ""} ${activeActorId === unit.id ? "combat-unit-active" : ""}`.trim()}
+            key={unit.id}
+          >
+            <div className="combat-unit-main">
+              {unit.imageUrl ? <img className="combat-unit-image" src={unit.imageUrl} alt="" aria-hidden="true" /> : null}
+              <div>
+                <div className="combat-unit-name">{unit.name}</div>
+                <div className="initiative-meta">
+                  {unit.templateId}
+                  {unit.threatLevel != null ? ` | TL ${unit.threatLevel}` : ""}
+                </div>
+              </div>
+            </div>
+            <div className="combat-unit-stats">
+              <span>T {unit.toughnessCurrent}/{unit.toughnessMax}</span>
+              <span>AR {unit.armorCurrent}/{unit.armorMax}</span>
+              <span>MAR {unit.magicArmorCurrent}/{unit.magicArmorMax}</span>
+              <span>G {unit.guardCurrent}/{unit.guardBase}</span>
+              <span>PWR {unit.power}</span>
+              <span>{unit.initiativeText}</span>
+            </div>
+            <div className="combat-unit-footer">
+              <span>{unit.statusText || "-"}</span>
+              <span>
+                Deck {unit.deckCounts?.draw ?? 0} | Hand {unit.deckCounts?.hand ?? 0} | Discard {unit.deckCounts?.discard ?? 0}
+              </span>
+            </div>
+            {unit.currentDraw?.length ? (
+              <div className="combat-unit-draw">
+                {unit.currentDraw.map((item, index) => (
+                  <span key={`${item}-${index}`}>{item}</span>
+                ))}
+              </div>
+            ) : null}
+            <ProgressBar label="Toughness" value={percent(unit.toughnessCurrent, unit.toughnessMax)} compact />
+          </div>
+        ))}
+        {!units.length ? <div className="subtle-copy">No units.</div> : null}
+      </div>
+    </Panel>
+  );
+}
+
+function CombatSimLog({ entries }) {
+  return (
+    <div className="log-list combat-sim-log">
+      {entries?.length ? (
+        entries.map((entry, index) => (
+          <div className="log-entry" key={`${entry}-${index}`}>
+            {entry}
+          </div>
+        ))
+      ) : (
+        <div className="subtle-copy">No log entries.</div>
+      )}
+    </div>
+  );
+}
+
+function formatPercent(value) {
+  return `${((Number(value) || 0) * 100).toFixed(1)}%`;
+}
+
+function formatAverage(value) {
+  if (value == null || Number.isNaN(Number(value))) {
+    return "-";
+  }
+  return Number(value).toFixed(1);
 }
 
 function BattleRoom({

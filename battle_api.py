@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from typing import Literal, Optional
 
 from fastapi import HTTPException
@@ -10,6 +11,15 @@ from battle_session import (
     BattleSessionError,
 )
 from engine.combat import AttackMod
+from engine.combat_sim import (
+    DEFAULT_MAX_ROUNDS,
+    DEFAULT_TARGET_STRATEGY,
+    MAX_BATCH_RUNS,
+    TARGET_STRATEGIES,
+    CombatSimError,
+    simulate_combat_batch,
+    simulate_combat_once,
+)
 
 
 class SelectRequest(BaseModel):
@@ -162,6 +172,55 @@ class InteractSuspectRequest(BaseModel):
     edgeKey: str
 
 
+class CombatSimTeamEntryRequest(BaseModel):
+    templateId: str
+    count: int = 1
+
+
+class CombatSimRequest(BaseModel):
+    teamA: list[CombatSimTeamEntryRequest] = Field(default_factory=list)
+    teamB: list[CombatSimTeamEntryRequest] = Field(default_factory=list)
+    strategy: Optional[str] = None
+    strategyA: Optional[str] = None
+    strategyB: Optional[str] = None
+    seed: Optional[int] = None
+    runs: int = 1
+    precisionTargetPercent: Optional[float] = None
+    maxRounds: int = DEFAULT_MAX_ROUNDS
+
+
+def _validate_combat_sim_request(
+    request: CombatSimRequest,
+    strategy_a: str,
+    strategy_b: str,
+    context: BattleSessionContext,
+) -> None:
+    if request.runs < 1 or request.runs > MAX_BATCH_RUNS:
+        raise CombatSimError(f"runs must be between 1 and {MAX_BATCH_RUNS}")
+    if request.precisionTargetPercent is not None and request.precisionTargetPercent <= 0:
+        raise CombatSimError("precisionTargetPercent must be > 0")
+    if request.maxRounds < 1:
+        raise CombatSimError("maxRounds must be > 0")
+    for strategy in (strategy_a, strategy_b):
+        if strategy not in TARGET_STRATEGIES:
+            raise CombatSimError(f"Unknown target strategy '{strategy}'")
+    for label, entries in (("teamA", request.teamA), ("teamB", request.teamB)):
+        if not entries:
+            raise CombatSimError(f"{label} must contain at least one creature")
+        for entry in entries:
+            if not entry.templateId:
+                raise CombatSimError(f"{label}: templateId is required")
+            if entry.count <= 0:
+                raise CombatSimError(f"{label}: count must be > 0")
+            if entry.count > 20:
+                raise CombatSimError(f"{label}: count must be <= 20")
+            template = context.enemy_templates.get(entry.templateId)
+            if template is None:
+                raise CombatSimError(f"Unknown template '{entry.templateId}'")
+            if not getattr(template, "spawnable", True):
+                raise CombatSimError(f"Template '{template.name}' is not spawnable")
+
+
 def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def load_session_or_400(sid: str):
         try:
@@ -189,6 +248,41 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.get("/api/battle/meta")
     def battle_meta():
         return context.metadata()
+
+    @api_app.post("/api/combat-sim/simulate")
+    def combat_simulate(request: CombatSimRequest):
+        strategy_a = request.strategyA or request.strategy or DEFAULT_TARGET_STRATEGY
+        strategy_b = request.strategyB or request.strategy or DEFAULT_TARGET_STRATEGY
+        base_seed = request.seed if request.seed is not None else random.randint(1, 2_000_000_000)
+
+        try:
+            _validate_combat_sim_request(request, strategy_a, strategy_b, context)
+            team_a = [entry.model_dump() for entry in request.teamA]
+            team_b = [entry.model_dump() for entry in request.teamB]
+            common = {
+                "templates": context.enemy_templates,
+                "decks": context.decks,
+                "card_index": context.card_index,
+                "team_a": team_a,
+                "team_b": team_b,
+                "strategy_a": strategy_a,
+                "strategy_b": strategy_b,
+                "seed": int(base_seed),
+                "max_rounds": request.maxRounds,
+                "image_url_for": context.template_image_url,
+            }
+            if request.runs == 1:
+                result = simulate_combat_once(**common)
+                return {"mode": "single", "result": result}
+            precision_target = (
+                request.precisionTargetPercent / 100.0
+                if request.precisionTargetPercent is not None
+                else None
+            )
+            result = simulate_combat_batch(runs=request.runs, precision_target=precision_target, **common)
+            return {"mode": "batch", "result": result}
+        except CombatSimError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @api_app.post("/api/battle/sessions")
     def create_battle_session():

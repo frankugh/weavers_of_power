@@ -3975,7 +3975,311 @@ button.draw-card:hover {
   white-space: nowrap;
 }
 
+.view-switch {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.menu-button-active {
+  border-color: rgba(240, 207, 133, 0.48);
+  background: rgba(216, 182, 106, 0.18);
+  color: var(--accent-bright);
+}
+
+.combat-sim-view {
+  position: relative;
+  z-index: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 10px;
+  overflow: auto;
+  padding: 0 2px 8px;
+}
+
+.combat-sim-controls {
+  display: grid;
+  gap: 10px;
+}
+
+.combat-sim-mode-row {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.combat-sim-segment {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 244, 216, 0.04);
+}
+
+.combat-sim-segment-button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.combat-sim-segment-button.active {
+  border-color: rgba(240, 207, 133, 0.36);
+  background: rgba(216, 182, 106, 0.16);
+  color: var(--accent-bright);
+}
+
+.combat-sim-seed-field,
+.combat-sim-runs-field {
+  width: min(160px, 100%);
+}
+
+.combat-sim-run-button {
+  min-height: 42px;
+}
+
+.combat-team-grid,
+.combat-unit-grid,
+.combat-batch-team-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.combat-team-builder {
+  display: grid;
+  gap: 10px;
+}
+
+.combat-team-entries {
+  display: grid;
+  gap: 8px;
+}
+
+.combat-team-entry {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 88px 36px;
+  gap: 8px;
+  align-items: end;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 244, 216, 0.035);
+}
+
+.combat-team-entry-image,
+.combat-unit-image {
+  width: 42px;
+  height: 42px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 244, 216, 0.05);
+}
+
+.combat-team-entry-image img,
+.combat-unit-image {
+  object-fit: cover;
+}
+
+.combat-team-entry-image img {
+  width: 100%;
+  height: 100%;
+}
+
+.combat-team-count-field {
+  min-width: 0;
+}
+
+.combat-team-remove {
+  align-self: center;
+}
+
+.combat-sim-error {
+  margin: 0;
+}
+
+.combat-sim-results {
+  display: grid;
+  gap: 10px;
+}
+
+.combat-sim-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.combat-turn-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.combat-unit-list {
+  display: grid;
+  gap: 8px;
+}
+
+.combat-unit-row {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 244, 216, 0.04);
+}
+
+.combat-unit-active {
+  border-color: rgba(98, 201, 210, 0.56);
+  background: rgba(74, 155, 169, 0.1);
+}
+
+.combat-unit-down {
+  opacity: 0.62;
+}
+
+.combat-unit-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.combat-unit-name {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.combat-unit-stats,
+.combat-unit-footer,
+.combat-unit-draw {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.combat-unit-stats span,
+.combat-unit-footer span,
+.combat-unit-draw span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.14);
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.combat-unit-stats span {
+  color: var(--text);
+}
+
+.combat-unit-draw span {
+  border-color: rgba(98, 201, 210, 0.24);
+  color: var(--active-text);
+}
+
+.combat-sim-log {
+  max-height: 320px;
+}
+
+.combat-batch-team {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 244, 216, 0.035);
+}
+
+.combat-precision-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(98, 201, 210, 0.22);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(74, 155, 169, 0.1), rgba(255, 244, 216, 0.035));
+}
+
+.combat-precision-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.combat-precision-title {
+  color: var(--active-text);
+  font-weight: 800;
+}
+
+.combat-precision-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+}
+
+.combat-precision-outcomes {
+  display: grid;
+  gap: 6px;
+}
+
+.combat-precision-row {
+  display: grid;
+  grid-template-columns: 74px repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.14);
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.combat-precision-row strong {
+  color: var(--text);
+}
+
 @media (max-width: 900px) {
+  .combat-team-grid,
+  .combat-unit-grid,
+  .combat-batch-team-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .combat-team-entry {
+    grid-template-columns: 38px minmax(0, 1fr) 74px 34px;
+  }
+
+  .combat-sim-seed-field,
+  .combat-sim-runs-field {
+    width: calc(50% - 8px);
+  }
+
+  .combat-precision-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .power-energy-bar {
     align-items: flex-start;
     flex-direction: column;

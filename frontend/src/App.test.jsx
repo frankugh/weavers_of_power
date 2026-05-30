@@ -444,6 +444,93 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Redo" })).toBeDisabled();
   });
 
+  it("runs a quick combat simulation from the top-level sim view", async () => {
+    const user = userEvent.setup();
+    const simUnitA = {
+      id: "A-1",
+      team: "A",
+      name: "Goblin 1",
+      templateId: "goblin",
+      imageUrl: "/images/Greenskins/goblin.png",
+      threatLevel: 1,
+      toughnessCurrent: 5,
+      toughnessMax: 6,
+      armorCurrent: 1,
+      armorMax: 1,
+      magicArmorCurrent: 0,
+      magicArmorMax: 0,
+      guardCurrent: 0,
+      guardBase: 0,
+      power: 1,
+      initiativeRoll: 5,
+      initiativeModifier: 3,
+      initiativeTotal: 8,
+      initiativeText: "Init 8 (5+3)",
+      statuses: {},
+      statusText: "-",
+      currentDraw: [],
+      deckCounts: { draw: 5, hand: 0, discard: 1 },
+      isDown: false,
+    };
+    const simUnitB = {
+      ...simUnitA,
+      id: "B-1",
+      team: "B",
+      name: "Bandit 1",
+      templateId: "bandit",
+      imageUrl: "/images/Outlaws/bandit.png",
+      toughnessCurrent: 0,
+      isDown: true,
+    };
+    const simResult = {
+      mode: "single",
+      result: {
+        seed: 123,
+        winner: "A",
+        rounds: 1,
+        turns: 2,
+        attackActions: 1,
+        initialUnits: [{ ...simUnitA, toughnessCurrent: 6 }, { ...simUnitB, toughnessCurrent: 6, isDown: false }],
+        finalUnits: [simUnitA, simUnitB],
+        timeline: [
+          {
+            round: 1,
+            turn: 1,
+            actorId: "A-1",
+            actorName: "Goblin 1",
+            team: "A",
+            units: [simUnitA, simUnitB],
+            log: ["Goblin 1 attacks Bandit 1."],
+            actions: [],
+          },
+        ],
+        combatLog: ["Goblin 1 attacks Bandit 1.", "Team A wins in round 1."],
+        teamTotals: {
+          A: { damageDealt: 6, damagePrevented: 1, unitsLost: 0, remainingToughness: 5, units: 1 },
+          B: { damageDealt: 1, damagePrevented: 0, unitsLost: 1, remainingToughness: 0, units: 1 },
+        },
+      },
+    };
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/combat-sim/simulate") {
+          const body = JSON.parse(requestOptions.body);
+          expect(body.runs).toBe(1);
+          expect(body.strategyA).toBe("highest_toughness");
+          return jsonResponse(simResult);
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Combat Sim" }));
+    await user.click(screen.getByRole("button", { name: "Quick Simulate" }));
+
+    await screen.findByText("Team A wins in round 1.");
+    expect(screen.getAllByText("Init 8 (5+3)").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Bandit 1").length).toBeGreaterThan(0);
+  });
+
   it("deletes manual saves from the load modal", async () => {
     const user = userEvent.setup();
     const save = {

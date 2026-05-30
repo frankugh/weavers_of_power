@@ -1,0 +1,804 @@
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass, field
+import math
+import random
+from typing import Callable, Iterable, Optional
+
+from engine.combat import AttackMod, CombatLog, apply_attack, apply_heal
+from engine.models import Card, Deck, EnemyTemplate
+from engine.runtime import draw_additional_cards, draw_cards, spawn_enemy, start_turn, end_turn
+from engine.runtime_models import EnemyInstance
+
+DEFAULT_TARGET_STRATEGY = "highest_toughness"
+TARGET_STRATEGIES = {
+    "highest_toughness",
+    "lowest_toughness",
+    "highest_tl",
+    "random_focus",
+    "full_random",
+}
+MAX_BATCH_RUNS = 1000
+DEFAULT_BATCH_RUNS = 100
+DEFAULT_MAX_ROUNDS = 100
+Z_95 = 1.959963984540054
+
+
+class CombatSimError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class TeamEntry:
+    template_id: str
+    count: int = 1
+
+
+@dataclass
+class SimUnit:
+    entity: EnemyInstance
+    team: str
+    template: EnemyTemplate
+    order_index: int
+
+
+@dataclass
+class SimState:
+    units: list[SimUnit]
+    order: list[SimUnit]
+    card_index: dict[str, Card]
+    rng: random.Random
+    strategy_by_team: dict[str, str]
+    focus_by_team: dict[str, Optional[str]] = field(default_factory=lambda: {"A": None, "B": None})
+    team_totals: dict[str, dict] = field(default_factory=dict)
+    log: list[str] = field(default_factory=list)
+    timeline: list[dict] = field(default_factory=list)
+    turns: int = 0
+    attack_actions: int = 0
+
+
+def simulate_combat_once(
+    *,
+    templates: dict[str, EnemyTemplate],
+    decks: dict[str, Deck],
+    card_index: dict[str, Card],
+    team_a: Iterable[dict | TeamEntry],
+    team_b: Iterable[dict | TeamEntry],
+    strategy_a: str = DEFAULT_TARGET_STRATEGY,
+    strategy_b: str = DEFAULT_TARGET_STRATEGY,
+    seed: int,
+    max_rounds: int = DEFAULT_MAX_ROUNDS,
+    image_url_for: Optional[Callable[[EnemyTemplate], str]] = None,
+) -> dict:
+    rng = random.Random(int(seed))
+    entries_a = _normalize_team(team_a, label="teamA")
+    entries_b = _normalize_team(team_b, label="teamB")
+    _validate_strategy(strategy_a)
+    _validate_strategy(strategy_b)
+    if max_rounds <= 0:
+        raise CombatSimError("maxRounds must be > 0")
+
+    units = _spawn_units(templates, decks, entries_a, entries_b, rng=rng)
+    if not units:
+        raise CombatSimError("At least one unit is required")
+
+    order = _roll_initiative(units, rng=rng)
+    state = SimState(
+        units=units,
+        order=order,
+        card_index=card_index,
+        rng=rng,
+        strategy_by_team={"A": strategy_a, "B": strategy_b},
+        team_totals={
+            "A": _empty_team_totals(),
+            "B": _empty_team_totals(),
+        },
+    )
+
+    state.log.append("Initiative: " + ", ".join(_initiative_label(unit.entity) for unit in order))
+    initial_units = _serialize_units(units, card_index=card_index, image_url_for=image_url_for)
+
+    winner = _winner(units)
+    round_number = 0
+    while winner is None and round_number < max_rounds:
+        round_number += 1
+        state.log.append(f"Round {round_number} begins")
+        for unit in order:
+            if _winner(units) is not None:
+                break
+            if _is_down(unit.entity):
+                continue
+            _run_unit_turn(state, unit, round_number, image_url_for=image_url_for)
+        winner = _winner(units)
+
+    if winner is None:
+        winner = "draw"
+        state.log.append(f"Max rounds reached ({max_rounds}); combat ends in a draw.")
+    elif winner == "draw":
+        state.log.append(f"Both teams are down in round {round_number}; combat ends in a draw.")
+    else:
+        state.log.append(f"Team {winner} wins in round {round_number}.")
+
+    final_units = _serialize_units(units, card_index=card_index, image_url_for=image_url_for)
+    _finalize_team_totals(state, units)
+
+    return {
+        "seed": int(seed),
+        "winner": winner,
+        "rounds": round_number,
+        "turns": state.turns,
+        "attackActions": state.attack_actions,
+        "initialUnits": initial_units,
+        "finalUnits": final_units,
+        "timeline": state.timeline,
+        "combatLog": list(state.log),
+        "teamTotals": state.team_totals,
+    }
+
+
+def simulate_combat_batch(
+    *,
+    templates: dict[str, EnemyTemplate],
+    decks: dict[str, Deck],
+    card_index: dict[str, Card],
+    team_a: Iterable[dict | TeamEntry],
+    team_b: Iterable[dict | TeamEntry],
+    strategy_a: str = DEFAULT_TARGET_STRATEGY,
+    strategy_b: str = DEFAULT_TARGET_STRATEGY,
+    seed: int,
+    runs: int = DEFAULT_BATCH_RUNS,
+    precision_target: float | None = None,
+    max_rounds: int = DEFAULT_MAX_ROUNDS,
+    image_url_for: Optional[Callable[[EnemyTemplate], str]] = None,
+) -> dict:
+    if runs < 1 or runs > MAX_BATCH_RUNS:
+        raise CombatSimError(f"runs must be between 1 and {MAX_BATCH_RUNS}")
+    run_cap = runs
+    required_runs = None
+    if precision_target is not None:
+        if precision_target <= 0:
+            raise CombatSimError("precision target must be > 0")
+        required_runs = runs_for_rerun_fluctuation(precision_target)
+        runs = min(run_cap, required_runs)
+
+    results: list[dict] = []
+    wins = {"A": 0, "B": 0, "draw": 0}
+    sums = defaultdict(float)
+    metric_values = {
+        "rounds": [],
+        "turns": [],
+        "attackActions": [],
+    }
+    team_sums = {
+        "A": defaultdict(float),
+        "B": defaultdict(float),
+    }
+    winner_remaining_total = 0.0
+    winner_remaining_count = 0
+
+    for run_index in range(runs):
+        run_seed = int(seed) + run_index
+        result = simulate_combat_once(
+            templates=templates,
+            decks=decks,
+            card_index=card_index,
+            team_a=team_a,
+            team_b=team_b,
+            strategy_a=strategy_a,
+            strategy_b=strategy_b,
+            seed=run_seed,
+            max_rounds=max_rounds,
+            image_url_for=image_url_for,
+        )
+        results.append(result)
+        winner = result["winner"]
+        wins[winner] = wins.get(winner, 0) + 1
+        sums["rounds"] += result["rounds"]
+        sums["turns"] += result["turns"]
+        sums["attackActions"] += result["attackActions"]
+        metric_values["rounds"].append(result["rounds"])
+        metric_values["turns"].append(result["turns"])
+        metric_values["attackActions"].append(result["attackActions"])
+        for team in ("A", "B"):
+            totals = result["teamTotals"][team]
+            team_sums[team]["damageDealt"] += totals["damageDealt"]
+            team_sums[team]["damagePrevented"] += totals["damagePrevented"]
+            team_sums[team]["unitsLost"] += totals["unitsLost"]
+            team_sums[team]["remainingToughness"] += totals["remainingToughness"]
+        if winner in ("A", "B"):
+            winner_remaining_total += result["teamTotals"][winner]["remainingToughness"]
+            winner_remaining_count += 1
+
+    return {
+        "seed": int(seed),
+        "runs": runs,
+        "runCap": run_cap,
+        "requiredRunsForTarget": required_runs,
+        "summary": {
+            "wins": wins,
+            "winRates": {key: _ratio(value, runs) for key, value in wins.items()},
+            "avgRounds": _ratio(sums["rounds"], runs),
+            "avgTurns": _ratio(sums["turns"], runs),
+            "avgAttackActions": _ratio(sums["attackActions"], runs),
+            "metricStats": {key: _metric_stats(values) for key, values in metric_values.items()},
+            "avgWinnerRemainingToughness": (
+                _ratio(winner_remaining_total, winner_remaining_count) if winner_remaining_count else None
+            ),
+            "teamAverages": {
+                team: {
+                    "damageDealt": _ratio(values["damageDealt"], runs),
+                    "damagePrevented": _ratio(values["damagePrevented"], runs),
+                    "unitsLost": _ratio(values["unitsLost"], runs),
+                    "remainingToughness": _ratio(values["remainingToughness"], runs),
+                }
+                for team, values in team_sums.items()
+            },
+            "precision": _precision_summary(
+                wins=wins,
+                runs=runs,
+                run_cap=run_cap,
+                required_runs=required_runs,
+                precision_target=precision_target,
+            ),
+        },
+        "lastCombat": results[-1],
+    }
+
+
+def runs_for_rerun_fluctuation(target: float) -> int:
+    """
+    Conservative run count for a 95% rerun-to-rerun winrate fluctuation target.
+
+    target is a fraction, so 0.05 means +/- 5 percentage points.
+    The worst case for a Bernoulli winrate is p=0.5.
+    """
+    if target <= 0:
+        raise CombatSimError("precision target must be > 0")
+    return max(1, math.ceil((Z_95 * Z_95 * 0.5) / (target * target)))
+
+
+def _normalize_team(entries: Iterable[dict | TeamEntry], *, label: str) -> list[TeamEntry]:
+    normalized: list[TeamEntry] = []
+    for raw in entries or []:
+        if isinstance(raw, TeamEntry):
+            entry = raw
+        else:
+            entry = TeamEntry(
+                template_id=str(raw.get("templateId") or raw.get("template_id") or "").strip(),
+                count=int(raw.get("count", 1)),
+            )
+        if not entry.template_id:
+            raise CombatSimError(f"{label}: templateId is required")
+        if entry.count <= 0:
+            raise CombatSimError(f"{label}: count must be > 0")
+        if entry.count > 20:
+            raise CombatSimError(f"{label}: count must be <= 20")
+        normalized.append(entry)
+    if not normalized:
+        raise CombatSimError(f"{label} must contain at least one creature")
+    return normalized
+
+
+def _validate_strategy(strategy: str) -> None:
+    if strategy not in TARGET_STRATEGIES:
+        raise CombatSimError(f"Unknown target strategy '{strategy}'")
+
+
+def _spawn_units(
+    templates: dict[str, EnemyTemplate],
+    decks: dict[str, Deck],
+    entries_a: list[TeamEntry],
+    entries_b: list[TeamEntry],
+    *,
+    rng: random.Random,
+) -> list[SimUnit]:
+    units: list[SimUnit] = []
+    template_counts: dict[tuple[str, str], int] = defaultdict(int)
+
+    for team, entries in (("A", entries_a), ("B", entries_b)):
+        for entry in entries:
+            template = templates.get(entry.template_id)
+            if template is None:
+                raise CombatSimError(f"Unknown template '{entry.template_id}'")
+            if not getattr(template, "spawnable", True):
+                raise CombatSimError(f"Template '{template.name}' is not spawnable")
+            for _ in range(entry.count):
+                template_counts[(team, template.id)] += 1
+                copy_index = template_counts[(team, template.id)]
+                entity = spawn_enemy(template, decks, rnd=rng)
+                entity.instance_id = f"{team}-{len(units) + 1}"
+                entity.name = f"{template.name} {copy_index}"
+                units.append(SimUnit(entity=entity, team=team, template=template, order_index=len(units)))
+    return units
+
+
+def _roll_initiative(units: list[SimUnit], *, rng: random.Random) -> list[SimUnit]:
+    for unit in units:
+        roll = rng.randint(1, 6)
+        modifier = int(getattr(unit.entity, "initiative_modifier", 0))
+        unit.entity.initiative_roll = roll
+        unit.entity.initiative_total = roll + modifier
+        unit.entity.initiative_mode = "normal"
+    return sorted(
+        units,
+        key=lambda unit: (
+            -(unit.entity.initiative_total or 0),
+            -int(getattr(unit.entity, "initiative_modifier", 0)),
+            unit.order_index,
+        ),
+    )
+
+
+def _run_unit_turn(
+    state: SimState,
+    unit: SimUnit,
+    round_number: int,
+    *,
+    image_url_for: Optional[Callable[[EnemyTemplate], str]],
+) -> None:
+    entity = unit.entity
+    state.turns += 1
+    turn_number = state.turns
+    before = _serialize_units(state.units, card_index=state.card_index, image_url_for=image_url_for)
+    lines: list[str] = [f"Round {round_number}, Turn {turn_number}: {entity.name}"]
+    actions: list[dict] = []
+
+    start_log = start_turn(entity)
+    if start_log.dot_damage:
+        lines.append(f"{entity.name} takes {start_log.dot_damage} DOT.")
+    if _is_down(entity):
+        lines.append(f"{entity.name} is down before drawing.")
+        end_turn(entity)
+        state.log.extend(lines)
+        state.timeline.append(_turn_payload(round_number, turn_number, unit, before, state, lines, actions, image_url_for))
+        return
+
+    draw_count = _draw_count_for(entity)
+    draw_result = draw_cards(entity, draw_count, rnd=state.rng)
+    draw_resolution = _resolve_draw_effects(state, entity, draw_result.drawn)
+    drawn_text = [_card_text(state.card_index, card_id) for card_id in draw_resolution["cardIds"]]
+    if drawn_text:
+        suffix_parts = []
+        if draw_resolution["guardAdded"]:
+            suffix_parts.append(f"+{draw_resolution['guardAdded']} guard")
+        if draw_resolution["extraDrawn"]:
+            suffix_parts.append(f"+{draw_resolution['extraDrawn']} draw")
+        suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
+        lines.append(f"{entity.name} draws: {', '.join(drawn_text)}{suffix}.")
+    else:
+        lines.append(f"{entity.name} draws no cards.")
+
+    for card_id in list(entity.deck_state.hand):
+        card = state.card_index.get(card_id)
+        if not card:
+            continue
+        for effect in card.effects:
+            if effect.type == "attack":
+                target_unit = _choose_target(state, unit)
+                if target_unit is None:
+                    continue
+                action = _apply_attack_effect(state, unit, target_unit, card, effect)
+                actions.append(action)
+                lines.extend(action["log"])
+            elif effect.type in {"guard", "draw"}:
+                continue
+            else:
+                text = _effect_label(effect)
+                actions.append({"type": "ignored", "card": card.title or card.id, "effect": text})
+                lines.append(f"{entity.name} ignores {text} for simulation.")
+
+    end_turn(entity)
+    if getattr(entity, "pending_reshuffle", False):
+        _reshuffle_enemy_deck_at_end(entity, state.rng)
+        lines.append(f"{entity.name} reshuffles their deck.")
+
+    state.log.extend(lines)
+    state.timeline.append(_turn_payload(round_number, turn_number, unit, before, state, lines, actions, image_url_for))
+
+
+def _turn_payload(
+    round_number: int,
+    turn_number: int,
+    unit: SimUnit,
+    before: list[dict],
+    state: SimState,
+    lines: list[str],
+    actions: list[dict],
+    image_url_for: Optional[Callable[[EnemyTemplate], str]],
+) -> dict:
+    return {
+        "round": round_number,
+        "turn": turn_number,
+        "actorId": unit.entity.instance_id,
+        "actorName": unit.entity.name,
+        "team": unit.team,
+        "beforeUnits": before,
+        "units": _serialize_units(state.units, card_index=state.card_index, image_url_for=image_url_for),
+        "draw": [_card_text(state.card_index, card_id) for card_id in unit.entity.deck_state.hand],
+        "actions": actions,
+        "log": list(lines),
+    }
+
+
+def _draw_count_for(entity: EnemyInstance) -> int:
+    draws = int(getattr(entity, "power_base", 0))
+    if "paralyzed" in getattr(entity, "statuses", {}):
+        draws -= 1
+    return max(0, draws)
+
+
+def _resolve_draw_effects(state: SimState, entity: EnemyInstance, card_ids: list[str]) -> dict:
+    resolved = list(card_ids)
+    pending = list(card_ids)
+    guard_added = 0
+    extra_drawn = 0
+
+    while pending:
+        card_id = pending.pop(0)
+        card = state.card_index.get(card_id)
+        if not card:
+            continue
+        if card.reshuffle:
+            entity.pending_reshuffle = True
+        for effect in card.effects:
+            if effect.type == "guard":
+                apply_heal(entity, guard=int(effect.amount))
+                guard_added += int(effect.amount)
+            elif effect.type == "draw":
+                result = draw_additional_cards(entity, max(0, int(effect.amount)), rnd=state.rng)
+                if result.drawn:
+                    resolved.extend(result.drawn)
+                    pending.extend(result.drawn)
+                    extra_drawn += len(result.drawn)
+
+    return {"cardIds": resolved, "guardAdded": guard_added, "extraDrawn": extra_drawn}
+
+
+def _apply_attack_effect(state: SimState, attacker: SimUnit, target: SimUnit, card: Card, effect) -> dict:
+    modifiers = _normalize_modifiers(effect.modifiers)
+    before_toughness = target.entity.toughness_current
+    log: CombatLog = apply_attack(target.entity, int(effect.amount), mods=modifiers)
+    state.attack_actions += 1
+    state.team_totals[attacker.team]["damageDealt"] += log.damage_to_hp
+    state.team_totals[target.team]["damagePrevented"] += log.guarded_total
+    label = _attack_label(effect.amount, modifiers)
+    lines = [
+        f"{attacker.entity.name} targets {target.entity.name} with {label}.",
+        (
+            f"{target.entity.name}: {log.input_damage} in, {log.damage_to_hp} to Toughness, "
+            f"T {before_toughness}->{target.entity.toughness_current}, "
+            f"G {log.guard_before}->{log.guard_after}, AR {log.armor_before}->{log.armor_after}."
+        ),
+    ]
+    if log.applied_statuses:
+        lines.append(f"{target.entity.name} gains {', '.join(log.applied_statuses)}.")
+    if _is_down(target.entity):
+        lines.append(f"{target.entity.name} is down.")
+    return {
+        "type": "attack",
+        "cardId": card.id,
+        "cardTitle": card.title or card.id,
+        "attackerId": attacker.entity.instance_id,
+        "attackerName": attacker.entity.name,
+        "targetId": target.entity.instance_id,
+        "targetName": target.entity.name,
+        "damage": int(effect.amount),
+        "modifiers": modifiers,
+        "damageToToughness": log.damage_to_hp,
+        "damagePrevented": log.guarded_total,
+        "targetToughnessBefore": before_toughness,
+        "targetToughnessAfter": target.entity.toughness_current,
+        "log": lines,
+    }
+
+
+def _choose_target(state: SimState, attacker: SimUnit) -> Optional[SimUnit]:
+    candidates = [unit for unit in state.units if unit.team != attacker.team and not _is_down(unit.entity)]
+    if not candidates:
+        return None
+    strategy = state.strategy_by_team.get(attacker.team, DEFAULT_TARGET_STRATEGY)
+
+    if strategy == "full_random":
+        return state.rng.choice(candidates)
+
+    if strategy == "random_focus":
+        focused_id = state.focus_by_team.get(attacker.team)
+        focused = next((unit for unit in candidates if unit.entity.instance_id == focused_id), None)
+        if focused is not None:
+            return focused
+        target = state.rng.choice(candidates)
+        state.focus_by_team[attacker.team] = target.entity.instance_id
+        return target
+
+    if strategy == "lowest_toughness":
+        return min(candidates, key=lambda unit: (unit.entity.toughness_current, unit.entity.toughness_max, unit.order_index))
+
+    if strategy == "highest_tl":
+        return max(
+            candidates,
+            key=lambda unit: (
+                int(getattr(unit.template, "threat_level", 0) or 0),
+                unit.entity.toughness_max,
+                unit.entity.toughness_current,
+                -unit.order_index,
+            ),
+        )
+
+    return max(candidates, key=lambda unit: (unit.entity.toughness_max, unit.entity.toughness_current, -unit.order_index))
+
+
+def _winner(units: list[SimUnit]) -> Optional[str]:
+    alive_teams = {unit.team for unit in units if not _is_down(unit.entity)}
+    if len(alive_teams) == 1:
+        return next(iter(alive_teams))
+    if len(alive_teams) == 0:
+        return "draw"
+    return None
+
+
+def _finalize_team_totals(state: SimState, units: list[SimUnit]) -> None:
+    for team in ("A", "B"):
+        team_units = [unit for unit in units if unit.team == team]
+        state.team_totals[team]["unitsLost"] = sum(1 for unit in team_units if _is_down(unit.entity))
+        state.team_totals[team]["remainingToughness"] = sum(
+            max(0, int(unit.entity.toughness_current)) for unit in team_units if not _is_down(unit.entity)
+        )
+        state.team_totals[team]["units"] = len(team_units)
+
+
+def _empty_team_totals() -> dict:
+    return {
+        "damageDealt": 0,
+        "damagePrevented": 0,
+        "unitsLost": 0,
+        "remainingToughness": 0,
+        "units": 0,
+    }
+
+
+def _precision_summary(
+    *,
+    wins: dict[str, int],
+    runs: int,
+    run_cap: int,
+    required_runs: int | None,
+    precision_target: float | None,
+) -> dict:
+    outcomes = {
+        key: _winrate_stats(count, runs)
+        for key, count in wins.items()
+    }
+    worst_case_rerun = _worst_case_rerun_fluctuation(runs)
+    target_met = precision_target is not None and worst_case_rerun <= precision_target
+    cap_reached_before_target = (
+        precision_target is not None
+        and required_runs is not None
+        and run_cap < required_runs
+    )
+    if precision_target is None:
+        verdict = "Fixed runs"
+    elif target_met:
+        verdict = "Target met"
+    elif cap_reached_before_target:
+        verdict = "Cap reached before target"
+    else:
+        verdict = "Precision target not met"
+    return {
+        "confidenceLevel": 0.95,
+        "targetRerunFluctuation": precision_target,
+        "worstCaseRerunFluctuation95": worst_case_rerun,
+        "requiredRunsForTarget": required_runs,
+        "runCap": run_cap,
+        "targetMet": target_met,
+        "capReachedBeforeTarget": cap_reached_before_target,
+        "verdict": verdict,
+        "outcomes": outcomes,
+        "runsForRerunFluctuation": {
+            "10pct": runs_for_rerun_fluctuation(0.10),
+            "5pct": runs_for_rerun_fluctuation(0.05),
+            "3pct": runs_for_rerun_fluctuation(0.03),
+            "1pct": runs_for_rerun_fluctuation(0.01),
+        },
+    }
+
+
+def _winrate_stats(wins: int, runs: int) -> dict:
+    p = wins / runs if runs else 0.0
+    variance = p * (1 - p)
+    std = math.sqrt(variance)
+    standard_error = math.sqrt(variance / runs) if runs else 0.0
+    ci_low, ci_high = _wilson_interval(wins, runs)
+    rerun_fluctuation = Z_95 * math.sqrt((2 * variance) / runs) if runs else 0.0
+    return {
+        "wins": wins,
+        "rate": round(p, 5),
+        "std": round(std, 5),
+        "standardError": round(standard_error, 5),
+        "ciLow": round(ci_low, 5),
+        "ciHigh": round(ci_high, 5),
+        "ciMargin": round((ci_high - ci_low) / 2, 5),
+        "rerunFluctuation95": round(rerun_fluctuation, 5),
+    }
+
+
+def _wilson_interval(wins: int, runs: int) -> tuple[float, float]:
+    if runs <= 0:
+        return (0.0, 0.0)
+    p = wins / runs
+    z2 = Z_95 * Z_95
+    denominator = 1 + z2 / runs
+    center = (p + z2 / (2 * runs)) / denominator
+    half_width = (
+        Z_95
+        * math.sqrt((p * (1 - p) / runs) + (z2 / (4 * runs * runs)))
+        / denominator
+    )
+    return (max(0.0, center - half_width), min(1.0, center + half_width))
+
+
+def _worst_case_rerun_fluctuation(runs: int) -> float:
+    if runs <= 0:
+        return 0.0
+    return Z_95 * math.sqrt(0.5 / runs)
+
+
+def _metric_stats(values: list[float]) -> dict:
+    count = len(values)
+    if count <= 0:
+        return {"mean": 0.0, "std": 0.0, "standardError": 0.0, "ciLow": 0.0, "ciHigh": 0.0}
+    mean = sum(values) / count
+    if count == 1:
+        std = 0.0
+    else:
+        std = math.sqrt(sum((value - mean) ** 2 for value in values) / (count - 1))
+    standard_error = std / math.sqrt(count) if count else 0.0
+    margin = Z_95 * standard_error
+    return {
+        "mean": round(mean, 3),
+        "std": round(std, 3),
+        "standardError": round(standard_error, 3),
+        "ciLow": round(mean - margin, 3),
+        "ciHigh": round(mean + margin, 3),
+    }
+
+
+def _serialize_units(
+    units: list[SimUnit],
+    *,
+    card_index: dict[str, Card],
+    image_url_for: Optional[Callable[[EnemyTemplate], str]],
+) -> list[dict]:
+    return [_serialize_unit(unit, card_index=card_index, image_url_for=image_url_for) for unit in units]
+
+
+def _serialize_unit(
+    unit: SimUnit,
+    *,
+    card_index: dict[str, Card],
+    image_url_for: Optional[Callable[[EnemyTemplate], str]],
+) -> dict:
+    entity = unit.entity
+    deck_state = entity.deck_state
+    roll = entity.initiative_roll
+    modifier = int(getattr(entity, "initiative_modifier", 0))
+    total = entity.initiative_total
+    image_url = image_url_for(unit.template) if image_url_for else None
+    return {
+        "id": entity.instance_id,
+        "team": unit.team,
+        "name": entity.name,
+        "templateId": unit.template.id,
+        "imageUrl": image_url,
+        "threatLevel": getattr(unit.template, "threat_level", None),
+        "toughnessCurrent": entity.toughness_current,
+        "toughnessMax": entity.toughness_max,
+        "armorCurrent": entity.armor_current,
+        "armorMax": entity.armor_max,
+        "magicArmorCurrent": entity.magic_armor_current,
+        "magicArmorMax": entity.magic_armor_max,
+        "guardCurrent": entity.guard_current,
+        "guardBase": int(getattr(entity, "guard_base", 0)),
+        "power": int(getattr(entity, "power_base", 0)),
+        "initiativeRoll": roll,
+        "initiativeModifier": modifier,
+        "initiativeTotal": total,
+        "initiativeText": f"Init {total} ({roll}+{modifier})" if roll is not None and total is not None else "Init -",
+        "statuses": dict(getattr(entity, "statuses", {}) or {}),
+        "statusText": _status_text(entity),
+        "currentDraw": [_card_text(card_index, card_id) for card_id in deck_state.hand],
+        "deckCounts": {
+            "draw": len(deck_state.draw_pile),
+            "hand": len(deck_state.hand),
+            "discard": len(deck_state.discard_pile),
+        },
+        "isDown": _is_down(entity),
+    }
+
+
+def _status_text(entity: EnemyInstance) -> str:
+    statuses = getattr(entity, "statuses", {}) or {}
+    if not statuses:
+        return "-"
+    parts = []
+    for key, value in sorted(statuses.items()):
+        stacks = value.get("stacks") if isinstance(value, dict) else None
+        parts.append(f"{key} {stacks}" if stacks else key)
+    return ", ".join(parts)
+
+
+def _card_text(card_index: dict[str, Card], card_id: str) -> str:
+    card = card_index.get(card_id)
+    if not card:
+        return card_id
+    if card.action_text:
+        return card.action_text
+    parts = [_effect_label(effect) for effect in card.effects]
+    return " + ".join(parts) if parts else (card.title or card.id)
+
+
+def _effect_label(effect) -> str:
+    if effect.type == "attack":
+        modifiers = _normalize_modifiers(effect.modifiers)
+        return _attack_label(effect.amount, modifiers)
+    if effect.type == "guard":
+        return f"Guard {effect.amount}"
+    if effect.type == "draw":
+        return f"Draw {effect.amount}"
+    if effect.type == "disengage":
+        return f"Disengage {effect.amount}"
+    return str(effect.type)
+
+
+def _attack_label(amount: int, modifiers: list[str]) -> str:
+    if modifiers:
+        return f"Attack {amount} ({', '.join(_format_modifier(modifier) for modifier in modifiers)})"
+    return f"Attack {amount}"
+
+
+def _normalize_modifiers(modifiers: Iterable[str]) -> list[AttackMod]:
+    result: list[AttackMod] = []
+    for modifier in modifiers or []:
+        text = str(modifier).strip().lower()
+        if not text:
+            continue
+        if text in {"magic pierce", "magic-pierce"}:
+            text = "magic_pierce"
+        if text in {"paralyze", "paralyse"}:
+            text = "paralyse"
+        if text not in result:
+            result.append(text)
+    return result
+
+
+def _format_modifier(modifier: str) -> str:
+    if modifier.startswith("pierce:"):
+        return f"pierce {modifier.split(':', 1)[1]}"
+    return modifier
+
+
+def _initiative_label(entity: EnemyInstance) -> str:
+    roll = entity.initiative_roll
+    modifier = int(getattr(entity, "initiative_modifier", 0))
+    total = entity.initiative_total
+    return f"{entity.name} Init {total} ({roll}+{modifier})"
+
+
+def _is_down(entity: EnemyInstance) -> bool:
+    return int(getattr(entity, "toughness_current", 0)) <= 0
+
+
+def _reshuffle_enemy_deck_at_end(entity: EnemyInstance, rng: random.Random) -> None:
+    deck_state = entity.deck_state
+    cards = list(deck_state.draw_pile) + list(deck_state.discard_pile) + list(deck_state.hand)
+    deck_state.draw_pile = cards
+    deck_state.discard_pile.clear()
+    deck_state.hand.clear()
+    rng.shuffle(deck_state.draw_pile)
+    entity.pending_reshuffle = False
+
+
+def _ratio(value: float, total: int) -> float:
+    if not total:
+        return 0.0
+    return round(float(value) / float(total), 3)

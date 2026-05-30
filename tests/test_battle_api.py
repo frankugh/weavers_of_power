@@ -853,6 +853,111 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("Cannot roll initiative", response.json()["detail"])
 
+    def test_combat_sim_single_endpoint_returns_timeline_and_stats(self) -> None:
+        response = self.client.post(
+            "/api/combat-sim/simulate",
+            json={
+                "teamA": [{"templateId": "C_GOBLIN", "count": 1}],
+                "teamB": [{"templateId": "C_WOLF", "count": 1}],
+                "strategyA": "highest_toughness",
+                "strategyB": "highest_toughness",
+                "seed": 123,
+                "runs": 1,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["mode"], "single")
+        result = payload["result"]
+        self.assertEqual(result["seed"], 123)
+        self.assertIn(result["winner"], {"A", "B", "draw"})
+        self.assertGreaterEqual(result["rounds"], 1)
+        self.assertGreaterEqual(len(result["initialUnits"]), 2)
+        self.assertGreaterEqual(len(result["finalUnits"]), 2)
+        self.assertGreaterEqual(len(result["timeline"]), 1)
+        self.assertIn("initiativeText", result["initialUnits"][0])
+        self.assertIn("teamTotals", result)
+
+    def test_combat_sim_batch_endpoint_returns_aggregate_and_last_combat(self) -> None:
+        response = self.client.post(
+            "/api/combat-sim/simulate",
+            json={
+                "teamA": [{"templateId": "C_GOBLIN", "count": 2}],
+                "teamB": [{"templateId": "C_WOLF", "count": 1}],
+                "strategy": "highest_toughness",
+                "seed": 200,
+                "runs": 4,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["mode"], "batch")
+        result = payload["result"]
+        self.assertEqual(result["seed"], 200)
+        self.assertEqual(result["runs"], 4)
+        self.assertEqual(result["lastCombat"]["seed"], 203)
+        self.assertEqual(sum(result["summary"]["wins"].values()), 4)
+        self.assertIn("avgRounds", result["summary"])
+        self.assertIn("teamAverages", result["summary"])
+
+    def test_combat_sim_batch_precision_endpoint_uses_cap_and_reports_ci(self) -> None:
+        response = self.client.post(
+            "/api/combat-sim/simulate",
+            json={
+                "teamA": [{"templateId": "C_GOBLIN", "count": 1}],
+                "teamB": [{"templateId": "C_WOLF", "count": 1}],
+                "strategy": "highest_toughness",
+                "seed": 300,
+                "runs": 10,
+                "precisionTargetPercent": 50,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        result = response.json()["result"]
+        self.assertLessEqual(result["runs"], 10)
+        precision = result["summary"]["precision"]
+        self.assertEqual(precision["targetRerunFluctuation"], 0.5)
+        self.assertIn("worstCaseRerunFluctuation95", precision)
+        self.assertIn("ciLow", precision["outcomes"]["A"])
+        self.assertIn("std", precision["outcomes"]["A"])
+
+    def test_combat_sim_endpoint_rejects_invalid_input(self) -> None:
+        bad_template = self.client.post(
+            "/api/combat-sim/simulate",
+            json={
+                "teamA": [{"templateId": "missing", "count": 1}],
+                "teamB": [{"templateId": "C_WOLF", "count": 1}],
+                "runs": 1,
+            },
+        )
+        self.assertEqual(bad_template.status_code, 400)
+        self.assertIn("Unknown template", bad_template.json()["detail"])
+
+        bad_count = self.client.post(
+            "/api/combat-sim/simulate",
+            json={
+                "teamA": [{"templateId": "C_GOBLIN", "count": 0}],
+                "teamB": [{"templateId": "C_WOLF", "count": 1}],
+                "runs": 1,
+            },
+        )
+        self.assertEqual(bad_count.status_code, 400)
+        self.assertIn("count", bad_count.json()["detail"])
+
+        bad_runs = self.client.post(
+            "/api/combat-sim/simulate",
+            json={
+                "teamA": [{"templateId": "C_GOBLIN", "count": 1}],
+                "teamB": [{"templateId": "C_WOLF", "count": 1}],
+                "runs": 1001,
+            },
+        )
+        self.assertEqual(bad_runs.status_code, 400)
+        self.assertIn("runs", bad_runs.json()["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()
