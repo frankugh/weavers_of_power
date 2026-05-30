@@ -53,7 +53,7 @@ class CustomEnemyRequest(BaseModel):
     toughness: int = Field(default=10, ge=1)
     armor: int = Field(default=0, ge=0)
     magicArmor: int = Field(default=0, ge=0)
-    power: int = Field(default=1, ge=0)
+    draw: int = Field(default=1, ge=0)
     movement: int = Field(default=6, ge=0)
     coreDeckId: str
 
@@ -177,7 +177,7 @@ class CombatSimStatOverridesRequest(BaseModel):
     armor: Optional[int] = None
     magicArmor: Optional[int] = None
     baseGuard: Optional[int] = None
-    power: Optional[int] = None
+    draw: Optional[int] = None
     movement: Optional[int] = None
     initiativeModifier: Optional[int] = None
     threatLevel: Optional[int] = None
@@ -277,7 +277,7 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def combat_simulate(request: CombatSimRequest):
         strategy_a = request.strategyA or request.strategy or DEFAULT_TARGET_STRATEGY
         strategy_b = request.strategyB or request.strategy or DEFAULT_TARGET_STRATEGY
-        base_seed = request.seed if request.seed is not None else random.randint(1, 2_000_000_000)
+        base_seed = request.seed if (request.seed is not None and request.seed > 0) else random.randint(1, 2_000_000_000)
 
         try:
             _validate_combat_sim_request(request, strategy_a, strategy_b, context)
@@ -342,7 +342,7 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
                     toughness=request.custom.toughness,
                     armor=request.custom.armor,
                     magic_armor=request.custom.magicArmor,
-                    power=request.custom.power,
+                    power=request.custom.draw,
                     movement=request.custom.movement,
                     core_deck_id=request.custom.coreDeckId,
                 )

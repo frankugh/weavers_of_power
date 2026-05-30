@@ -54,7 +54,7 @@ const COMBAT_SIM_STAT_FIELDS = [
   { key: "armor", label: "AR", min: 0 },
   { key: "magicArmor", label: "MAR", min: 0 },
   { key: "baseGuard", label: "G", min: 0 },
-  { key: "power", label: "PWR", min: 0 },
+  { key: "draw", label: "Draw", min: 0 },
   { key: "movement", label: "Move", min: 0 },
 ];
 const COMBAT_SIM_SKILL_FIELDS = [
@@ -654,7 +654,7 @@ function App() {
     toughness: 10,
     armor: 0,
     magicArmor: 0,
-    power: 1,
+    draw: 1,
     movement: 6,
     coreDeckId: "",
   });
@@ -3019,7 +3019,7 @@ function App() {
                       <strong>{selectedEntity.guard_current}</strong>
                     </span>
                     <span className="unit-stat-chip" title="Number of cards the unit draws at the start of its turn.">
-                      <span>Power</span>
+                      <span>Draw</span>
                       <strong>{selectedEntity.power_base}</strong>
                     </span>
                     <span className="unit-stat-chip unit-stat-move" title="Maximum distance the unit can move in a turn. Doubled when using a Dash action.">
@@ -3893,12 +3893,12 @@ function App() {
                     />
                   </label>
                   <label className="field">
-                    <span>Power</span>
+                    <span>Draw</span>
                     <input
                       type="number"
                       min="0"
-                      value={customForm.power}
-                      onChange={(event) => setCustomForm((current) => ({ ...current, power: Number(event.target.value) }))}
+                      value={customForm.draw}
+                      onChange={(event) => setCustomForm((current) => ({ ...current, draw: Number(event.target.value) }))}
                     />
                   </label>
                   <label className="field">
@@ -4825,6 +4825,8 @@ function CombatSimView({ meta, onMetaUpdate }) {
       });
       setSimResult(payload);
       setTurnIndex(0);
+      const usedSeed = payload.result?.seed ?? payload.lastCombat?.seed;
+      if (usedSeed != null) setSeed(String(usedSeed));
     } catch (requestError) {
       setSimError(requestError.message);
     } finally {
@@ -5519,7 +5521,7 @@ function CombatSimUnitTable({ title, units, activeActorId = null }) {
               <span>AR {unit.armorCurrent}/{unit.armorMax}</span>
               <span>MAR {unit.magicArmorCurrent}/{unit.magicArmorMax}</span>
               <span>G {unit.guardCurrent}/{unit.guardBase}</span>
-              <span>PWR {unit.power}</span>
+              <span>Draw {unit.draw}</span>
               <span>{unit.initiativeText}</span>
             </div>
             <div className="combat-unit-footer">

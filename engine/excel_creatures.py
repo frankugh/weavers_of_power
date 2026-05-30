@@ -152,7 +152,8 @@ def _template_from_row(
     blockers: list[str] = []
     warnings: list[str] = []
 
-    power = _required_positive_int(row, "Power", blockers)
+    draw_raw = row.get("Draw") or row.get("Power")  # "Power" accepted as legacy column name
+    power = _required_positive_int({"Draw": draw_raw}, "Draw", blockers)
     toughness = _required_positive_int(row, "Toughness", blockers)
     movement = _required_positive_int(row, "Move", blockers)
     armor = _required_non_negative_int(row, "Armor", blockers)
@@ -406,7 +407,7 @@ def _parse_action_effects(body: str) -> tuple[tuple[Effect, ...], tuple[str, ...
         effects.append(Effect(type="attack", amount=int(attack.group(1)), modifiers=modifiers))
         simplified = simplified[:attack.start()] + simplified[attack.end():]
 
-    for guard in re.finditer(r"\bgain\s+(\d+)\s+guard\b", body, flags=re.I):
+    for guard in re.finditer(r"\bgains?\s+(\d+)\s+guard\b", body, flags=re.I):
         effects.append(Effect(type="guard", amount=int(guard.group(1))))
         simplified = simplified.replace(guard.group(0), "")
 

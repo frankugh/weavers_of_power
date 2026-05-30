@@ -24,7 +24,7 @@ class CreatureWorkbookSaveError(ValueError):
 
 
 STAT_COLUMN_MAP = {
-    "power": "Power",
+    "draw": "Draw",
     "toughness": "Toughness",
     "magicArmor": "Magic_Armor",
     "armor": "Armor",
@@ -34,7 +34,7 @@ STAT_COLUMN_MAP = {
 }
 
 STAT_MINIMUMS = {
-    "power": 1,
+    "draw": 1,
     "toughness": 1,
     "magicArmor": 0,
     "armor": 0,

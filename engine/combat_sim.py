@@ -353,7 +353,7 @@ STAT_OVERRIDE_MINIMUMS = {
     "armor": 0,
     "magicArmor": 0,
     "baseGuard": 0,
-    "power": 0,
+    "draw": 0,
     "movement": 0,
     "initiativeModifier": 0,
     "threatLevel": 0,
@@ -509,8 +509,8 @@ def _apply_stat_overrides(template: EnemyTemplate, overrides: dict[str, int]) ->
         changes["magicArmor"] = RangeInt(overrides["magicArmor"], overrides["magicArmor"])
     if "baseGuard" in overrides:
         changes["baseGuard"] = RangeInt(overrides["baseGuard"], overrides["baseGuard"])
-    if "power" in overrides:
-        changes["draws"] = overrides["power"]
+    if "draw" in overrides:
+        changes["draws"] = overrides["draw"]
     if "movement" in overrides:
         changes["movement"] = overrides["movement"]
     if "initiativeModifier" in overrides:
@@ -1055,7 +1055,7 @@ def _serialize_unit(
         "magicArmorMax": entity.magic_armor_max,
         "guardCurrent": entity.guard_current,
         "guardBase": int(getattr(entity, "guard_base", 0)),
-        "power": int(getattr(entity, "power_base", 0)),
+        "draw": int(getattr(entity, "power_base", 0)),
         "initiativeRoll": roll,
         "initiativeModifier": modifier,
         "initiativeTotal": total,

@@ -326,7 +326,7 @@ class BattleSessionContext:
             "armor": range_payload(template.armor),
             "magicArmor": range_payload(template.magicArmor),
             "baseGuard": range_payload(template.baseGuard),
-            "power": int(template.draws),
+            "draw": int(template.draws),
             "movement": int(template.movement),
             "initiativeModifier": int(template.initiative_modifier),
             "threatLevel": getattr(template, "threat_level", None),

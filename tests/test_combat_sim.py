@@ -123,7 +123,7 @@ class CombatSimTests(unittest.TestCase):
                 {
                     "templateId": "attacker",
                     "count": 1,
-                    "overrides": {"statOverrides": {"toughness": 4, "armor": 2, "power": 0}},
+                    "overrides": {"statOverrides": {"toughness": 4, "armor": 2, "draw": 0}},
                 }
             ],
             team_b=[{"templateId": "target", "count": 1}],
@@ -134,7 +134,7 @@ class CombatSimTests(unittest.TestCase):
         attacker = next(unit for unit in result["initialUnits"] if unit["templateId"] == "attacker")
         self.assertEqual(attacker["toughnessMax"], 4)
         self.assertEqual(attacker["armorMax"], 2)
-        self.assertEqual(attacker["power"], 0)
+        self.assertEqual(attacker["draw"], 0)
         self.assertEqual(templates["attacker"].hp.min, 10)
         self.assertEqual(templates["attacker"].armor.min, 0)
 
