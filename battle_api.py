@@ -68,6 +68,7 @@ class AddPlayerRequest(BaseModel):
     movement: int = Field(default=6, ge=0)
     baseGuard: int = Field(default=1, ge=0)
     initiativeModifier: int = Field(default=2, ge=0)
+    physicalCards: bool = False
 
 
 class AddEnemyRequest(BaseModel):
@@ -93,6 +94,15 @@ class HelpRequest(BaseModel):
 
 class RemoveWoundRequest(BaseModel):
     confirmDeck: bool = False
+
+
+class AdjustWoundRequest(BaseModel):
+    delta: int = Field(default=0)
+
+
+class PlayerCardModeRequest(BaseModel):
+    physicalCards: bool = False
+    deckReset: bool = False
 
 
 class AttackRequest(BaseModel):
@@ -370,6 +380,7 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
                 base_guard=request.baseGuard,
                 initiative_modifier=request.initiativeModifier,
                 player_deck_id=request.playerDeckId,
+                physical_cards=request.physicalCards,
             ),
         )
 
@@ -406,6 +417,21 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/wounds/remove")
     def remove_player_wound(sid: str, instance_id: str, request: RemoveWoundRequest):
         return run_mutation(sid, lambda session: session.remove_player_wound(instance_id, confirm_deck=request.confirmDeck))
+
+    @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/wounds/adjust")
+    def adjust_player_wounds(sid: str, instance_id: str, request: AdjustWoundRequest):
+        return run_mutation(sid, lambda session: session.adjust_physical_wounds(instance_id, delta=request.delta))
+
+    @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/player-card-mode")
+    def set_player_card_mode(sid: str, instance_id: str, request: PlayerCardModeRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.set_player_card_mode(
+                instance_id,
+                physical_cards=request.physicalCards,
+                deck_reset=request.deckReset,
+            ),
+        )
 
     @api_app.post("/api/battle/sessions/{sid}/turn/draw")
     def draw_turn(sid: str):

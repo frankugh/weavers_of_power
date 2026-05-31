@@ -1295,6 +1295,136 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(player.draw_bonus_pending, 0)  # consumed by draw
         self.assertEqual(len(player.deck_state.hand), 2)  # base 1 + 1 bonus
 
+    def test_prepare_bonus_applies_next_turn_and_expires_unused(self) -> None:
+        session = self.context.create_session("prepare-expires")
+        session.add_player(name="Mira", power=1)
+        player = session.state.enemies[session.selected_id]
+
+        session.prepare_pc()
+
+        self.assertEqual(player.draw_bonus_pending, 0)
+        self.assertEqual(player.draw_bonus_next_turn, 1)
+
+        session.start_encounter()
+
+        self.assertEqual(player.draw_bonus_pending, 1)
+        self.assertEqual(player.draw_bonus_next_turn, 0)
+
+        session.next_turn()
+
+        self.assertEqual(player.draw_bonus_pending, 0)
+        self.assertIn("unused draw bonus expires", " ".join(session.combat_log))
+
+    def test_prepare_bonus_is_consumed_by_digital_draw_of_power(self) -> None:
+        session = self.context.create_session("prepare-consumed")
+        session.add_player(name="Mira", power=1)
+        player = session.state.enemies[session.selected_id]
+        player.deck_state.draw_pile = ["hf_martial_success_2", "hf_elemental_success_2a"]
+        player.deck_state.discard_pile = []
+        player.deck_state.hand = []
+
+        session.prepare_pc()
+        session.start_encounter()
+        session.draw_turn()
+
+        self.assertEqual(player.draw_bonus_pending, 0)
+        self.assertEqual(player.draw_bonus_next_turn, 0)
+        self.assertEqual(len(player.deck_state.hand), 2)
+
+    def test_physical_player_damage_tracks_wound_total_without_cards(self) -> None:
+        session = self.context.create_session("physical-player-wounds")
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0, power=1, movement=5, physical_cards=True)
+        player = session.state.enemies[session.selected_id]
+        player.toughness_current = 3
+
+        result = session.apply_attack_to_selected(
+            damage=9,
+            modifiers=[],
+            add_burn=False,
+            add_poison=False,
+            add_slow=False,
+            add_paralyze=False,
+        )
+
+        self.assertEqual(player.toughness_current, 4)
+        self.assertEqual(player.deck_state.hand, [])
+        self.assertEqual(player.physical_wounds, 2)
+        self.assertEqual(result["woundEvents"][0]["wounds"], 2)
+        payload = session.snapshot()["enemies"][0]
+        self.assertTrue(payload["physical_cards"])
+        self.assertEqual(payload["wound_counts"], {"hand": 0, "discard": 0, "draw_pile": 0, "total": 2})
+
+    def test_physical_players_do_not_use_digital_draw_or_wound_location_actions(self) -> None:
+        session = self.context.create_session("physical-player-actions")
+        session.add_player(name="Mira", power=1, physical_cards=True)
+        player_id = session.selected_id
+        player = session.state.enemies[player_id]
+
+        with self.assertRaisesRegex(ValueError, "outside the app"):
+            session.draw_turn()
+        with self.assertRaisesRegex(ValueError, "outside the app"):
+            session.draw_exact_turn(1)
+
+        session.active_turn_id = player_id
+        session.turn_in_progress = True
+        player.power_draw_used = True
+        with self.assertRaisesRegex(ValueError, "outside the app"):
+            session.redraw_turn()
+
+        with self.assertRaisesRegex(ValueError, "wound locations"):
+            session.discard_player_wound(player_id)
+        with self.assertRaisesRegex(ValueError, "wounds in hand"):
+            session.shed_wound()
+
+    def test_physical_wound_adjust_and_mode_conversion(self) -> None:
+        session = self.context.create_session("physical-wound-adjust")
+        session.add_player(name="Mira", power=1)
+        player_id = session.selected_id
+        player = session.state.enemies[player_id]
+        player.deck_state.hand = [WOUND_CARD_ID]
+        player.deck_state.discard_pile = [WOUND_CARD_ID]
+        player.deck_state.draw_pile = [WOUND_CARD_ID, "hf_martial_success_2"]
+
+        session.set_player_card_mode(player_id, physical_cards=True)
+
+        self.assertTrue(player.physical_cards)
+        self.assertEqual(player.physical_wounds, 3)
+        self.assertEqual(player.deck_state.hand, [])
+        self.assertEqual(player.deck_state.discard_pile, [])
+        self.assertEqual(player.deck_state.draw_pile, ["hf_martial_success_2"])
+
+        session.adjust_physical_wounds(player_id, delta=2)
+        session.adjust_physical_wounds(player_id, delta=-1)
+        self.assertEqual(player.physical_wounds, 4)
+
+        with self.assertRaisesRegex(ValueError, "negative wounds"):
+            session.adjust_physical_wounds(player_id, delta=-5)
+        with self.assertRaisesRegex(ValueError, "requires a deck reset confirmation"):
+            session.set_player_card_mode(player_id, physical_cards=False)
+
+        session.set_player_card_mode(player_id, physical_cards=False, deck_reset=True)
+        self.assertFalse(player.physical_cards)
+        self.assertEqual(player.physical_wounds, 0)
+        self.assertEqual(player.deck_state.hand, [])
+        self.assertEqual(player.deck_state.discard_pile, [])
+        self.assertEqual(player.deck_state.draw_pile.count(WOUND_CARD_ID), 4)
+        self.assertEqual(session._player_wound_counts(player), {"hand": 0, "discard": 0, "draw_pile": 4, "total": 4})
+
+    def test_physical_player_state_persists(self) -> None:
+        session = self.context.create_session("physical-persist")
+        session.add_player(name="Mira", power=1, physical_cards=True)
+        player = session.state.enemies[session.selected_id]
+        player.physical_wounds = 2
+        player.draw_bonus_next_turn = 1
+        session.autosave()
+
+        loaded = self.context.load_session("physical-persist")
+        loaded_player = loaded.state.enemies[player.instance_id]
+
+        self.assertTrue(loaded_player.physical_cards)
+        self.assertEqual(loaded_player.physical_wounds, 2)
+        self.assertEqual(loaded_player.draw_bonus_next_turn, 1)
+
     def test_player_wound_actions_discard_remove_and_confirm_deck_removal(self) -> None:
         session = self.context.create_session("player-wound-actions")
         session.add_player(name="Mira", power=4)

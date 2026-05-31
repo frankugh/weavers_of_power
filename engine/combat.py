@@ -72,6 +72,7 @@ def apply_attack(
     mods: Optional[Iterable[AttackMod]] = None,
     *,
     reset_toughness_on_deplete: bool = False,
+    add_wound_cards: bool = True,
 ) -> CombatLog:
     """
     Apply incoming damage to an enemy, taking guard/armor/magic armor into account.
@@ -88,6 +89,7 @@ def apply_attack(
       - magic_pierce: ignore all magic armor reduction
       - paralyse: marks a status
       - reset_toughness_on_deplete: players gain wounds and reset Toughness instead of going down
+      - add_wound_cards: add generated wounds to the digital player hand
     """
     if damage < 0:
         raise ValueError("damage must be >= 0")
@@ -152,7 +154,7 @@ def apply_attack(
     wounds_added = 0
     if reset_toughness_on_deplete:
         wounds_added = _apply_toughness_damage_with_resets(enemy, dmg_to_hp)
-        if wounds_added:
+        if wounds_added and add_wound_cards:
             enemy.deck_state.hand.extend([WOUND_CARD_ID] * wounds_added)
     else:
         enemy.toughness_current = max(0, toughness_b - dmg_to_hp)

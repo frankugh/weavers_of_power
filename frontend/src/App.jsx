@@ -670,6 +670,7 @@ function App() {
     movement: 6,
     baseGuard: 1,
     initiativeModifier: 2,
+    physicalCards: false,
   });
   const [initiativeModes, setInitiativeModes] = useState({});
   const [initiativeOpenReason, setInitiativeOpenReason] = useState("manual");
@@ -905,6 +906,7 @@ function App() {
   const activeDetachedEntity =
     activeEntity && activeEntity.instance_id !== selectedEntity?.instance_id ? activeEntity : null;
   const isPlayerSelected = Boolean(selectedEntity?.is_player);
+  const selectedUsesPhysicalCards = Boolean(isPlayerSelected && selectedEntity?.physical_cards);
   const selectedIsDown = Boolean(selectedEntity?.is_down);
   const selectedIsKo = Boolean(selectedEntity?.is_ko);
   const selectedPowerDrawUsed = Boolean(selectedEntity?.power_draw_used);
@@ -995,9 +997,10 @@ function App() {
     selectedEntity &&
       !selectedIsDown &&
       selectedIsActive &&
+      !selectedUsesPhysicalCards &&
       (isPlayerSelected ? !selectedPowerDrawUsed : !snapshot.turnInProgress),
   );
-  const canDrawExact = Boolean(selectedEntity && isPlayerSelected && !selectedIsDown && selectedIsActive);
+  const canDrawExact = Boolean(selectedEntity && isPlayerSelected && !selectedUsesPhysicalCards && !selectedIsDown && selectedIsActive);
   const playerActionsUsed = (selectedEntity?.actions_used ?? 0) + (snapshot?.movementState?.dashUsed ? 1 : 0);
   const pcEntitiesInRange = isPlayerSelected && selectedEntity?.grid_x != null
     ? orderedEnemies.filter(
@@ -1054,15 +1057,17 @@ function App() {
       return dist <= 1;
     });
   }, [dungeon?.secretSuspects, dungeon?.rooms, isPlayerSelected, selectedIsDown, selectedEntity?.grid_x, selectedEntity?.grid_y, selectedEntity?.instance_id, snapshot?.activeTurnId]);
-  const canShed = isPlayerSelected && !selectedIsDown && (selectedEntity?.wounds_in_hand ?? 0) > 0;
+  const canShed = isPlayerSelected && !selectedUsesPhysicalCards && !selectedIsDown && (selectedEntity?.wounds_in_hand ?? 0) > 0;
   const canRedraw = Boolean(
     selectedEntity &&
       !selectedIsDown &&
+      !selectedUsesPhysicalCards &&
       snapshot.turnInProgress &&
       snapshot?.activeTurnId === selectedEntity.instance_id,
   ) && (!isPlayerSelected || selectedPowerDrawUsed);
-  const canDiscardWound = Boolean(isPlayerSelected && Number(selectedWoundCounts.hand) > 0);
-  const canRemoveWound = Boolean(isPlayerSelected && Number(selectedWoundCounts.total) > 0);
+  const canDiscardWound = Boolean(isPlayerSelected && !selectedUsesPhysicalCards && Number(selectedWoundCounts.hand) > 0);
+  const canRemoveWound = Boolean(isPlayerSelected && !selectedUsesPhysicalCards && Number(selectedWoundCounts.total) > 0);
+  const canAdjustPhysicalWounds = Boolean(isPlayerSelected && selectedUsesPhysicalCards);
   const removeWoundNeedsDeckConfirm = Boolean(
     isPlayerSelected &&
       Number(selectedWoundCounts.hand) === 0 &&
@@ -1086,7 +1091,7 @@ function App() {
   );
   const selectedStatuses = Object.entries(selectedEntity?.statuses || {});
   const selectedDrawGroups = [...drawGroupsForEntity(selectedEntity)].reverse();
-  const selectedHasDraw = selectedDrawGroups.length > 0;
+  const selectedHasDraw = !selectedUsesPhysicalCards && selectedDrawGroups.length > 0;
   const selectedHasLoot = Boolean(selectedEntity?.loot_rolled);
   const canOpenActionMore = Boolean(canRedraw || canAttackOrHeal || canRollLoot || canReposition || canDisengage || canHelp);
   const sessionHasHistory = Boolean(snapshot?.canUndo || snapshot?.canRedo || snapshot?.undoDepth || snapshot?.redoDepth);
@@ -2113,6 +2118,37 @@ function App() {
     }
   }
 
+  async function handleAdjustPhysicalWounds(delta) {
+    if (!selectedEntity) return;
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/entities/${selectedEntity.instance_id}/wounds/adjust`,
+      {
+        method: "POST",
+        body: JSON.stringify({ delta }),
+      },
+      delta > 0 ? "Wound added" : "Wound removed",
+    );
+  }
+
+  async function handleSetPlayerCardMode(physicalCards, { deckReset = false } = {}) {
+    if (!selectedEntity) return;
+    if (!physicalCards && selectedUsesPhysicalCards && Number(selectedWoundCounts.total) > 0 && !deckReset) {
+      setModal("digital-card-reset-confirm");
+      return;
+    }
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/entities/${selectedEntity.instance_id}/player-card-mode`,
+      {
+        method: "POST",
+        body: JSON.stringify({ physicalCards, deckReset }),
+      },
+      physicalCards ? "Physical cards enabled" : deckReset ? "Digital cards enabled with deck reset" : "Digital cards enabled",
+    );
+    if (payload && modal === "digital-card-reset-confirm") {
+      closeModal();
+    }
+  }
+
   async function handleSaveSubmit(event) {
     event.preventDefault();
     const payload = await applySnapshotRequest(
@@ -2305,7 +2341,7 @@ function App() {
       ) : (
       <main className="main-grid">
         <section className="stage-column">
-          {isPlayerSelected && selectedIsActive && selectedPowerDrawUsed && selectedEntity.power_draw_cards?.length > 0 ? (
+          {isPlayerSelected && !selectedUsesPhysicalCards && selectedIsActive && selectedPowerDrawUsed && selectedEntity.power_draw_cards?.length > 0 ? (
             <PowerEnergyBar
               entity={selectedEntity}
               summary={selectedEntity.current_draw_groups?.[0]?.summary ?? selectedEntity.current_draw_summary ?? null}
@@ -2589,16 +2625,18 @@ function App() {
 
                 <div className="action-controls">
                   <div className="action-buttons">
-                <button
-                  className="primary-button"
-                  onClick={() => {
-                    setActionMenuOpen(false);
-                    handleDraw();
-                  }}
-                  disabled={!canDraw || busy}
-                >
-                  Draw
-                </button>
+                {!selectedUsesPhysicalCards ? (
+                  <button
+                    className="primary-button"
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      handleDraw();
+                    }}
+                    disabled={!canDraw || busy}
+                  >
+                    Draw
+                  </button>
+                ) : null}
                 {canDrawExact && (
                   <button
                     className="secondary-button"
@@ -2619,9 +2657,14 @@ function App() {
                       withActionCheck(handlePrepare);
                     }}
                     disabled={busy}
-                    title={`Draw bonus pending: ${selectedEntity?.draw_bonus_pending ?? 0}/3`}
+                    title={`Current turn draw bonus: ${selectedEntity?.draw_bonus_pending ?? 0}/3; next turn: ${selectedEntity?.draw_bonus_next_turn ?? 0}/3`}
                   >
-                    Prepare{selectedEntity?.draw_bonus_pending > 0 ? ` (+${selectedEntity.draw_bonus_pending})` : ""}
+                    Prepare
+                    {selectedEntity?.draw_bonus_next_turn > 0
+                      ? ` (+${selectedEntity.draw_bonus_next_turn} next)`
+                      : selectedEntity?.draw_bonus_pending > 0
+                        ? ` (ready +${selectedEntity.draw_bonus_pending})`
+                        : ""}
                   </button>
                 )}
                 {isPlayerSelected && !selectedIsDown && (
@@ -2767,18 +2810,20 @@ function App() {
                     >
                       Reposition unit
                     </button>
-                    <button
-                      className="secondary-button action-more-item"
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setActionMenuOpen(false);
-                        handleRedraw();
-                      }}
-                      disabled={!canRedraw || busy}
-                    >
-                      Redraw
-                    </button>
+                    {!selectedUsesPhysicalCards ? (
+                      <button
+                        className="secondary-button action-more-item"
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setActionMenuOpen(false);
+                          handleRedraw();
+                        }}
+                        disabled={!canRedraw || busy}
+                      >
+                        Redraw
+                      </button>
+                    ) : null}
                     <button
                       className="secondary-button action-more-item"
                       type="button"
@@ -2967,6 +3012,7 @@ function App() {
                         className="state-badge-compact"
                       />
                       {selectedEntity.is_player ? <span className="badge">Player</span> : <span className="badge badge-enemy">Enemy</span>}
+                      {selectedUsesPhysicalCards ? <span className="badge badge-status">Physical cards</span> : null}
                       {selectedEntity.is_down ? <span className="badge badge-down">{selectedIsKo ? "KO" : "Down"}</span> : null}
                     </div>
                     <div className="selected-meta-row">
@@ -2991,7 +3037,7 @@ function App() {
                     ) : null}
                   </div>
 
-                  {isPlayerSelected && selectedPowerDrawUsed && selectedEntity.power_draw_cards?.length > 0 ? (
+                  {isPlayerSelected && !selectedUsesPhysicalCards && selectedPowerDrawUsed && selectedEntity.power_draw_cards?.length > 0 ? (
                     <DopHandPanel
                       cards={selectedEntity.power_draw_cards}
                       summary={selectedEntity.current_draw_groups?.[0]?.summary ?? null}
@@ -3056,30 +3102,81 @@ function App() {
                   {selectedEntity.is_player ? (
                     <div className="unit-inspector-section wound-inspector" aria-label="Player wound counts">
                       <div className="selected-draw-label">Wounds</div>
-                      <div className="wound-count-grid">
-                        <LootBlock label="Hand" value={String(selectedWoundCounts.hand || 0)} />
-                        <LootBlock label="Total" value={String(selectedWoundCounts.total || 0)} />
-                        <LootBlock label="Discard" value={String(selectedWoundCounts.discard || 0)} />
-                        <LootBlock label="Deck" value={String(selectedWoundCounts.draw_pile || 0)} />
-                      </div>
-                      <div className="wound-action-row">
-                        <button
-                          className="secondary-button wound-action-button"
-                          type="button"
-                          onClick={handleDiscardWound}
-                          disabled={!canDiscardWound || busy}
-                        >
-                          Discard Wound
-                        </button>
-                        <button
-                          className="secondary-button wound-action-button"
-                          type="button"
-                          onClick={() => handleRemoveWound()}
-                          disabled={!canRemoveWound || busy}
-                        >
-                          Remove Wound
-                        </button>
-                      </div>
+                      {selectedUsesPhysicalCards ? (
+                        <>
+                          <div className="wound-count-grid wound-count-grid-physical">
+                            <LootBlock label="Total" value={String(selectedWoundCounts.total || 0)} />
+                          </div>
+                          <div className="wound-action-row">
+                            <button
+                              className="secondary-button wound-adjust-button"
+                              type="button"
+                              aria-label="Remove physical wound"
+                              onClick={() => handleAdjustPhysicalWounds(-1)}
+                              disabled={!canAdjustPhysicalWounds || Number(selectedWoundCounts.total) <= 0 || busy}
+                            >
+                              -
+                            </button>
+                            <button
+                              className="secondary-button wound-adjust-button"
+                              type="button"
+                              aria-label="Add physical wound"
+                              onClick={() => handleAdjustPhysicalWounds(1)}
+                              disabled={!canAdjustPhysicalWounds || busy}
+                            >
+                              +
+                            </button>
+                            <button
+                              className="secondary-button wound-action-button"
+                              type="button"
+                              onClick={() => handleSetPlayerCardMode(false)}
+                              disabled={busy}
+                            >
+                              Digital cards
+                            </button>
+                          </div>
+                          {Number(selectedWoundCounts.total) > 0 ? (
+                            <div className="subtle-copy wound-mode-note">
+                              Switching to digital cards will reset the digital deck and shuffle these wounds into it.
+                            </div>
+                          ) : null}
+                        </>
+                      ) : (
+                        <>
+                          <div className="wound-count-grid">
+                            <LootBlock label="Hand" value={String(selectedWoundCounts.hand || 0)} />
+                            <LootBlock label="Total" value={String(selectedWoundCounts.total || 0)} />
+                            <LootBlock label="Discard" value={String(selectedWoundCounts.discard || 0)} />
+                            <LootBlock label="Deck" value={String(selectedWoundCounts.draw_pile || 0)} />
+                          </div>
+                          <div className="wound-action-row">
+                            <button
+                              className="secondary-button wound-action-button"
+                              type="button"
+                              onClick={handleDiscardWound}
+                              disabled={!canDiscardWound || busy}
+                            >
+                              Discard Wound
+                            </button>
+                            <button
+                              className="secondary-button wound-action-button"
+                              type="button"
+                              onClick={() => handleRemoveWound()}
+                              disabled={!canRemoveWound || busy}
+                            >
+                              Remove Wound
+                            </button>
+                            <button
+                              className="secondary-button wound-action-button"
+                              type="button"
+                              onClick={() => handleSetPlayerCardMode(true)}
+                              disabled={busy}
+                            >
+                              Physical cards
+                            </button>
+                          </div>
+                        </>
+                      )}
                     </div>
                   ) : null}
                   {!selectedEntity.is_player && selectedStatuses.length ? (
@@ -3629,6 +3726,35 @@ function App() {
       </ModalShell>
 
       <ModalShell
+        open={modal === "digital-card-reset-confirm" && Boolean(selectedEntity)}
+        title="Switch To Digital Cards"
+        subtitle="This resets the digital deck, then shuffles the tracked physical wounds into it."
+        onClose={closeModal}
+        closeOnOutsideClick={false}
+      >
+        <div className="panel-body modal-form">
+          <div className="subtle-copy">
+            {selectedEntity
+              ? `${selectedEntity.name} has ${selectedWoundCounts.total || 0} tracked wound${Number(selectedWoundCounts.total || 0) === 1 ? "" : "s"}.`
+              : ""}
+          </div>
+          <div className="modal-actions">
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => handleSetPlayerCardMode(false, { deckReset: true })}
+              disabled={busy}
+            >
+              Reset deck and switch
+            </button>
+            <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
         open={modal === "add"}
         title="Add Unit"
         onClose={closeModal}
@@ -3838,6 +3964,14 @@ function App() {
                         </option>
                       ))}
                     </select>
+                  </label>
+                  <label className={`toggle-field field-full ${pcForm.physicalCards ? "toggle-active" : ""}`.trim()}>
+                    <input
+                      type="checkbox"
+                      checked={pcForm.physicalCards}
+                      onChange={(event) => setPcForm((current) => ({ ...current, physicalCards: event.target.checked }))}
+                    />
+                    <span>Physical cards</span>
                   </label>
                   <label className="field">
                     <span>Toughness</span>
@@ -4407,7 +4541,7 @@ function App() {
       <ModalShell
         open={modal === "strengthen"}
         title="Strengthen"
-        subtitle={`+1 toughness per punt tot max toughness; overgebleven punten worden +1 draw bonus (max +3 totaal).${selectedEntity?.draw_bonus_pending > 0 ? ` Al ${selectedEntity.draw_bonus_pending} bonus in reserve.` : ""}`}
+        subtitle={`+1 toughness per punt tot max toughness; overgebleven punten worden +1 draw bonus (max +3 totaal).${selectedEntity?.draw_bonus_pending > 0 ? ` Nu +${selectedEntity.draw_bonus_pending} beschikbaar.` : ""}${selectedEntity?.draw_bonus_next_turn > 0 ? ` Volgende beurt +${selectedEntity.draw_bonus_next_turn}.` : ""}`}
         onClose={closeModal}
       >
         <div className="panel-body">

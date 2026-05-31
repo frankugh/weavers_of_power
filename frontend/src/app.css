@@ -2050,6 +2050,10 @@ button.draw-card:hover {
   gap: 5px;
 }
 
+.wound-count-grid-physical {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .wound-action-row {
   display: flex;
   flex-wrap: wrap;
@@ -2059,6 +2063,16 @@ button.draw-card:hover {
 .wound-action-button {
   flex: 1 1 110px;
   min-width: 0;
+}
+
+.wound-adjust-button {
+  flex: 0 0 42px;
+  min-width: 42px;
+  padding-inline: 0;
+}
+
+.wound-mode-note {
+  font-size: 0.72rem;
 }
 
 .log-list {

@@ -147,8 +147,11 @@ def enemy_to_dict(e: EnemyInstance) -> Dict[str, Any]:
     d.setdefault("draw_groups", getattr(e, "draw_groups", []))
     d.setdefault("pending_reshuffle", bool(getattr(e, "pending_reshuffle", False)))
     d.setdefault("draw_bonus_pending", int(getattr(e, "draw_bonus_pending", 0)))
+    d.setdefault("draw_bonus_next_turn", int(getattr(e, "draw_bonus_next_turn", 0)))
     d.setdefault("power_draw_used", bool(getattr(e, "power_draw_used", False)))
     d.setdefault("is_ko", bool(getattr(e, "is_ko", False)))
+    d.setdefault("physical_cards", bool(getattr(e, "physical_cards", False)))
+    d.setdefault("physical_wounds", int(getattr(e, "physical_wounds", 0)))
     d.setdefault("loot_rolled", getattr(e, "loot_rolled", False))
     d.setdefault("rolled_loot", getattr(e, "rolled_loot", None))
     d.setdefault("grid_x", getattr(e, "grid_x", None))
@@ -195,9 +198,12 @@ def enemy_from_dict(d: Dict[str, Any]) -> EnemyInstance:
         ],
         pending_reshuffle=bool(d.get("pending_reshuffle", False)),
         draw_bonus_pending=int(d.get("draw_bonus_pending", 0)),
+        draw_bonus_next_turn=int(d.get("draw_bonus_next_turn", 0)),
         actions_used=int(d.get("actions_used", 0)),
         power_draw_used=bool(d.get("power_draw_used", False)),
         is_ko=bool(d.get("is_ko", False)),
+        physical_cards=bool(d.get("physical_cards", False)),
+        physical_wounds=max(0, int(d.get("physical_wounds", 0) or 0)),
         statuses=dict(d.get("statuses", {})),
     )
 

@@ -121,6 +121,7 @@ def spawn_player(
     base_guard: int = HUMAN_FIGHTER_DEFAULTS["base_guard"],
     initiative_modifier: int = HUMAN_FIGHTER_DEFAULTS["initiative_modifier"],
     player_deck: Optional[Deck] = None,
+    physical_cards: bool = False,
     rnd: Optional[random.Random] = None,
 ) -> EnemyInstance:
     deck_state = DeckState(draw_pile=[], discard_pile=[], hand=[])
@@ -148,6 +149,8 @@ def spawn_player(
         core_deck_id=player_deck.id if player_deck is not None else None,
         initiative_modifier=initiative_modifier,
         deck_state=deck_state,
+        physical_cards=bool(physical_cards),
+        physical_wounds=0,
         statuses={},
     )
 
@@ -654,6 +657,7 @@ class BattleSession:
         base_guard: int = HUMAN_FIGHTER_DEFAULTS["base_guard"],
         initiative_modifier: int = HUMAN_FIGHTER_DEFAULTS["initiative_modifier"],
         player_deck_id: str = PLAYER_DECK_ID,
+        physical_cards: bool = False,
     ) -> None:
         deck_id = player_deck_id or PLAYER_DECK_ID
         player_deck = self.context.player_decks.get(deck_id)
@@ -670,6 +674,7 @@ class BattleSession:
             base_guard=max(0, int(base_guard)),
             initiative_modifier=max(0, int(initiative_modifier)),
             player_deck=player_deck,
+            physical_cards=physical_cards,
             rnd=self._rng,
         )
         self.state.add_enemy(instance)
@@ -2101,7 +2106,10 @@ class BattleSession:
             max(0, int(damage)),
             mods=effective_mods,
             reset_toughness_on_deplete=self.is_player(entity),
+            add_wound_cards=not self._uses_physical_cards(entity),
         )
+        if log.wounds_added and self._uses_physical_cards(entity):
+            self._add_physical_wounds(entity, log.wounds_added)
         if add_burn:
             self._add_status_stack(entity, "burn", 1)
         if add_poison:
@@ -2208,7 +2216,10 @@ class BattleSession:
                     effective_damage,
                     mods=list(step.modifiers),
                     reset_toughness_on_deplete=self.is_player(target),
+                    add_wound_cards=not self._uses_physical_cards(target),
                 )
+                if log.wounds_added and self._uses_physical_cards(target):
+                    self._add_physical_wounds(target, log.wounds_added)
                 wound_total += log.wounds_added
                 damage_to_toughness += log.damage_to_hp
                 for line in self._damage_grapples_held_by(target, log.damage_to_hp):
@@ -2288,6 +2299,8 @@ class BattleSession:
 
     def discard_player_wound(self, instance_id: str) -> None:
         entity = self._require_player_by_id(instance_id)
+        if self._uses_physical_cards(entity):
+            raise BattleSessionError("Physical-card players do not track wound locations.")
         deck_state = entity.deck_state
         try:
             deck_state.hand.remove(WOUND_CARD_ID)
@@ -2301,6 +2314,15 @@ class BattleSession:
 
     def remove_player_wound(self, instance_id: str, *, confirm_deck: bool = False) -> None:
         entity = self._require_player_by_id(instance_id)
+        if self._uses_physical_cards(entity):
+            current = max(0, int(getattr(entity, "physical_wounds", 0) or 0))
+            if current <= 0:
+                raise BattleSessionError(f"{entity.name} has no wounds to remove.")
+            entity.physical_wounds = current - 1
+            entity.is_ko = False
+            self._add_log(f"{entity.name} removes a physical wound ({current}->{entity.physical_wounds}).")
+            self.autosave()
+            return
         deck_state = entity.deck_state
         source = ""
 
@@ -2322,6 +2344,65 @@ class BattleSession:
         self._add_log(f"{entity.name} removes a wound from {source}.")
         self.autosave()
 
+    def adjust_physical_wounds(self, instance_id: str, *, delta: int) -> None:
+        entity = self._require_player_by_id(instance_id)
+        if not self._uses_physical_cards(entity):
+            raise BattleSessionError("Wound total adjustment is only available for physical-card players.")
+        current = max(0, int(getattr(entity, "physical_wounds", 0) or 0))
+        next_total = current + int(delta)
+        if next_total < 0:
+            raise BattleSessionError(f"{entity.name} cannot have negative wounds.")
+        entity.physical_wounds = next_total
+        entity.is_ko = False
+        self._add_log(f"{entity.name} physical wounds adjusted: {current}->{next_total}.")
+        self.autosave()
+
+    def _reset_player_deck_for_digital_cards(self, entity: EnemyInstance, *, wounds: int) -> None:
+        deck_id = getattr(entity, "core_deck_id", None) or PLAYER_DECK_ID
+        player_deck = self.context.player_decks.get(deck_id)
+        if player_deck is None:
+            raise BattleSessionError(f"Player deck '{deck_id}' is not loaded.")
+        card_ids = build_core_deck_ids(player_deck, rnd=self._rng)
+        card_ids.extend([WOUND_CARD_ID] * max(0, int(wounds)))
+        self._rng.shuffle(card_ids)
+        entity.deck_state = DeckState(draw_pile=card_ids, discard_pile=[], hand=[])
+        entity.pending_reshuffle = False
+        entity.power_draw_used = False
+        entity.quick_attack_used = False
+        entity.is_ko = False
+        self._set_visible_draw(entity, [])
+
+    def set_player_card_mode(self, instance_id: str, *, physical_cards: bool, deck_reset: bool = False) -> None:
+        entity = self._require_player_by_id(instance_id)
+        target_mode = bool(physical_cards)
+        if target_mode == self._uses_physical_cards(entity):
+            return
+
+        if target_mode:
+            converted_wounds = self._remove_digital_wounds(entity)
+            entity.physical_wounds = max(0, int(getattr(entity, "physical_wounds", 0) or 0)) + converted_wounds
+            entity.physical_cards = True
+            entity.is_ko = False
+            self._add_log(
+                f"{entity.name} switches to physical cards"
+                + (f" ({converted_wounds} wound{'s' if converted_wounds != 1 else ''} converted)." if converted_wounds else ".")
+            )
+        else:
+            physical_wounds = max(0, int(getattr(entity, "physical_wounds", 0) or 0))
+            if physical_wounds and not deck_reset:
+                raise BattleSessionError(
+                    "Switching from physical to digital cards with wounds requires a deck reset confirmation."
+                )
+            if deck_reset:
+                self._reset_player_deck_for_digital_cards(entity, wounds=physical_wounds)
+                entity.physical_wounds = 0
+            entity.physical_cards = False
+            self._add_log(
+                f"{entity.name} switches to digital cards"
+                + (f" with a deck reset ({physical_wounds} wound{'s' if physical_wounds != 1 else ''} shuffled in)." if deck_reset else ".")
+            )
+        self.autosave()
+
     def _charge_action(self, entity: EnemyInstance) -> None:
         entity.actions_used = getattr(entity, "actions_used", 0) + 1
 
@@ -2329,9 +2410,9 @@ class BattleSession:
         entity = self._require_selected_entity()
         if not self.is_player(entity):
             raise BattleSessionError("Prepare is only available for player characters.")
-        entity.draw_bonus_pending = min(3, entity.draw_bonus_pending + 1)
+        entity.draw_bonus_next_turn = min(3, int(getattr(entity, "draw_bonus_next_turn", 0) or 0) + 1)
         self._charge_action(entity)
-        self._add_log(f"{entity.name} prepares (+1 draw bonus, total pending: {entity.draw_bonus_pending})")
+        self._add_log(f"{entity.name} prepares (+1 draw bonus next turn, total: {entity.draw_bonus_next_turn})")
         self.autosave()
 
     def strengthen_pc(self, x: int) -> None:
@@ -2353,6 +2434,8 @@ class BattleSession:
         entity = self._require_selected_entity()
         if not self.is_player(entity):
             raise BattleSessionError("Shed is only available for player characters.")
+        if self._uses_physical_cards(entity):
+            raise BattleSessionError("Physical-card players do not track wounds in hand.")
         if WOUND_CARD_ID not in entity.deck_state.hand:
             raise BattleSessionError("No wounds in hand to shed.")
         entity.deck_state.hand.remove(WOUND_CARD_ID)
@@ -2386,9 +2469,9 @@ class BattleSession:
         dist = max(abs(helper.grid_x - target.grid_x), abs(helper.grid_y - target.grid_y))
         if dist > 1:
             raise BattleSessionError(f"{target.name} is not within 5ft.")
-        target.draw_bonus_pending = min(3, target.draw_bonus_pending + 2)
+        target.draw_bonus_next_turn = min(3, int(getattr(target, "draw_bonus_next_turn", 0) or 0) + 2)
         self._charge_action(helper)
-        self._add_log(f"{helper.name} helps {target.name} (+2 draw bonus).")
+        self._add_log(f"{helper.name} helps {target.name} (+2 draw bonus next turn).")
         self.autosave()
 
     def roll_loot_for_selected(self) -> None:
@@ -2916,7 +2999,33 @@ class BattleSession:
     def _wound_count(card_ids: list[str]) -> int:
         return sum(1 for card_id in card_ids if card_id == WOUND_CARD_ID)
 
+    def _uses_physical_cards(self, entity: EnemyInstance) -> bool:
+        return self.is_player(entity) and bool(getattr(entity, "physical_cards", False))
+
+    def _remove_digital_wounds(self, entity: EnemyInstance) -> int:
+        deck_state = entity.deck_state
+        removed = 0
+        for zone_name in ("hand", "discard_pile", "draw_pile"):
+            cards = list(getattr(deck_state, zone_name))
+            kept = [card_id for card_id in cards if card_id != WOUND_CARD_ID]
+            removed += len(cards) - len(kept)
+            setattr(deck_state, zone_name, kept)
+        return removed
+
+    def _add_physical_wounds(self, entity: EnemyInstance, wounds: int) -> None:
+        if wounds <= 0:
+            return
+        entity.physical_wounds = max(0, int(getattr(entity, "physical_wounds", 0) or 0)) + int(wounds)
+        entity.is_ko = False
+
     def _player_wound_counts(self, entity: EnemyInstance) -> dict[str, int]:
+        if self._uses_physical_cards(entity):
+            return {
+                "hand": 0,
+                "discard": 0,
+                "draw_pile": 0,
+                "total": max(0, int(getattr(entity, "physical_wounds", 0) or 0)),
+            }
         deck_state = entity.deck_state
         hand = self._wound_count(list(deck_state.hand))
         discard = self._wound_count(list(deck_state.discard_pile))
@@ -2938,7 +3047,9 @@ class BattleSession:
         return len(discarded)
 
     def _clear_player_ko_if_hand_is_clean(self, entity: EnemyInstance) -> None:
-        if self.is_player(entity) and self._player_wound_counts(entity)["hand"] == 0:
+        if self._uses_physical_cards(entity):
+            entity.is_ko = False
+        elif self.is_player(entity) and self._player_wound_counts(entity)["hand"] == 0:
             entity.is_ko = False
 
     def visible_draw_for(self, entity: EnemyInstance) -> list[str]:
@@ -2956,6 +3067,8 @@ class BattleSession:
         return [visible] if visible else []
 
     def _draw_player_turn(self, entity: EnemyInstance) -> None:
+        if self._uses_physical_cards(entity):
+            raise BattleSessionError("Physical-card players draw their cards outside the app.")
         if self.active_turn_id is None:
             self.active_turn_id = entity.instance_id
             self._start_turn(entity)
@@ -2963,12 +3076,6 @@ class BattleSession:
 
         if getattr(entity, "power_draw_used", False):
             raise BattleSessionError("This player has already used Draw of Power this turn. Use Redraw instead.")
-
-        # Strengthen overflow: temporary toughness expires at start of turn, grants +1 draw
-        if entity.toughness_current > entity.toughness_max:
-            entity.toughness_current = entity.toughness_max
-            entity.draw_bonus_pending = min(3, entity.draw_bonus_pending + 1)
-            self._add_log(f"{entity.name} temporary toughness expired; +1 draw bonus (pending: {entity.draw_bonus_pending})")
 
         bonus = min(entity.draw_bonus_pending, 3)
         entity.draw_bonus_pending = 0
@@ -3010,6 +3117,8 @@ class BattleSession:
         self.autosave()
 
     def _redraw_player_turn(self, entity: EnemyInstance) -> None:
+        if self._uses_physical_cards(entity):
+            raise BattleSessionError("Physical-card players draw their cards outside the app.")
         if self.active_turn_id is None or self.active_turn_id != entity.instance_id:
             raise BattleSessionError("Redraw applies only to the active player.")
         if not self.turn_in_progress or not getattr(entity, "power_draw_used", False):
@@ -3058,6 +3167,8 @@ class BattleSession:
             raise BattleSessionError("Down units cannot take a turn.")
         if not self.is_player(entity):
             raise BattleSessionError("Draw exact is only available for player characters.")
+        if self._uses_physical_cards(entity):
+            raise BattleSessionError("Physical-card players draw their cards outside the app.")
         if self.active_turn_id is not None and self.active_turn_id != entity.instance_id:
             raise BattleSessionError("Another unit has the active turn. End that turn first.")
         count = max(1, int(count))
@@ -3199,8 +3310,21 @@ class BattleSession:
             deck_state.discard_pile.extend(deck_state.hand)
             deck_state.hand.clear()
 
+    def _start_player_draw_bonus_window(self, entity: EnemyInstance) -> None:
+        next_turn_bonus = max(0, int(getattr(entity, "draw_bonus_next_turn", 0) or 0))
+        if next_turn_bonus:
+            entity.draw_bonus_pending = min(3, int(getattr(entity, "draw_bonus_pending", 0) or 0) + next_turn_bonus)
+            entity.draw_bonus_next_turn = 0
+            self._add_log(f"{entity.name} has +{next_turn_bonus} draw bonus available this turn.")
+
+        # Strengthen overflow: temporary toughness expires at start of the next turn and grants +1 draw.
+        if entity.toughness_current > entity.toughness_max:
+            entity.toughness_current = entity.toughness_max
+            entity.draw_bonus_pending = min(3, int(getattr(entity, "draw_bonus_pending", 0) or 0) + 1)
+            self._add_log(f"{entity.name} temporary toughness expired; +1 draw bonus available this turn.")
+
     def _start_turn(self, entity: EnemyInstance) -> None:
-        if self.is_player(entity):
+        if self.is_player(entity) and not self._uses_physical_cards(entity):
             deck_state = entity.deck_state
             wounds_in_hand = [card_id for card_id in deck_state.hand if card_id == WOUND_CARD_ID]
             deck_state.hand = [card_id for card_id in deck_state.hand if card_id != WOUND_CARD_ID]
@@ -3213,6 +3337,10 @@ class BattleSession:
         entity.quick_attack_used = False
         entity.power_draw_used = False
         entity.actions_used = 0
+        if self.is_player(entity):
+            self._start_player_draw_bonus_window(entity)
+            if self._uses_physical_cards(entity):
+                entity.is_ko = False
         if start_log.dot_damage:
             self._add_log(f"{entity.name} takes {start_log.dot_damage} DOT")
 
@@ -3226,6 +3354,10 @@ class BattleSession:
         self._add_log(f"Ended turn: {entity.name}")
 
     def _finish_player_turn(self, entity: EnemyInstance) -> None:
+        unused_bonus = max(0, int(getattr(entity, "draw_bonus_pending", 0) or 0))
+        if unused_bonus:
+            entity.draw_bonus_pending = 0
+            self._add_log(f"{entity.name}'s unused draw bonus expires.")
         end_turn(entity)
         if getattr(entity, "pending_reshuffle", False):
             self._reshuffle_player_deck_at_end(entity)
@@ -3474,8 +3606,11 @@ class BattleSession:
                 ),
                 "pending_reshuffle": bool(getattr(entity, "pending_reshuffle", False)),
                 "draw_bonus_pending": int(getattr(entity, "draw_bonus_pending", 0)),
+                "draw_bonus_next_turn": int(getattr(entity, "draw_bonus_next_turn", 0)),
                 "actions_used": int(getattr(entity, "actions_used", 0)),
-                "wounds_in_hand": entity.deck_state.hand.count(WOUND_CARD_ID) if self.is_player(entity) else 0,
+                "physical_cards": bool(getattr(entity, "physical_cards", False)) if self.is_player(entity) else False,
+                "physical_wounds": max(0, int(getattr(entity, "physical_wounds", 0) or 0)) if self.is_player(entity) else 0,
+                "wounds_in_hand": 0 if self._uses_physical_cards(entity) else entity.deck_state.hand.count(WOUND_CARD_ID) if self.is_player(entity) else 0,
                 "power_draw_used": bool(getattr(entity, "power_draw_used", False)),
                 "wound_counts": self._player_wound_counts(entity) if self.is_player(entity) else None,
                 "power_draw_cards": self._power_draw_cards_payload(entity) if self.is_player(entity) else None,
@@ -3706,6 +3841,8 @@ class BattleSession:
     @staticmethod
     def is_down(entity: EnemyInstance) -> bool:
         if BattleSession.is_player(entity):
+            if bool(getattr(entity, "physical_cards", False)):
+                return False
             return bool(getattr(entity, "is_ko", False))
         return int(getattr(entity, "toughness_current", 0)) <= 0
 

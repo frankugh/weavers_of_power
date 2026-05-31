@@ -478,6 +478,77 @@ class BattleApiTests(unittest.TestCase):
         player_payload = next(enemy for enemy in confirmed.json()["enemies"] if enemy["instance_id"] == player_id)
         self.assertEqual(player_payload["wound_counts"], {"hand": 0, "discard": 0, "draw_pile": 0, "total": 0})
 
+    def test_physical_player_cards_api_tracks_total_wounds_and_rejects_digital_draw(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        player_snapshot = self.client.post(
+            f"/api/battle/sessions/{sid}/players",
+            json={"name": "Mira", "toughness": 5, "armor": 0, "magicArmor": 0, "power": 1, "physicalCards": True},
+        ).json()
+        player_id = player_snapshot["selectedId"]
+        player_payload = next(enemy for enemy in player_snapshot["enemies"] if enemy["instance_id"] == player_id)
+        self.assertTrue(player_payload["physical_cards"])
+
+        attack_response = self.client.post(
+            f"/api/battle/sessions/{sid}/attack",
+            json={"damage": 11, "burn": False, "poison": False, "slow": False, "paralyze": False, "modifiers": []},
+        )
+
+        self.assertEqual(attack_response.status_code, 200)
+        player_payload = next(enemy for enemy in attack_response.json()["enemies"] if enemy["instance_id"] == player_id)
+        self.assertEqual(player_payload["wound_counts"], {"hand": 0, "discard": 0, "draw_pile": 0, "total": 2})
+
+        draw_response = self.client.post(f"/api/battle/sessions/{sid}/turn/draw")
+        self.assertEqual(draw_response.status_code, 400)
+        self.assertIn("outside the app", draw_response.json()["detail"])
+
+        adjusted = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{player_id}/wounds/adjust",
+            json={"delta": -1},
+        )
+        self.assertEqual(adjusted.status_code, 200)
+        player_payload = next(enemy for enemy in adjusted.json()["enemies"] if enemy["instance_id"] == player_id)
+        self.assertEqual(player_payload["wound_counts"]["total"], 1)
+
+    def test_player_card_mode_endpoint_converts_digital_wounds(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        player_snapshot = self.client.post(
+            f"/api/battle/sessions/{sid}/players",
+            json={"name": "Mira", "power": 1},
+        ).json()
+        player_id = player_snapshot["selectedId"]
+        session = self.context.load_session(sid)
+        player = session.state.enemies[player_id]
+        player.deck_state.hand = [WOUND_CARD_ID]
+        player.deck_state.discard_pile = [WOUND_CARD_ID]
+        player.deck_state.draw_pile = [WOUND_CARD_ID, "hf_martial_1_success"]
+        session.autosave()
+
+        converted = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{player_id}/player-card-mode",
+            json={"physicalCards": True},
+        )
+
+        self.assertEqual(converted.status_code, 200)
+        player_payload = next(enemy for enemy in converted.json()["enemies"] if enemy["instance_id"] == player_id)
+        self.assertTrue(player_payload["physical_cards"])
+        self.assertEqual(player_payload["wound_counts"], {"hand": 0, "discard": 0, "draw_pile": 0, "total": 3})
+
+        disabled = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{player_id}/player-card-mode",
+            json={"physicalCards": False},
+        )
+        self.assertEqual(disabled.status_code, 400)
+        self.assertIn("requires a deck reset confirmation", disabled.json()["detail"])
+
+        reset = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{player_id}/player-card-mode",
+            json={"physicalCards": False, "deckReset": True},
+        )
+        self.assertEqual(reset.status_code, 200)
+        player_payload = next(enemy for enemy in reset.json()["enemies"] if enemy["instance_id"] == player_id)
+        self.assertFalse(player_payload["physical_cards"])
+        self.assertEqual(player_payload["wound_counts"], {"hand": 0, "discard": 0, "draw_pile": 3, "total": 3})
+
     def test_player_wound_ko_is_reported_in_snapshot_and_clears_after_hand_wounds(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         player_snapshot = self.client.post(

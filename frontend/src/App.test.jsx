@@ -38,6 +38,10 @@ function buildEnemy(overrides = {}) {
     current_draw_attacks: [],
     quick_attack_used: false,
     power_draw_used: false,
+    draw_bonus_pending: 0,
+    draw_bonus_next_turn: 0,
+    physical_cards: false,
+    physical_wounds: 0,
     is_ko: false,
     wound_counts: null,
     last_draw_text: [],
@@ -1556,6 +1560,90 @@ describe("App", () => {
     });
   });
 
+  it("shows physical player wound total and hides digital card controls", async () => {
+    const user = userEvent.setup();
+    const playerModeCalls = [];
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      toughness_current: 4,
+      toughness_max: 4,
+      power_base: 4,
+      physical_cards: true,
+      physical_wounds: 2,
+      draw_bonus_next_turn: 1,
+      wound_counts: { hand: 0, discard: 0, draw_pile: 0, total: 2 },
+    });
+    const afterAdd = buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "player-1",
+      order: ["player-1"],
+      enemies: [{ ...player, physical_wounds: 3, wound_counts: { hand: 0, discard: 0, draw_pile: 0, total: 3 } }],
+    });
+    const afterReset = buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "player-1",
+      order: ["player-1"],
+      enemies: [{
+        ...player,
+        physical_cards: false,
+        physical_wounds: 0,
+        wound_counts: { hand: 0, discard: 0, draw_pile: 3, total: 3 },
+      }],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "player-1",
+        activeTurnId: "player-1",
+        order: ["player-1"],
+        enemies: [player],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/entities/player-1/wounds/adjust" && requestOptions?.method === "POST") {
+            return jsonResponse(afterAdd);
+          }
+          if (url === "/api/battle/sessions/sid-123/entities/player-1/player-card-mode" && requestOptions?.method === "POST") {
+            playerModeCalls.push(JSON.parse(requestOptions.body));
+            return jsonResponse(afterReset);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Mira");
+    expect(screen.getByText("Physical cards")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Draw" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Draw X" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Discard Wound" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Prepare (+1 next)" })).toBeInTheDocument();
+
+    const woundPanel = screen.getByLabelText("Player wound counts");
+    expect(within(woundPanel).getByText("Total").closest(".loot-block")).toHaveTextContent("2");
+    expect(within(woundPanel).queryByText("Hand")).not.toBeInTheDocument();
+    expect(within(woundPanel).getByText("Switching to digital cards will reset the digital deck and shuffle these wounds into it.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Add physical wound" }));
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/player-1/wounds/adjust",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ delta: 1 }) }),
+      );
+    });
+
+    await user.click(screen.getByRole("button", { name: "Digital cards" }));
+    expect(screen.getByText("Switch To Digital Cards")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Reset deck and switch" }));
+    await waitFor(() => {
+      expect(playerModeCalls[0]).toEqual({ physicalCards: false, deckReset: true });
+    });
+  });
+
   it("disables quick attack after it has been used for the current draw", async () => {
     const user = userEvent.setup();
     const attacker = buildEnemy({
@@ -2200,6 +2288,40 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(playerCalls[0]).toEqual(expect.objectContaining({ playerDeckId: "human_wizzard_lvl1" }));
+    });
+  });
+
+  it("submits physical card mode when adding a PC", async () => {
+    const user = userEvent.setup();
+    const playerCalls = [];
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/players" && requestOptions?.method === "POST") {
+          playerCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse(buildSnapshot({
+            selectedId: "player-1",
+            order: ["enemy-1", "player-1"],
+            enemies: [buildEnemy(), buildEnemy({
+              instance_id: "player-1",
+              template_id: "player",
+              name: "Player 1",
+              is_player: true,
+              physical_cards: true,
+            })],
+          }));
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await openAddUnitModal(user);
+    await user.click(screen.getByRole("tab", { name: "Player Character" }));
+    await user.click(screen.getByLabelText("Physical cards"));
+    await user.click(screen.getByRole("button", { name: "Add player character" }));
+
+    await waitFor(() => {
+      expect(playerCalls[0]).toEqual(expect.objectContaining({ physicalCards: true }));
     });
   });
 

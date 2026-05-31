@@ -104,9 +104,12 @@ class EnemyInstance:
     draw_groups: list[list[str]] = field(default_factory=list)
     pending_reshuffle: bool = False
     draw_bonus_pending: int = 0
+    draw_bonus_next_turn: int = 0
     actions_used: int = 0
     power_draw_used: bool = False
     is_ko: bool = False
+    physical_cards: bool = False
+    physical_wounds: int = 0
 
     statuses: dict[str, dict] = field(default_factory=dict)
 
