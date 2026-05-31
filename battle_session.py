@@ -2325,13 +2325,13 @@ class BattleSession:
     def _charge_action(self, entity: EnemyInstance) -> None:
         entity.actions_used = getattr(entity, "actions_used", 0) + 1
 
-    def channel_pc(self) -> None:
+    def prepare_pc(self) -> None:
         entity = self._require_selected_entity()
         if not self.is_player(entity):
-            raise BattleSessionError("Channel is only available for player characters.")
-        entity.draw_bonus_pending = min(3, entity.draw_bonus_pending + 2)
+            raise BattleSessionError("Prepare is only available for player characters.")
+        entity.draw_bonus_pending = min(3, entity.draw_bonus_pending + 1)
         self._charge_action(entity)
-        self._add_log(f"{entity.name} channels (+2 draw bonus, total pending: {entity.draw_bonus_pending})")
+        self._add_log(f"{entity.name} prepares (+1 draw bonus, total pending: {entity.draw_bonus_pending})")
         self.autosave()
 
     def strengthen_pc(self, x: int) -> None:
@@ -2339,17 +2339,13 @@ class BattleSession:
         if not self.is_player(entity):
             raise BattleSessionError("Strengthen is only available for player characters.")
         x = max(1, int(x))
-        before = entity.toughness_current
-        entity.toughness_current = min(entity.toughness_max, entity.toughness_current + x)
-        gained = entity.toughness_current - before
-        draw_bonus_gained = max(0, x - gained)
-        if draw_bonus_gained > 0:
-            entity.draw_bonus_pending = min(3, entity.draw_bonus_pending + draw_bonus_gained)
+        entity.toughness_current = entity.toughness_current + x
+        overflow = max(0, entity.toughness_current - entity.toughness_max)
         self._charge_action(entity)
         self._add_log(
-            f"{entity.name} strengthened: +{gained} toughness "
-            f"({entity.toughness_current}/{entity.toughness_max}), "
-            f"+{draw_bonus_gained} draw bonus, pending: {entity.draw_bonus_pending}"
+            f"{entity.name} strengthened: +{x} toughness "
+            f"({entity.toughness_current}/{entity.toughness_max})"
+            + (f", {overflow} temporary" if overflow else "")
         )
         self.autosave()
 
@@ -2967,6 +2963,12 @@ class BattleSession:
 
         if getattr(entity, "power_draw_used", False):
             raise BattleSessionError("This player has already used Draw of Power this turn. Use Redraw instead.")
+
+        # Strengthen overflow: temporary toughness expires at start of turn, grants +1 draw
+        if entity.toughness_current > entity.toughness_max:
+            entity.toughness_current = entity.toughness_max
+            entity.draw_bonus_pending = min(3, entity.draw_bonus_pending + 1)
+            self._add_log(f"{entity.name} temporary toughness expired; +1 draw bonus (pending: {entity.draw_bonus_pending})")
 
         bonus = min(entity.draw_bonus_pending, 3)
         entity.draw_bonus_pending = 0

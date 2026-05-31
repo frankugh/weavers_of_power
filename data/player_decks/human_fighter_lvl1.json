@@ -3,159 +3,179 @@
   "name": "Human Fighter Level 1",
   "cards": [
     {
-      "id": "hf_master_fate_reshuffle",
-      "title": "Master energy fate - reshuffle your deck",
+      "id": "hf_master_success_reshuffle",
+      "title": "Master energy 1 - success (reshuffle)",
       "energyType": "Master",
       "energyAmount": 1,
-      "outcome": "fate",
+      "outcome": "success",
       "reshuffle": true
     },
     {
-      "id": "hf_master_fate",
-      "title": "Master energy fate",
+      "id": "hf_master_fate_1",
+      "title": "Master energy 1 - fate",
       "energyType": "Master",
       "energyAmount": 1,
       "outcome": "fate"
     },
     {
-      "id": "hf_race_human_fate",
-      "title": "Race fate - Human: draw 2 cards",
-      "energyType": "Race",
-      "outcome": "fate",
-      "extraDraw": 2,
-      "instruction": "Human: draw 2 cards"
+      "id": "hf_master_fate_2",
+      "title": "Master energy 1 - fate",
+      "energyType": "Master",
+      "energyAmount": 1,
+      "outcome": "fate"
     },
     {
-      "id": "hf_class_fighter_fate",
-      "title": "Class fate - Fighter: draw 1 and perform a martial action as a free action",
+      "id": "hf_class_fighter",
+      "title": "Fighter's Resolve - Draw 1 card. Until the end of this turn, energy from cards in your hand that is not Martial may be used as Martial energy. Energy converted this way counts as value 1, regardless of its printed value.",
       "energyType": "Class",
       "outcome": "fate",
       "extraDraw": 1,
-      "instruction": "Fighter: perform a martial action as a free action"
+      "instruction": "Until the end of this turn, energy from cards in your hand that is not Martial may be used as Martial energy (value 1)."
     },
     {
-      "id": "hf_martial_2_success",
-      "title": "Martial 2 energy success",
-      "energyType": "Martial",
-      "energyAmount": 2,
-      "outcome": "success"
+      "id": "hf_ancestry_human",
+      "title": "Human Ancestry - Draw 2 cards.",
+      "energyType": "Ancestry",
+      "outcome": "fate",
+      "extraDraw": 2,
+      "instruction": "Draw 2 cards."
     },
     {
-      "id": "hf_martial_1_success",
-      "title": "Martial energy success",
-      "energyType": "Martial",
-      "energyAmount": 1,
-      "outcome": "success"
-    },
-    {
-      "id": "hf_martial_3_fate",
-      "title": "Martial 3 energy fate",
+      "id": "hf_martial_success_3",
+      "title": "Martial energy 3 - success",
       "energyType": "Martial",
       "energyAmount": 3,
+      "outcome": "success"
+    },
+    {
+      "id": "hf_martial_success_2",
+      "title": "Martial energy 2 - success",
+      "energyType": "Martial",
+      "energyAmount": 2,
+      "outcome": "success"
+    },
+    {
+      "id": "hf_martial_fate_1",
+      "title": "Martial energy 1 - fate",
+      "energyType": "Martial",
+      "energyAmount": 1,
       "outcome": "fate"
     },
     {
-      "id": "hf_martial_1_fail",
-      "title": "Martial energy fail",
+      "id": "hf_martial_fail_1a",
+      "title": "Martial energy 1 - fail",
       "energyType": "Martial",
       "energyAmount": 1,
       "outcome": "fail"
     },
     {
-      "id": "hf_martial_2_fail",
-      "title": "Martial 2 energy fail",
+      "id": "hf_martial_fail_1b",
+      "title": "Martial energy 1 - fail",
       "energyType": "Martial",
-      "energyAmount": 2,
+      "energyAmount": 1,
       "outcome": "fail"
     },
     {
-      "id": "hf_elemental_2_success",
-      "title": "Elemental 2 energy success",
+      "id": "hf_elemental_success_2a",
+      "title": "Elemental energy 2 - success",
       "energyType": "Elemental",
       "energyAmount": 2,
-      "outcome": "success",
-      "weight": 1
+      "outcome": "success"
     },
     {
-      "id": "hf_elemental_1_success",
-      "title": "Elemental energy success",
+      "id": "hf_elemental_success_2b",
+      "title": "Elemental energy 2 - success",
+      "energyType": "Elemental",
+      "energyAmount": 2,
+      "outcome": "success"
+    },
+    {
+      "id": "hf_elemental_fate_1",
+      "title": "Elemental energy 1 - fate",
       "energyType": "Elemental",
       "energyAmount": 1,
-      "outcome": "success",
-      "weight": 1
-    },
-    {
-      "id": "hf_elemental_2_fate",
-      "title": "Elemental 2 energy fate",
-      "energyType": "Elemental",
-      "energyAmount": 2,
       "outcome": "fate"
     },
     {
-      "id": "hf_elemental_1_fail",
-      "title": "Elemental energy fail",
+      "id": "hf_elemental_fail_1a",
+      "title": "Elemental energy 1 - fail",
       "energyType": "Elemental",
       "energyAmount": 1,
-      "outcome": "fail",
-      "weight": 2
+      "outcome": "fail"
     },
     {
-      "id": "hf_radiance_2_success",
-      "title": "Radiance 2 energy success",
-      "energyType": "Radiance",
-      "energyAmount": 2,
-      "outcome": "success",
-      "weight": 1
-    },
-    {
-      "id": "hf_radiance_1_success",
-      "title": "Radiance energy success",
-      "energyType": "Radiance",
+      "id": "hf_elemental_fail_1b",
+      "title": "Elemental energy 1 - fail",
+      "energyType": "Elemental",
       "energyAmount": 1,
-      "outcome": "success",
-      "weight": 1
+      "outcome": "fail"
     },
     {
-      "id": "hf_radiance_2_fate",
-      "title": "Radiance 2 energy fate",
-      "energyType": "Radiance",
+      "id": "hf_light_success_2a",
+      "title": "Light energy 2 - success",
+      "energyType": "Light",
       "energyAmount": 2,
+      "outcome": "success"
+    },
+    {
+      "id": "hf_light_success_2b",
+      "title": "Light energy 2 - success",
+      "energyType": "Light",
+      "energyAmount": 2,
+      "outcome": "success"
+    },
+    {
+      "id": "hf_light_fate_1",
+      "title": "Light energy 1 - fate",
+      "energyType": "Light",
+      "energyAmount": 1,
       "outcome": "fate"
     },
     {
-      "id": "hf_radiance_1_fail",
-      "title": "Radiance energy fail",
-      "energyType": "Radiance",
+      "id": "hf_light_fail_1a",
+      "title": "Light energy 1 - fail",
+      "energyType": "Light",
       "energyAmount": 1,
-      "outcome": "fail",
-      "weight": 2
+      "outcome": "fail"
     },
     {
-      "id": "hf_void_success",
-      "title": "Void success",
-      "energyType": "Void",
-      "energyAmount": 0,
-      "outcome": "success",
-      "weight": 3
+      "id": "hf_light_fail_1b",
+      "title": "Light energy 1 - fail",
+      "energyType": "Light",
+      "energyAmount": 1,
+      "outcome": "fail"
     },
     {
-      "id": "hf_void_success_reshuffle",
-      "title": "Void success - reshuffle your deck",
+      "id": "hf_void_success_1",
+      "title": "Void - success",
       "energyType": "Void",
       "energyAmount": 0,
-      "outcome": "success",
-      "reshuffle": true
+      "outcome": "success"
+    },
+    {
+      "id": "hf_void_success_2",
+      "title": "Void - success",
+      "energyType": "Void",
+      "energyAmount": 0,
+      "outcome": "success"
+    },
+    {
+      "id": "hf_void_success_3",
+      "title": "Void - success",
+      "energyType": "Void",
+      "energyAmount": 0,
+      "outcome": "success"
     },
     {
       "id": "hf_void_fate",
-      "title": "Void fate",
+      "title": "Void - fate",
       "energyType": "Void",
       "energyAmount": 0,
       "outcome": "fate"
     },
     {
       "id": "hf_void_fail_reshuffle",
-      "title": "Void fail - reshuffle your deck",
+      "title": "Void - fail (reshuffle)",
       "energyType": "Void",
       "energyAmount": 0,
       "outcome": "fail",
@@ -163,7 +183,7 @@
     },
     {
       "id": "hf_void_fail",
-      "title": "Void fail",
+      "title": "Void - fail",
       "energyType": "Void",
       "energyAmount": 0,
       "outcome": "fail"

@@ -415,9 +415,9 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def draw_exact_turn(sid: str, request: DrawExactRequest):
         return run_mutation(sid, lambda session: session.draw_exact_turn(request.count))
 
-    @api_app.post("/api/battle/sessions/{sid}/action/channel")
-    def channel_pc(sid: str):
-        return run_mutation(sid, lambda session: session.channel_pc())
+    @api_app.post("/api/battle/sessions/{sid}/action/prepare")
+    def prepare_pc(sid: str):
+        return run_mutation(sid, lambda session: session.prepare_pc())
 
     @api_app.post("/api/battle/sessions/{sid}/action/strengthen")
     def strengthen_pc(sid: str, request: StrengthenRequest):

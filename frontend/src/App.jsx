@@ -1831,11 +1831,11 @@ function App() {
     }
   }
 
-  async function handleChannel() {
+  async function handlePrepare() {
     await applySnapshotRequest(
-      `/api/battle/sessions/${snapshot.sid}/action/channel`,
+      `/api/battle/sessions/${snapshot.sid}/action/prepare`,
       { method: "POST" },
-      "Channeled",
+      "Prepared",
     );
   }
 
@@ -2616,12 +2616,12 @@ function App() {
                     className="secondary-button"
                     onClick={() => {
                       setActionMenuOpen(false);
-                      withActionCheck(handleChannel);
+                      withActionCheck(handlePrepare);
                     }}
                     disabled={busy}
                     title={`Draw bonus pending: ${selectedEntity?.draw_bonus_pending ?? 0}/3`}
                   >
-                    Channel{selectedEntity?.draw_bonus_pending > 0 ? ` (+${selectedEntity.draw_bonus_pending})` : ""}
+                    Prepare{selectedEntity?.draw_bonus_pending > 0 ? ` (+${selectedEntity.draw_bonus_pending})` : ""}
                   </button>
                 )}
                 {isPlayerSelected && !selectedIsDown && (

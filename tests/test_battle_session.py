@@ -1214,19 +1214,19 @@ class BattleSessionTests(unittest.TestCase):
         player.deck_state.hand = [WOUND_CARD_ID]
         player.deck_state.discard_pile = []
         player.deck_state.draw_pile = [
-            "hf_martial_1_success",
-            "hf_elemental_1_fail",
-            "hf_void_success",
-            "hf_radiance_1_success",
+            "hf_martial_success_2",
+            "hf_elemental_fail_1a",
+            "hf_void_success_1",
+            "hf_light_success_2a",
         ]
 
         session.draw_turn()
 
         self.assertEqual(
             player.deck_state.hand,
-            [WOUND_CARD_ID, "hf_martial_1_success", "hf_elemental_1_fail", "hf_void_success"],
+            [WOUND_CARD_ID, "hf_martial_success_2", "hf_elemental_fail_1a", "hf_void_success_1"],
         )
-        self.assertEqual(session.visible_draw_for(player), ["hf_martial_1_success", "hf_elemental_1_fail", "hf_void_success"])
+        self.assertEqual(session.visible_draw_for(player), ["hf_martial_success_2", "hf_elemental_fail_1a", "hf_void_success_1"])
         self.assertTrue(player.power_draw_used)
         payload = session.snapshot()["enemies"][0]
         self.assertEqual(payload["wound_counts"], {"hand": 1, "discard": 0, "draw_pile": 0, "total": 1})
@@ -1237,16 +1237,16 @@ class BattleSessionTests(unittest.TestCase):
         player = session.state.enemies[session.selected_id]
         player.deck_state.hand = [WOUND_CARD_ID]
         player.deck_state.discard_pile = []
-        player.deck_state.draw_pile = [WOUND_CARD_ID, "hf_martial_1_success"]
+        player.deck_state.draw_pile = [WOUND_CARD_ID, "hf_martial_success_2"]
 
         session.draw_exact_turn(2)
 
         # Pre-existing wound in hand stays; drawn wound goes to discard (Draw X rule, not Draw of Power)
-        self.assertEqual(player.deck_state.hand, [WOUND_CARD_ID, "hf_martial_1_success"])
+        self.assertEqual(player.deck_state.hand, [WOUND_CARD_ID, "hf_martial_success_2"])
         self.assertEqual(player.deck_state.discard_pile, [WOUND_CARD_ID])
         self.assertFalse(player.power_draw_used)
         payload = session.snapshot()["enemies"][0]
-        self.assertEqual(payload["current_draw_text"], ["Wound", "Martial energy success"])
+        self.assertEqual(payload["current_draw_text"], ["Wound", "Martial 2 energy success"])
         self.assertEqual(payload["current_draw_summary"]["outcomes"], {"success": 1, "fate": 0, "fail": 1})
         self.assertEqual(payload["wound_counts"], {"hand": 1, "discard": 1, "draw_pile": 0, "total": 2})
 
@@ -1254,7 +1254,7 @@ class BattleSessionTests(unittest.TestCase):
         session = self.context.create_session("player-wound-cleanup")
         session.add_player(name="Mira", power=4)
         player = session.state.enemies[session.selected_id]
-        player.deck_state.draw_pile = [WOUND_CARD_ID, "hf_martial_1_success"]
+        player.deck_state.draw_pile = [WOUND_CARD_ID, "hf_martial_success_2"]
         player.deck_state.discard_pile = []
         player.deck_state.hand = []
 
@@ -1264,33 +1264,36 @@ class BattleSessionTests(unittest.TestCase):
 
         # Wounds from Draw X go to discard immediately, so they don't persist in hand after cleanup
         self.assertEqual(player.deck_state.hand, [])
-        self.assertEqual(player.deck_state.discard_pile, [WOUND_CARD_ID, "hf_martial_1_success"])
+        self.assertEqual(player.deck_state.discard_pile, [WOUND_CARD_ID, "hf_martial_success_2"])
         self.assertEqual(session.visible_draw_for(player), [])
 
-    def test_strengthen_only_converts_unspent_points_to_draw_bonus(self) -> None:
+    def test_strengthen_allows_overflow_and_draw_bonus_triggers_at_turn_start(self) -> None:
         session = self.context.create_session("strengthen-overflow")
-        session.add_player(name="Mira", toughness=4)
+        session.add_player(name="Mira", toughness=4, power=1)
         player = session.state.enemies[session.selected_id]
 
-        player.toughness_current = 3
-        player.draw_bonus_pending = 0
-        session.strengthen_pc(3)
-        self.assertEqual(player.toughness_current, 4)
-        self.assertEqual(player.draw_bonus_pending, 2)
-
-        player.toughness_max = 3
-        player.toughness_current = 3
-        player.draw_bonus_pending = 0
-        session.strengthen_pc(1)
-        self.assertEqual(player.toughness_current, 3)
-        self.assertEqual(player.draw_bonus_pending, 1)
-
-        player.toughness_max = 4
-        player.toughness_current = 1
+        # Strengthen below max: no overflow, no draw bonus
+        player.toughness_current = 2
         player.draw_bonus_pending = 0
         session.strengthen_pc(2)
-        self.assertEqual(player.toughness_current, 3)
+        self.assertEqual(player.toughness_current, 4)
         self.assertEqual(player.draw_bonus_pending, 0)
+
+        # Strengthen above max: temporary toughness, no immediate draw bonus
+        player.toughness_current = 4
+        player.draw_bonus_pending = 0
+        session.strengthen_pc(2)
+        self.assertEqual(player.toughness_current, 6)
+        self.assertEqual(player.draw_bonus_pending, 0)
+
+        # At start of Draw of Power: temporary expires, +1 draw bonus
+        player.deck_state.draw_pile = ["hf_martial_success_2", "hf_elemental_success_2a"]
+        player.deck_state.discard_pile = []
+        player.deck_state.hand = []
+        session.draw_turn()
+        self.assertEqual(player.toughness_current, 4)
+        self.assertEqual(player.draw_bonus_pending, 0)  # consumed by draw
+        self.assertEqual(len(player.deck_state.hand), 2)  # base 1 + 1 bonus
 
     def test_player_wound_actions_discard_remove_and_confirm_deck_removal(self) -> None:
         session = self.context.create_session("player-wound-actions")
@@ -1299,7 +1302,7 @@ class BattleSessionTests(unittest.TestCase):
         player = session.state.enemies[player_id]
         player.deck_state.hand = [WOUND_CARD_ID, WOUND_CARD_ID]
         player.deck_state.discard_pile = [WOUND_CARD_ID]
-        player.deck_state.draw_pile = [WOUND_CARD_ID, "hf_martial_1_success"]
+        player.deck_state.draw_pile = [WOUND_CARD_ID, "hf_martial_success_2"]
 
         session.discard_player_wound(player_id)
         self.assertEqual(player.deck_state.hand, [WOUND_CARD_ID])
@@ -1315,7 +1318,7 @@ class BattleSessionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires confirmation"):
             session.remove_player_wound(player_id)
         session.remove_player_wound(player_id, confirm_deck=True)
-        self.assertEqual(player.deck_state.draw_pile, ["hf_martial_1_success"])
+        self.assertEqual(player.deck_state.draw_pile, ["hf_martial_success_2"])
 
     def test_player_ko_from_wounds_clears_only_after_all_hand_wounds_leave_hand(self) -> None:
         session = self.context.create_session("player-wound-ko")
@@ -1324,7 +1327,7 @@ class BattleSessionTests(unittest.TestCase):
         player = session.state.enemies[player_id]
         player.deck_state.hand = [WOUND_CARD_ID, WOUND_CARD_ID]
         player.deck_state.discard_pile = []
-        player.deck_state.draw_pile = ["hf_martial_1_success"]
+        player.deck_state.draw_pile = ["hf_martial_success_2"]
 
         session.draw_turn()
 
@@ -1522,22 +1525,22 @@ class BattleSessionTests(unittest.TestCase):
 
         player = next(e for e in session.state.enemies.values() if session.is_player(e))
         self.assertEqual(player.core_deck_id, "human_wizzard_lvl1")
-        self.assertIn("hf_class_wizard_fate", player.deck_state.draw_pile)
-        self.assertNotIn("hf_class_fighter_fate", player.deck_state.draw_pile)
+        self.assertIn("hw_class_wizard", player.deck_state.draw_pile)
+        self.assertNotIn("hf_class_fighter", player.deck_state.draw_pile)
 
     def test_player_can_draw_exact_after_draw_of_power_in_one_turn(self) -> None:
         session = self.context.create_session("player-multiple-draw")
         session.add_player(name="Mira")
         player = session.state.enemies[session.selected_id]
         player.deck_state.draw_pile = [
-            "hf_martial_1_success",
-            "hf_elemental_1_fail",
-            "hf_void_success",
-            "hf_radiance_2_fate",
-            "hf_martial_2_fail",
-            "hf_elemental_2_fate",
+            "hf_martial_success_2",
+            "hf_elemental_fail_1a",
+            "hf_void_success_1",
+            "hf_light_fate_1",
+            "hf_martial_fail_1a",
+            "hf_elemental_fate_1",
             "hf_void_fail",
-            "hf_radiance_1_success",
+            "hf_light_success_2a",
         ]
         player.deck_state.discard_pile = []
         player.deck_state.hand = []
@@ -1552,13 +1555,13 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(len(session.visible_draw_groups_for(player)[1]), 4)
         payload = session.snapshot()["enemies"][0]
         self.assertEqual(len(payload["current_draw_groups"]), 2)
-        self.assertIn("Martial energy success", payload["current_draw_groups"][0]["items"][0])
+        self.assertIn("Martial", payload["current_draw_groups"][0]["items"][0])
         self.assertEqual(payload["current_draw_groups"][0]["summary"]["outcomes"], {"success": 2, "fate": 1, "fail": 1})
-        self.assertEqual(payload["current_draw_groups"][0]["summary"]["energies"], {"Elemental": 1, "Martial": 1, "Radiance": 2})
+        self.assertEqual(payload["current_draw_groups"][0]["summary"]["energies"], {"Martial": 2, "Light": 1, "Elemental": 1})
         self.assertEqual(payload["current_draw_summary"]["outcomes"], {"success": 3, "fate": 2, "fail": 3})
         self.assertEqual(
             payload["current_draw_summary"]["energies"],
-            {"Elemental": 3, "Martial": 3, "Radiance": 3},
+            {"Martial": 3, "Elemental": 2, "Light": 3},
         )
 
     def test_player_race_and_class_cards_draw_into_same_group(self) -> None:
@@ -1566,11 +1569,11 @@ class BattleSessionTests(unittest.TestCase):
         session.add_player(name="Mira", power=2)
         player = session.state.enemies[session.selected_id]
         player.deck_state.draw_pile = [
-            "hf_race_human_fate",
-            "hf_class_fighter_fate",
-            "hf_martial_1_success",
+            "hf_ancestry_human",
+            "hf_class_fighter",
+            "hf_martial_success_2",
             "hf_void_fail",
-            "hf_elemental_1_success",
+            "hf_elemental_success_2a",
         ]
         player.deck_state.discard_pile = []
         player.deck_state.hand = []
@@ -1580,29 +1583,29 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(
             player.deck_state.hand,
             [
-                "hf_race_human_fate",
-                "hf_class_fighter_fate",
-                "hf_martial_1_success",
+                "hf_ancestry_human",
+                "hf_class_fighter",
+                "hf_martial_success_2",
                 "hf_void_fail",
-                "hf_elemental_1_success",
+                "hf_elemental_success_2a",
             ],
         )
         self.assertEqual(session.visible_draw_groups_for(player), [player.deck_state.hand])
-        self.assertTrue(any("Fighter: perform a martial action" in entry for entry in session.combat_log))
+        self.assertTrue(any("Martial may be used as Martial energy" in entry for entry in session.combat_log))
         self.assertIn("+3 draw", next(entry for entry in session.combat_log if "draws:" in entry))
 
     def test_player_reshuffle_card_reshuffles_deck_discard_and_hand_at_end_turn(self) -> None:
         session = self.context.create_session("player-delayed-reshuffle")
         session.add_player(name="Mira", power=1)
         player = session.state.enemies[session.selected_id]
-        player.deck_state.draw_pile = ["hf_master_fate_reshuffle", "hf_martial_1_success"]
+        player.deck_state.draw_pile = ["hf_master_success_reshuffle", "hf_martial_success_2"]
         player.deck_state.discard_pile = ["hf_void_fail"]
         player.deck_state.hand = []
 
         session.draw_turn()
 
         self.assertTrue(player.pending_reshuffle)
-        self.assertEqual(player.deck_state.hand, ["hf_master_fate_reshuffle"])
+        self.assertEqual(player.deck_state.hand, ["hf_master_success_reshuffle"])
 
         session.next_turn()
 
@@ -1611,9 +1614,9 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(player.deck_state.discard_pile, [])
         self.assertCountEqual(
             player.deck_state.draw_pile,
-            ["hf_master_fate_reshuffle", "hf_martial_1_success", "hf_void_fail"],
+            ["hf_master_success_reshuffle", "hf_martial_success_2", "hf_void_fail"],
         )
-        self.assertEqual(session.visible_draw_groups_for(player), [["hf_master_fate_reshuffle"]])
+        self.assertEqual(session.visible_draw_groups_for(player), [["hf_master_success_reshuffle"]])
 
     def test_add_player_without_name_gets_auto_name(self) -> None:
         session = self.context.create_session("player-autoname")
