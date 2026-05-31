@@ -214,6 +214,7 @@ def _template_from_row(
         gm_note=_clean(row.get("GM_Note")) or None,
         mechanics_note=_clean(row.get("Mechanics_Note")) or None,
         traits=_clean(row.get("Traits")) or None,
+        size=_clean(row.get("Size")) or None,
         skills=skills,
         actions={key: value for key, value in actions.items() if not _blankish(value)},
         playtest_status=_clean(row.get("Playtest_Status")) or None,

@@ -43,6 +43,16 @@ STAT_MINIMUMS = {
     "threatLevel": 0,
 }
 
+PLAYTEST_STATUSES = {"To_Design", "Untested", "Simulated", "Playtested", "Retest_Needed"}
+
+TEXT_COLUMN_MAP = {
+    "shortFlavour": "Short_Flavour",
+    "loreNote": "Lore_Note",
+    "traits": "Traits",
+    "size": "Size",
+    "playtestStatus": "Playtest_Status",
+}
+
 SKILL_COLUMN_MAP = {
     "intelligence": "Intelligence",
     "alertness": "Alertness",
@@ -166,6 +176,7 @@ def _normalize_updates(overrides: dict | None) -> dict[str, int | str]:
     updates.update(_normalize_stat_updates(overrides.get("statOverrides") or {}))
     updates.update(_normalize_skill_updates(overrides.get("skillOverrides") or {}))
     updates.update(_normalize_action_updates(overrides.get("actionOverrides") or {}))
+    updates.update(_normalize_text_updates(overrides.get("infoOverrides") or {}))
     return updates
 
 
@@ -230,6 +241,24 @@ def _normalize_action_updates(raw: object) -> dict[str, str]:
         if coverage["status"] == SIM_COVERAGE_ERROR:
             raise CreatureWorkbookSaveError(f"{result} action override is not simulatable")
         updates[result] = text
+    return updates
+
+
+def _normalize_text_updates(raw: object) -> dict[str, str]:
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise CreatureWorkbookSaveError("infoOverrides must be an object")
+    updates: dict[str, str] = {}
+    for key, value in raw.items():
+        if value is None or value == "":
+            continue
+        if key not in TEXT_COLUMN_MAP:
+            raise CreatureWorkbookSaveError(f"Unknown info override '{key}'")
+        text = str(value).strip()
+        if key == "playtestStatus" and text not in PLAYTEST_STATUSES:
+            raise CreatureWorkbookSaveError(f"playtestStatus must be one of: {', '.join(sorted(PLAYTEST_STATUSES))}")
+        updates[TEXT_COLUMN_MAP[key]] = text
     return updates
 
 

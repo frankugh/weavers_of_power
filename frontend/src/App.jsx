@@ -4775,10 +4775,20 @@ function buildCombatOverridesPayload(overrides, template) {
     actionOverrides[result] = text;
   });
 
+  const INFO_KEYS = ["shortFlavour", "loreNote", "traits", "size", "playtestStatus"];
+  const infoOverrides = {};
+  INFO_KEYS.forEach((key) => {
+    const value = (overrides.infoOverrides || {})[key];
+    if (value == null || value === "") return;
+    if (value === (template[key] ?? "")) return;
+    infoOverrides[key] = value;
+  });
+
   const payload = {};
   if (Object.keys(statOverrides).length) payload.statOverrides = statOverrides;
   if (Object.keys(skillOverrides).length) payload.skillOverrides = skillOverrides;
   if (Object.keys(actionOverrides).length) payload.actionOverrides = actionOverrides;
+  if (Object.keys(infoOverrides).length) payload.infoOverrides = infoOverrides;
   return Object.keys(payload).length ? payload : null;
 }
 
@@ -4993,6 +5003,23 @@ function CombatSimView({ meta, onMetaUpdate }) {
         setSeed(String(usedSeed));
       } else {
         setSeed("");
+      }
+      if (mode === "batch") {
+        const allIds = [...new Set([...normalizedA, ...normalizedB].map((e) => e.templateId))];
+        for (const templateId of allIds) {
+          const template = templateLookup.get(templateId);
+          if (template?.playtestStatus === "Untested") {
+            try {
+              const saved = await requestJson(`/api/battle/creature-templates/${encodeURIComponent(templateId)}/save-overrides`, {
+                method: "POST",
+                body: JSON.stringify({ infoOverrides: { playtestStatus: "Simulated" } }),
+              });
+              if (saved.metadata) onMetaUpdate?.(saved.metadata);
+            } catch {
+              // silent — don't interrupt the sim result display
+            }
+          }
+        }
       }
     } catch (requestError) {
       setSimError(requestError.message);
@@ -5333,23 +5360,43 @@ function CombatCoverageChip({ coverage }) {
   );
 }
 
+const PLAYTEST_STATUSES = ["To_Design", "Untested", "Simulated", "Playtested", "Retest_Needed"];
+const CREATURE_SIZES = ["Tiny", "Small", "Medium", "Large", "Huge", "Gargantuan"];
+
+function playtestStatusClass(status) {
+  switch (status) {
+    case "To_Design": return "playtest-to-design";
+    case "Untested": return "playtest-untested";
+    case "Simulated": return "playtest-simulated";
+    case "Tested": return "playtest-tested";
+    case "Retest_Needed": return "playtest-retest";
+    default: return "playtest-none";
+  }
+}
+
+function playtestStatusLabel(status) {
+  if (!status) return "No status";
+  return status.replace(/_/g, " ");
+}
+
 function CombatSimEntryEditorModal({ teamLabel, entry, template, overrides, onClose, onUpdateOverrides, onSaveOverrides, saveBusy }) {
   if (!entry || !template) return null;
+  const [activeTab, setActiveTab] = useState("stats");
   const statOverrides = overrides?.statOverrides || {};
   const skillOverrides = overrides?.skillOverrides || {};
   const actionOverrides = overrides?.actionOverrides || {};
+  const infoOverrides = overrides?.infoOverrides || {};
   const actions = getEffectiveSimActions(template, overrides);
   const coverage = summarizeCombatCoverage(actions);
   const savePayload = buildCombatOverridesPayload(overrides, template);
 
+  const effectivePlaytestStatus = infoOverrides.playtestStatus ?? template.playtestStatus ?? "";
+
   function updateStatOverride(key, value) {
     onUpdateOverrides((current) => {
       const nextStats = { ...(current.statOverrides || {}) };
-      if (value === "") {
-        delete nextStats[key];
-      } else {
-        nextStats[key] = value;
-      }
+      if (value === "") delete nextStats[key];
+      else nextStats[key] = value;
       return { ...current, statOverrides: nextStats };
     });
   }
@@ -5357,11 +5404,8 @@ function CombatSimEntryEditorModal({ teamLabel, entry, template, overrides, onCl
   function updateSkillOverride(key, value) {
     onUpdateOverrides((current) => {
       const nextSkills = { ...(current.skillOverrides || {}) };
-      if (value === "") {
-        delete nextSkills[key];
-      } else {
-        nextSkills[key] = value;
-      }
+      if (value === "") delete nextSkills[key];
+      else nextSkills[key] = value;
       return { ...current, skillOverrides: nextSkills };
     });
   }
@@ -5369,10 +5413,7 @@ function CombatSimEntryEditorModal({ teamLabel, entry, template, overrides, onCl
   function updateActionOverride(result, value) {
     onUpdateOverrides((current) => ({
       ...current,
-      actionOverrides: {
-        ...(current.actionOverrides || {}),
-        [result]: value,
-      },
+      actionOverrides: { ...(current.actionOverrides || {}), [result]: value },
     }));
   }
 
@@ -5384,11 +5425,18 @@ function CombatSimEntryEditorModal({ teamLabel, entry, template, overrides, onCl
     });
   }
 
+  function updateInfoOverride(key, value) {
+    onUpdateOverrides((current) => ({
+      ...current,
+      infoOverrides: { ...(current.infoOverrides || {}), [key]: value },
+    }));
+  }
+
   return (
     <ModalShell
       open
       title={`${teamLabel}: ${template.name}`}
-      subtitle={`Temporary simulation overrides for every ${template.name}. Source data is unchanged.`}
+      subtitle={`Stat/skill/action overrides are temporary. Info & lore edits save directly to Excel.`}
       onClose={onClose}
       size="wide"
       className="combat-sim-editor-modal"
@@ -5398,97 +5446,176 @@ function CombatSimEntryEditorModal({ teamLabel, entry, template, overrides, onCl
           <div className="combat-editor-title-row">
             <span className="pill pill-muted">{template.id}</span>
             <CombatCoverageChip coverage={coverage} />
+            {effectivePlaytestStatus ? (
+              <span className={`pill pill-muted playtest-status-pill ${playtestStatusClass(effectivePlaytestStatus)}`}>
+                <span className="playtest-dot" />
+                {playtestStatusLabel(effectivePlaytestStatus)}
+              </span>
+            ) : null}
           </div>
           <button className="secondary-button panel-header-button" type="button" onClick={() => onUpdateOverrides(() => ({}))}>
             Reset all
           </button>
         </div>
 
-        <div className="combat-editor-grid">
-          <div className="combat-editor-side">
-            <section className="combat-editor-section">
-              <div className="selected-draw-label">Stats</div>
-              <div className="combat-stat-editor-grid">
-                {COMBAT_SIM_STAT_FIELDS.map((field) => (
-                  <label className="field" key={field.key}>
-                    <span>{field.label}</span>
-                    <input
-                      type="number"
-                      min={field.min}
-                      value={statOverrides[field.key] ?? ""}
-                      placeholder={String(displaySimValue(sourceSimStatValue(template, field.key)))}
-                      onChange={(event) => updateStatOverride(field.key, event.target.value)}
-                    />
-                  </label>
-                ))}
-              </div>
-            </section>
+        <div className="combat-editor-tabs">
+          <button
+            className={`combat-editor-tab ${activeTab === "stats" ? "active" : ""}`}
+            type="button"
+            onClick={() => setActiveTab("stats")}
+          >
+            Stats &amp; Actions
+          </button>
+          <button
+            className={`combat-editor-tab ${activeTab === "lore" ? "active" : ""}`}
+            type="button"
+            onClick={() => setActiveTab("lore")}
+          >
+            Lore &amp; Info
+          </button>
+        </div>
 
-            <section className="combat-editor-section">
-              <div className="selected-draw-label">Skills</div>
-              <div className="combat-stat-editor-grid">
-                {COMBAT_SIM_SKILL_FIELDS.map((field) => (
-                  <label className="field" key={field.key}>
-                    <span>
-                      {field.label}
-                      {field.note ? <small> {field.note}</small> : null}
-                    </span>
-                    <input
-                      type="number"
-                      min="0"
-                      value={skillOverrides[field.key] ?? ""}
-                      placeholder={String(displaySimValue(sourceSimSkillValue(template, field.key)))}
-                      onChange={(event) => updateSkillOverride(field.key, event.target.value)}
-                    />
-                  </label>
-                ))}
+        {activeTab === "stats" ? (
+          <div className="combat-editor-grid">
+            <div className="combat-editor-side">
+              <section className="combat-editor-section">
+                <div className="selected-draw-label">Stats</div>
+                <div className="combat-stat-editor-grid">
+                  {COMBAT_SIM_STAT_FIELDS.map((field) => (
+                    <label className="field" key={field.key}>
+                      <span>{field.label}</span>
+                      <input
+                        type="number"
+                        min={field.min}
+                        value={statOverrides[field.key] ?? ""}
+                        placeholder={String(displaySimValue(sourceSimStatValue(template, field.key)))}
+                        onChange={(event) => updateStatOverride(field.key, event.target.value)}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </section>
+
+              <section className="combat-editor-section">
+                <div className="selected-draw-label">Skills</div>
+                <div className="combat-stat-editor-grid">
+                  {COMBAT_SIM_SKILL_FIELDS.map((field) => (
+                    <label className="field" key={field.key}>
+                      <span>
+                        {field.label}
+                        {field.note ? <small> {field.note}</small> : null}
+                      </span>
+                      <input
+                        type="number"
+                        min="0"
+                        value={skillOverrides[field.key] ?? ""}
+                        placeholder={String(displaySimValue(sourceSimSkillValue(template, field.key)))}
+                        onChange={(event) => updateSkillOverride(field.key, event.target.value)}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </section>
+            </div>
+
+            <section className="combat-editor-section combat-action-editor-section">
+              <div className="selected-draw-label">Actions</div>
+              <div className="combat-action-editor-list">
+                {actions.map((action) => {
+                  const sourceText = getSourceActionText(template, action.result);
+                  const isOverridden = Object.prototype.hasOwnProperty.call(actionOverrides, action.result);
+                  const status = action.coverageStatus || action.coverage?.status || "full";
+                  return (
+                    <div className={`combat-action-editor-card combat-coverage-${status}`} key={action.result}>
+                      <div className="combat-action-editor-head">
+                        <div>
+                          <strong>{action.result}</strong>
+                          <span>{action.title}</span>
+                        </div>
+                        <button
+                          className="secondary-button panel-header-button"
+                          type="button"
+                          disabled={!isOverridden}
+                          onClick={() => resetActionOverride(action.result)}
+                        >
+                          Reset
+                        </button>
+                      </div>
+                      <textarea
+                        aria-label={`${action.result} action text`}
+                        value={isOverridden ? actionOverrides[action.result] : sourceText}
+                        onChange={(event) => updateActionOverride(action.result, event.target.value)}
+                        rows={2}
+                      />
+                      <div className="combat-action-parse-preview">
+                        <span className={`combat-coverage-dot combat-coverage-${status}`}>{combatCoverageLabel(status)}</span>
+                        <span>
+                          {action.effects?.length ? action.effects.map(formatCombatEffect).join(" + ") : "No automatic effects"}
+                        </span>
+                        {action.manualNotes?.length ? <span>Manual: {action.manualNotes.join("; ")}</span> : null}
+                      </div>
+                    </div>
+                  );
+                })}
+                {!actions.length ? <div className="subtle-copy">No action cards available.</div> : null}
               </div>
             </section>
           </div>
-
-          <section className="combat-editor-section combat-action-editor-section">
-            <div className="selected-draw-label">Actions</div>
-            <div className="combat-action-editor-list">
-              {actions.map((action) => {
-                const sourceText = getSourceActionText(template, action.result);
-                const isOverridden = Object.prototype.hasOwnProperty.call(actionOverrides, action.result);
-                const status = action.coverageStatus || action.coverage?.status || "full";
-                return (
-                  <div className={`combat-action-editor-card combat-coverage-${status}`} key={action.result}>
-                    <div className="combat-action-editor-head">
-                      <div>
-                        <strong>{action.result}</strong>
-                        <span>{action.title}</span>
-                      </div>
-                      <button
-                        className="secondary-button panel-header-button"
-                        type="button"
-                        disabled={!isOverridden}
-                        onClick={() => resetActionOverride(action.result)}
-                      >
-                        Reset
-                      </button>
-                    </div>
-                    <textarea
-                      aria-label={`${action.result} action text`}
-                      value={isOverridden ? actionOverrides[action.result] : sourceText}
-                      onChange={(event) => updateActionOverride(action.result, event.target.value)}
-                      rows={2}
-                    />
-                    <div className="combat-action-parse-preview">
-                      <span className={`combat-coverage-dot combat-coverage-${status}`}>{combatCoverageLabel(status)}</span>
-                      <span>
-                        {action.effects?.length ? action.effects.map(formatCombatEffect).join(" + ") : "No automatic effects"}
-                      </span>
-                      {action.manualNotes?.length ? <span>Manual: {action.manualNotes.join("; ")}</span> : null}
-                    </div>
-                  </div>
-                );
-              })}
-              {!actions.length ? <div className="subtle-copy">No action cards available.</div> : null}
+        ) : (
+          <div className="combat-lore-editor">
+            <label className="field">
+              <span>Playtest Status</span>
+              <select
+                value={effectivePlaytestStatus}
+                onChange={(e) => updateInfoOverride("playtestStatus", e.target.value)}
+              >
+                <option value="">— No status —</option>
+                {PLAYTEST_STATUSES.map((s) => (
+                  <option key={s} value={s}>{playtestStatusLabel(s)}</option>
+                ))}
+              </select>
+            </label>
+            <div className="combat-lore-row">
+              <label className="field">
+                <span>Short Flavour</span>
+                <input
+                  type="text"
+                  value={infoOverrides.shortFlavour ?? template.shortFlavour ?? ""}
+                  placeholder="—"
+                  onChange={(e) => updateInfoOverride("shortFlavour", e.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Size</span>
+                <select
+                  value={infoOverrides.size ?? template.size ?? ""}
+                  onChange={(e) => updateInfoOverride("size", e.target.value)}
+                >
+                  <option value="">—</option>
+                  {CREATURE_SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </label>
+              <label className="field">
+                <span>Traits</span>
+                <input
+                  type="text"
+                  value={infoOverrides.traits ?? template.traits ?? ""}
+                  placeholder="—"
+                  onChange={(e) => updateInfoOverride("traits", e.target.value)}
+                />
+              </label>
             </div>
-          </section>
-        </div>
+            <label className="field combat-lore-note-field">
+              <span>Lore Note</span>
+              <textarea
+                rows={6}
+                value={infoOverrides.loreNote ?? template.loreNote ?? ""}
+                placeholder="—"
+                onChange={(e) => updateInfoOverride("loreNote", e.target.value)}
+              />
+            </label>
+          </div>
+        )}
 
         <div className="modal-actions">
           <button

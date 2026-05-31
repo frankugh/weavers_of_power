@@ -202,6 +202,7 @@ class EnemyTemplate:
     gm_note: Optional[str] = None
     mechanics_note: Optional[str] = None
     traits: Optional[str] = None
+    size: Optional[str] = None
     skills: dict[str, int] = field(default_factory=dict)
     actions: dict[str, str] = field(default_factory=dict)
     playtest_status: Optional[str] = None

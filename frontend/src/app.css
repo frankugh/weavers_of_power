@@ -4384,6 +4384,74 @@ button.draw-card:hover {
   background: rgba(255, 244, 216, 0.035);
 }
 
+.combat-editor-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+  margin: 4px 0 8px;
+}
+
+.combat-editor-tab {
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.combat-editor-tab.active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.playtest-status-pill {
+  gap: 6px;
+}
+
+.playtest-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--muted);
+}
+
+.playtest-to-design .playtest-dot { background: #666; }
+.playtest-untested .playtest-dot  { background: var(--accent); }
+.playtest-simulated .playtest-dot { background: #c8b840; }
+.playtest-tested .playtest-dot    { background: #6aab7a; }
+.playtest-retest .playtest-dot    { background: #c07060; }
+
+.combat-lore-editor {
+  display: grid;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.combat-lore-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 2fr;
+  gap: 10px;
+}
+
+.combat-lore-note-field textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 0.9rem;
+  min-height: 120px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 244, 216, 0.045);
+  color: var(--text);
+  box-sizing: border-box;
+}
+
 .combat-stat-editor-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
