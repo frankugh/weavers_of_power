@@ -598,6 +598,7 @@ describe("App", () => {
     });
 
     await user.click(await screen.findByRole("button", { name: "Combat Sim" }));
+    await user.click(screen.getByRole("button", { name: "Quick" }));
     await user.click(screen.getByRole("button", { name: "Quick Simulate" }));
 
     await screen.findByText("Team A wins in round 1.");
@@ -660,6 +661,7 @@ describe("App", () => {
     expect(screen.getAllByText("T 12").length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText("Init 8").length).toBeGreaterThanOrEqual(2);
 
+    await user.click(screen.getByRole("button", { name: "Quick" }));
     await user.click(screen.getByRole("button", { name: "Quick Simulate" }));
 
     await screen.findByText("Team A wins in round 1.");
@@ -809,7 +811,6 @@ describe("App", () => {
     });
 
     await user.click(await screen.findByRole("button", { name: "Combat Sim" }));
-    await user.click(screen.getByRole("button", { name: "Batch" }));
     await user.click(screen.getByRole("button", { name: "Run Batch" }));
 
     expect(await screen.findByText("2 (4.8%)")).toBeInTheDocument();
@@ -2140,7 +2141,7 @@ describe("App", () => {
               toughness: 7,
               armor: 0,
               magicArmor: 0,
-              power: 1,
+              draw: 1,
               movement: 6,
               coreDeckId: "basic",
             },

@@ -4721,7 +4721,7 @@ function CombatSimView({ meta, onMetaUpdate }) {
   const firstTemplateId = spawnableTemplates[0]?.id || "";
   const secondTemplateId = spawnableTemplates[1]?.id || firstTemplateId;
 
-  const [mode, setMode] = useState("quick");
+  const [mode, setMode] = useState("batch");
   const [teamA, setTeamA] = useState([]);
   const [teamB, setTeamB] = useState([]);
   const [strategyA, setStrategyA] = useState("highest_toughness");
