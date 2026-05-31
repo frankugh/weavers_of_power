@@ -22,11 +22,12 @@ from engine.dungeon import canonical_edge_key, migrate_to_dungeon, normalize_sid
 from engine.excel_creatures import load_creatures_from_workbook, serialize_creature_action_card
 from engine.loader import load_decks
 from engine.loot import roll_loot
-from engine.models import Card, Deck, EnemyTemplate
+from engine.models import Card, Deck, Effect, EnemyTemplate
 from engine.runtime import BattleState, draw_additional_cards, draw_cards, end_turn, spawn_enemy, start_turn
-from engine.runtime_models import DeckState, DungeonState, DungeonWall, EnemyInstance, Tile
+from engine.runtime_models import DeckState, DungeonState, DungeonWall, EnemyInstance, GrappleInstance, Tile
 from persistence import (
     enemy_to_dict,
+    grapple_to_dict,
     load_save_payload,
     make_save_payload,
     restore_state_from_payload,
@@ -172,6 +173,8 @@ class QuickAttackStep:
     modifiers: tuple[AttackMod, ...]
     unsupported_modifiers: tuple[str, ...] = ()
     manual_effects: tuple[str, ...] = ()
+    grapple_effects: tuple[Effect, ...] = ()
+    conditional_attack_effects: tuple[Effect, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -404,6 +407,7 @@ class BattleSession:
 
     def load_from_payload(self, payload: dict, *, load_undo_stack: bool = True) -> None:
         self.state.enemies.clear()
+        self.state.grapples.clear()
         self.order = []
         self.selected_id = None
         self.active_turn_id = None
@@ -427,6 +431,7 @@ class BattleSession:
             loaded_room,
             loaded_movement_state,
             enemies,
+            grapples,
             loaded_round,
             loaded_log,
             loaded_dungeon,
@@ -440,6 +445,7 @@ class BattleSession:
             else:
                 self._migrate_template_deck_state(enemy)
             self.state.add_enemy(enemy)
+        self.state.grapples = {grapple.id: grapple for grapple in grapples}
 
         self.order = [instance_id for instance_id in loaded_order if instance_id in self.state.enemies]
         if loaded_selected in self.state.enemies:
@@ -477,6 +483,7 @@ class BattleSession:
         else:
             self._auto_place_unplaced_entities()
         self._ensure_selected()
+        self._cleanup_grapples(add_log=False)
 
     def _build_payload(self, *, include_undo_stack: bool = True) -> dict:
         payload = make_save_payload(
@@ -494,6 +501,7 @@ class BattleSession:
             combat_log=self.combat_log,
             movement_state=self.movement_state,
             enemies=list(self.state.enemies.values()),
+            grapples=list(self.state.grapples.values()),
             dungeon=self.dungeon,
             undo_stack=self.undo_stack if include_undo_stack else None,
             redo_stack=self.redo_stack if include_undo_stack else None,
@@ -518,6 +526,7 @@ class BattleSession:
 
     def snapshot(self) -> dict:
         self._ensure_selected()
+        self._cleanup_grapples(add_log=False)
         initiative_target_round = (
             self.round + 1 if self.pending_new_round
             else 1 if not self.encounter_started
@@ -538,6 +547,7 @@ class BattleSession:
             "movementState": self._movement_state_snapshot(),
             "room": {"columns": self.room_columns, "rows": self.room_rows},
             "order": list(self.order),
+            "grapples": [self._grapple_payload(grapple) for grapple in sorted(self.state.grapples.values(), key=lambda g: g.created_order)],
             "enemies": [self._serialize_enemy(instance_id) for instance_id in self._ordered_enemy_ids()],
             "combatLog": list(self.combat_log),
             "canUndo": bool(self.undo_stack),
@@ -1922,6 +1932,134 @@ class BattleSession:
         self._add_log(f"Initiative rolled for round {target_round}.")
         self.autosave()
 
+    def _grapples_for_target(self, target_id: str) -> list[GrappleInstance]:
+        return sorted(
+            [
+                grapple
+                for grapple in self.state.grapples.values()
+                if grapple.target_id == target_id and grapple.toughness_current > 0
+            ],
+            key=lambda grapple: (grapple.toughness_current, grapple.created_order),
+        )
+
+    def _grapples_by_grappler(self, grappler_id: str) -> list[GrappleInstance]:
+        return sorted(
+            [
+                grapple
+                for grapple in self.state.grapples.values()
+                if grapple.grappler_id == grappler_id and grapple.toughness_current > 0
+            ],
+            key=lambda grapple: grapple.created_order,
+        )
+
+    def _preferred_grapple_for_target(self, target_id: str) -> Optional[GrappleInstance]:
+        grapples = self._grapples_for_target(target_id)
+        return grapples[0] if grapples else None
+
+    def _next_grapple_order(self) -> int:
+        return 1 + max((grapple.created_order for grapple in self.state.grapples.values()), default=0)
+
+    def _entity_name(self, instance_id: str) -> str:
+        entity = self.state.enemies.get(instance_id)
+        return entity.name if entity else instance_id
+
+    def _grapple_payload(self, grapple: GrappleInstance) -> dict:
+        payload = grapple_to_dict(grapple)
+        payload.update(
+            {
+                "id": grapple.id,
+                "grapplerId": grapple.grappler_id,
+                "targetId": grapple.target_id,
+                "grapplerName": self._entity_name(grapple.grappler_id),
+                "targetName": self._entity_name(grapple.target_id),
+                "toughnessCurrent": int(grapple.toughness_current),
+                "toughnessMax": int(grapple.toughness_max),
+                "createdOrder": int(grapple.created_order),
+                "label": f"Grapple T {grapple.toughness_current}/{grapple.toughness_max}",
+            }
+        )
+        return payload
+
+    def _cleanup_grapples(self, *, add_log: bool = True) -> list[str]:
+        lines: list[str] = []
+        for grapple_id, grapple in list(self.state.grapples.items()):
+            grappler = self.state.enemies.get(grapple.grappler_id)
+            target = self.state.enemies.get(grapple.target_id)
+            reason = ""
+            if grapple.toughness_current <= 0:
+                reason = "Toughness reaches 0"
+            elif grappler is None or self.is_down(grappler):
+                reason = "grappler is down"
+            elif target is None or self.is_down(target):
+                reason = "target is down"
+            if not reason:
+                continue
+            self.state.grapples.pop(grapple_id, None)
+            line = f"Grapple between {self._entity_name(grapple.grappler_id)} and {self._entity_name(grapple.target_id)} ends ({reason})."
+            lines.append(line)
+            if add_log:
+                self._add_log(line)
+        return lines
+
+    def _apply_grapple(self, grappler: EnemyInstance, target: EnemyInstance, amount: int) -> str:
+        amount = max(0, int(amount))
+        if amount <= 0:
+            return ""
+        for grapple in self._grapples_for_target(target.instance_id):
+            if grapple.grappler_id == grappler.instance_id:
+                before_current = grapple.toughness_current
+                before_max = grapple.toughness_max
+                grapple.toughness_current += amount
+                grapple.toughness_max += amount
+                return (
+                    f"{grappler.name}'s Grapple on {target.name} increases by {amount}: "
+                    f"T {before_current}/{before_max}->{grapple.toughness_current}/{grapple.toughness_max}."
+                )
+        grapple = GrappleInstance(
+            id=f"grapple-{uuid_short()}",
+            grappler_id=grappler.instance_id,
+            target_id=target.instance_id,
+            toughness_current=amount,
+            toughness_max=amount,
+            created_order=self._next_grapple_order(),
+        )
+        self.state.grapples[grapple.id] = grapple
+        return f"{target.name} is Grappled by {grappler.name} (T {amount}/{amount})."
+
+    def _damage_grapple(self, grapple: GrappleInstance, damage: int, *, source: str) -> tuple[int, list[str]]:
+        damage = max(0, int(damage))
+        before = grapple.toughness_current
+        dealt = min(before, damage)
+        grapple.toughness_current = max(0, before - damage)
+        lines = [
+            (
+                f"{source} damages Grapple on {self._entity_name(grapple.target_id)}: "
+                f"{damage} in, T {before}->{grapple.toughness_current}."
+            )
+        ]
+        lines.extend(self._cleanup_grapples(add_log=False))
+        return dealt, lines
+
+    def _damage_grapples_held_by(self, grappler: EnemyInstance, damage: int) -> list[str]:
+        if damage <= 0:
+            return []
+        lines: list[str] = []
+        for grapple in list(self._grapples_by_grappler(grappler.instance_id)):
+            before = grapple.toughness_current
+            grapple.toughness_current = max(0, before - int(damage))
+            lines.append(
+                f"Damage to {grappler.name} also reduces Grapple on {self._entity_name(grapple.target_id)}: "
+                f"T {before}->{grapple.toughness_current}."
+            )
+        lines.extend(self._cleanup_grapples(add_log=False))
+        return lines
+
+    def _effective_attack_damage(self, attacker: Optional[EnemyInstance], damage: int, *, target_is_grapple: bool) -> int:
+        damage = max(0, int(damage))
+        if attacker is not None and not target_is_grapple and self._grapples_for_target(attacker.instance_id):
+            return damage // 2
+        return damage
+
     def apply_attack_to_selected(
         self,
         *,
@@ -1931,8 +2069,28 @@ class BattleSession:
         add_poison: bool,
         add_slow: bool,
         add_paralyze: bool,
+        target_mode: str = "creature",
+        grapple_id: Optional[str] = None,
     ) -> Optional[dict]:
         entity = self._require_selected_entity()
+        if target_mode == "grapple":
+            grapple = self.state.grapples.get(grapple_id or "") or self._preferred_grapple_for_target(entity.instance_id)
+            if grapple is None or grapple.target_id != entity.instance_id:
+                raise BattleSessionError("Selected entity has no targetable Grapple.")
+            dealt, lines = self._damage_grapple(grapple, max(0, int(damage)), source="Manual attack")
+            for line in lines:
+                self._add_log(line)
+            self.autosave()
+            return {
+                "grappleEvents": [
+                    {
+                        "grappleId": grapple.id,
+                        "damage": dealt,
+                        "toughnessAfter": max(0, grapple.toughness_current),
+                    }
+                ]
+            }
+
         effective_mods = list(modifiers)
         if add_paralyze and "paralyse" not in effective_mods:
             effective_mods.append("paralyse")
@@ -1968,6 +2126,10 @@ class BattleSession:
             message += f", {log.wounds_added} wound{'s' if log.wounds_added != 1 else ''} added"
         if status_parts:
             message += f" [{', '.join(status_parts)}]"
+        for line in self._damage_grapples_held_by(entity, log.damage_to_hp):
+            self._add_log(line)
+        for line in self._cleanup_grapples(add_log=False):
+            self._add_log(line)
         self._add_log(message)
         self.autosave()
         if log.wounds_added:
@@ -1999,42 +2161,76 @@ class BattleSession:
         if getattr(attacker, "quick_attack_used", False):
             raise BattleSessionError("Quick Attack has already been used for this draw.")
 
-        target = self._require_selected_entity()
-        if target.instance_id == attacker.instance_id:
-            raise BattleSessionError("Select a target other than the active NPC.")
-        if self.is_down(target):
-            raise BattleSessionError("Quick Attack target is down.")
+        target: Optional[EnemyInstance] = None
+        active_grapple = self._preferred_grapple_for_target(attacker.instance_id)
+        if active_grapple is None:
+            target = self._require_selected_entity()
+            if target.instance_id == attacker.instance_id:
+                raise BattleSessionError("Select a target other than the active NPC.")
+            if self.is_down(target):
+                raise BattleSessionError("Quick Attack target is down.")
 
         steps = self._quick_attack_steps_for(attacker)
         if not steps:
             raise BattleSessionError("Current draw has no attack effects.")
 
         wound_total = 0
-        first_toughness_before = target.toughness_current
+        first_toughness_before = target.toughness_current if target is not None else active_grapple.toughness_current
         damage_to_toughness = 0
         labels: list[str] = []
         unsupported: list[str] = []
         manual_effects: list[str] = []
+        target_name = target.name if target is not None else f"Grapple on {attacker.name}"
+        target_id = target.instance_id if target is not None else active_grapple.id
 
         for step in steps:
-            log = apply_attack(
-                target,
-                max(0, int(step.damage)),
-                mods=list(step.modifiers),
-                reset_toughness_on_deplete=self.is_player(target),
-            )
-            wound_total += log.wounds_added
-            damage_to_toughness += log.damage_to_hp
-            labels.append(self._quick_attack_label(step))
+            grapple_target = self._preferred_grapple_for_target(attacker.instance_id)
+            if grapple_target is not None:
+                labels.append(self._quick_attack_label(step))
+                dealt, lines = self._damage_grapple(grapple_target, int(step.damage), source=f"{attacker.name}'s {self._quick_attack_label(step)}")
+                damage_to_toughness += dealt
+                for line in lines:
+                    self._add_log(line)
+                target_name = f"Grapple on {attacker.name}"
+                target_id = grapple_target.id
+            elif target is not None:
+                selected_damage = self._conditional_attack_amount_for_target(target, step.damage, step.conditional_attack_effects)
+                labels.append(self._quick_attack_label(step, damage=selected_damage))
+                if selected_damage != step.damage:
+                    self._add_log(
+                        f"{target.name} meets a conditional attack clause; {attacker.name}'s attack damage changes "
+                        f"from {step.damage} to {selected_damage}."
+                    )
+                effective_damage = self._effective_attack_damage(attacker, selected_damage, target_is_grapple=False)
+                log = apply_attack(
+                    target,
+                    effective_damage,
+                    mods=list(step.modifiers),
+                    reset_toughness_on_deplete=self.is_player(target),
+                )
+                wound_total += log.wounds_added
+                damage_to_toughness += log.damage_to_hp
+                for line in self._damage_grapples_held_by(target, log.damage_to_hp):
+                    self._add_log(line)
+                for grapple_effect in step.grapple_effects:
+                    if "on_damage" in grapple_effect.modifiers and log.damage_to_hp <= 0:
+                        continue
+                    grapple_line = self._apply_grapple(attacker, target, grapple_effect.amount)
+                    if grapple_line:
+                        self._add_log(grapple_line)
+                for line in self._cleanup_grapples(add_log=False):
+                    self._add_log(line)
             unsupported.extend(step.unsupported_modifiers)
             manual_effects.extend(step.manual_effects)
 
         manual_items = self._unique_preserve_order([*unsupported, *manual_effects])
         attacks_text = ", ".join(labels)
         message = (
-            f"Quick Attack by {attacker.name} on {target.name}: {attacks_text}; "
-            f"{damage_to_toughness} to Toughness, Toughness {first_toughness_before}->{target.toughness_current}"
+            f"Quick Attack by {attacker.name} on {target_name}: {attacks_text}; "
+            f"{damage_to_toughness} to Toughness"
         )
+        if target is not None:
+            message += f", Toughness {first_toughness_before}->{target.toughness_current}"
         if wound_total:
             message += f", {wound_total} wound{'s' if wound_total != 1 else ''} added"
         if manual_items:
@@ -2043,7 +2239,7 @@ class BattleSession:
         self._add_log(message)
         self.autosave()
 
-        notice = f"Quick Attack: {attacker.name} attacks {target.name} with {attacks_text}."
+        notice = f"Quick Attack: {attacker.name} attacks {target_name} with {attacks_text}."
         if manual_items:
             notice += f" Handle manually: {', '.join(manual_items)}."
 
@@ -2051,8 +2247,9 @@ class BattleSession:
             "quickAttack": {
                 "attackerId": attacker.instance_id,
                 "attackerName": attacker.name,
-                "targetId": target.instance_id,
-                "targetName": target.name,
+                "targetId": target_id,
+                "targetType": "unit" if target is not None else "grapple",
+                "targetName": target_name,
                 "attacks": [self._quick_attack_payload(step) for step in steps],
                 "manualItems": manual_items,
             },
@@ -2465,6 +2662,20 @@ class BattleSession:
                     parts.append(f"Attack {effect.amount} ({modifiers})")
                 else:
                     parts.append(f"Attack {effect.amount}")
+            elif effect.type == "grapple":
+                suffix = " (on damage)" if "on_damage" in getattr(effect, "modifiers", ()) else ""
+                parts.append(f"Grapple {effect.amount}{suffix}")
+            elif effect.type == "conditional_attack":
+                conditions = ", ".join(
+                    self._format_condition_modifier(modifier)
+                    for modifier in getattr(effect, "modifiers", ())
+                    if modifier.startswith("if_target_")
+                )
+                parts.append(
+                    f"If target {conditions}: Attack {effect.amount} instead"
+                    if conditions
+                    else f"Conditional Attack {effect.amount}"
+                )
             elif effect.type == "guard":
                 parts.append(f"Guard {effect.amount}")
             elif effect.type == "draw":
@@ -2545,8 +2756,10 @@ class BattleSession:
             manual_effects = tuple(
                 self._effect_label(effect)
                 for effect in card.effects
-                if effect.type not in {"attack", "guard", "draw"}
+                if effect.type not in {"attack", "guard", "draw", "grapple", "conditional_attack"}
             )
+            grapple_effects = tuple(effect for effect in card.effects if effect.type == "grapple")
+            conditional_attack_effects = tuple(effect for effect in card.effects if effect.type == "conditional_attack")
             for effect in card.effects:
                 if effect.type != "attack":
                     continue
@@ -2567,9 +2780,52 @@ class BattleSession:
                         modifiers=tuple(modifiers),
                         unsupported_modifiers=tuple(unsupported),
                         manual_effects=tuple([*manual_effects, *getattr(card, "manual_notes", ())]),
+                        grapple_effects=grapple_effects,
+                        conditional_attack_effects=conditional_attack_effects,
                     )
                 )
         return steps
+
+    def _conditional_attack_amount_for_target(
+        self,
+        target: EnemyInstance,
+        base_damage: int,
+        effects: tuple[Effect, ...],
+    ) -> int:
+        amount = int(base_damage)
+        for effect in effects:
+            if "replace_attack" not in effect.modifiers:
+                continue
+            if self._target_matches_conditional_attack(target, effect.modifiers):
+                amount = int(effect.amount)
+        return amount
+
+    def _target_matches_conditional_attack(self, target: EnemyInstance, modifiers: tuple[str, ...]) -> bool:
+        modifier_set = set(modifiers or ())
+        statuses = getattr(target, "statuses", {}) or {}
+        checks: list[bool] = []
+        if "if_target_grappled" in modifier_set:
+            checks.append(bool(self._grapples_for_target(target.instance_id) or self._status_present(statuses, "grappled")))
+        if "if_target_prone" in modifier_set:
+            checks.append(self._status_present(statuses, "prone"))
+        if "if_target_poisoned" in modifier_set:
+            checks.append(self._status_present(statuses, "poison", "poisoned"))
+        if "if_target_burning" in modifier_set:
+            checks.append(self._status_present(statuses, "burn", "burning", "burned"))
+        if "if_target_slowed" in modifier_set:
+            checks.append(self._status_present(statuses, "slow", "slowed"))
+        if "if_target_paralyzed" in modifier_set:
+            checks.append(self._status_present(statuses, "paralyzed", "paralysed", "paralyze", "paralyse"))
+        if "if_target_stunned" in modifier_set:
+            checks.append(self._status_present(statuses, "stun", "stunned"))
+        if not checks:
+            return False
+        return all(checks) if "condition_all" in modifier_set else any(checks)
+
+    @staticmethod
+    def _status_present(statuses: dict, *keys: str) -> bool:
+        normalized = {str(key).strip().lower() for key in statuses.keys()}
+        return any(key in normalized for key in keys)
 
     @staticmethod
     def _normalize_quick_attack_modifier(modifier: str) -> Optional[AttackMod]:
@@ -2592,13 +2848,30 @@ class BattleSession:
             "modifiers": list(step.modifiers),
             "unsupportedModifiers": list(step.unsupported_modifiers),
             "manualEffects": list(step.manual_effects),
+            "grappleEffects": [
+                {
+                    "type": effect.type,
+                    "amount": int(effect.amount),
+                    "modifiers": list(effect.modifiers),
+                }
+                for effect in step.grapple_effects
+            ],
+            "conditionalAttacks": [
+                {
+                    "type": effect.type,
+                    "amount": int(effect.amount),
+                    "modifiers": list(effect.modifiers),
+                }
+                for effect in step.conditional_attack_effects
+            ],
             "label": self._quick_attack_label(step),
         }
 
-    def _quick_attack_label(self, step: QuickAttackStep) -> str:
+    def _quick_attack_label(self, step: QuickAttackStep, *, damage: Optional[int] = None) -> str:
+        amount = step.damage if damage is None else int(damage)
         if step.modifiers:
-            return f"Attack {step.damage} ({', '.join(self._format_attack_modifier(modifier) for modifier in step.modifiers)})"
-        return f"Attack {step.damage}"
+            return f"Attack {amount} ({', '.join(self._format_attack_modifier(modifier) for modifier in step.modifiers)})"
+        return f"Attack {amount}"
 
     @staticmethod
     def _format_attack_modifier(modifier: str) -> str:
@@ -2612,7 +2885,17 @@ class BattleSession:
     @staticmethod
     def _effect_label(effect) -> str:
         amount = int(getattr(effect, "amount", 0) or 0)
+        if getattr(effect, "type", "") == "grapple":
+            suffix = " (on damage)" if "on_damage" in getattr(effect, "modifiers", ()) else ""
+            return f"Grapple {amount}{suffix}" if amount > 0 else "Grapple"
+        if getattr(effect, "type", "") == "conditional_attack":
+            conditions = ", ".join(BattleSession._format_condition_modifier(modifier) for modifier in getattr(effect, "modifiers", ()) if modifier.startswith("if_target_"))
+            return f"If target {conditions}: Attack {amount} instead" if conditions else f"Conditional Attack {amount}"
         return f"{effect.type} {amount}" if amount > 0 else str(effect.type)
+
+    @staticmethod
+    def _format_condition_modifier(modifier: str) -> str:
+        return modifier.removeprefix("if_target_").replace("_", " ")
 
     @staticmethod
     def _unique_preserve_order(items: list[str]) -> list[str]:
@@ -3149,6 +3432,13 @@ class BattleSession:
 
     def _serialize_enemy(self, instance_id: str) -> dict:
         entity = self.state.enemies[instance_id]
+        grappled_by = [self._grapple_payload(grapple) for grapple in self._grapples_for_target(instance_id)]
+        grappling = [self._grapple_payload(grapple) for grapple in self._grapples_by_grappler(instance_id)]
+        derived_statuses = dict(getattr(entity, "statuses", {}) or {})
+        if grappled_by:
+            derived_statuses["grappled"] = {"stacks": len(grappled_by)}
+        if grappling:
+            derived_statuses["grappling"] = {"stacks": len(grappling)}
         draw_groups = [
             {
                 "label": f"Draw {index + 1}",
@@ -3168,7 +3458,10 @@ class BattleSession:
                 "template_info": self._template_info_for(entity),
                 "quick_attack_used": bool(getattr(entity, "quick_attack_used", False)),
                 "effective_movement": self.effective_movement(entity),
-                "status_text": self.format_statuses(entity.statuses),
+                "statuses": derived_statuses,
+                "status_text": self.format_statuses(derived_statuses),
+                "grappled_by": grappled_by,
+                "grappling": grappling,
                 "current_draw_groups": draw_groups,
                 "current_draw_text": [self.card_to_effect_text(card_id) for card_id in self.visible_draw_for(entity)],
                 "current_draw_summary": (

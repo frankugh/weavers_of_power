@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
 
-from engine.runtime_models import DeckState, DungeonIssue, DungeonRoom, DungeonState, DungeonWall, EnemyInstance, Tile
+from engine.runtime_models import DeckState, DungeonIssue, DungeonRoom, DungeonState, DungeonWall, EnemyInstance, GrappleInstance, Tile
 
 
 def _utc_now_iso() -> str:
@@ -214,6 +214,28 @@ def enemy_from_dict(d: Dict[str, Any]) -> EnemyInstance:
     return e
 
 
+def grapple_to_dict(grapple: GrappleInstance) -> Dict[str, Any]:
+    return {
+        "id": grapple.id,
+        "grappler_id": grapple.grappler_id,
+        "target_id": grapple.target_id,
+        "toughness_current": int(grapple.toughness_current),
+        "toughness_max": int(grapple.toughness_max),
+        "created_order": int(grapple.created_order),
+    }
+
+
+def grapple_from_dict(d: Dict[str, Any]) -> GrappleInstance:
+    return GrappleInstance(
+        id=str(d["id"]),
+        grappler_id=str(d["grappler_id"]),
+        target_id=str(d["target_id"]),
+        toughness_current=max(0, int(d.get("toughness_current", 0) or 0)),
+        toughness_max=max(0, int(d.get("toughness_max", 0) or 0)),
+        created_order=max(0, int(d.get("created_order", 0) or 0)),
+    )
+
+
 def make_save_payload(
     *,
     version: int,
@@ -230,6 +252,7 @@ def make_save_payload(
     combat_log: List[str],
     movement_state: Optional[Dict[str, Any]],
     enemies: List[EnemyInstance],
+    grapples: Optional[List[GrappleInstance]] = None,
     dungeon: Optional[DungeonState] = None,
     undo_stack: Optional[List[Dict[str, Any]]] = None,
     redo_stack: Optional[List[Dict[str, Any]]] = None,
@@ -253,6 +276,7 @@ def make_save_payload(
         },
         "order": list(order),
         "enemies": [enemy_to_dict(e) for e in enemies],
+        "grapples": [grapple_to_dict(g) for g in (grapples or [])],
         "dungeon": dungeon_state_to_dict(dungeon) if dungeon is not None else None,
     }
     if undo_stack is not None:
@@ -286,7 +310,19 @@ def save_current(path: Path, payload: Dict[str, Any]) -> None:
 
 def restore_state_from_payload(
     payload: Dict[str, Any],
-) -> Tuple[List[str], Optional[str], Optional[str], bool, Dict[str, int], Optional[Dict[str, Any]], List[EnemyInstance], int, List[str], Optional[DungeonState]]:
+) -> Tuple[
+    List[str],
+    Optional[str],
+    Optional[str],
+    bool,
+    Dict[str, int],
+    Optional[Dict[str, Any]],
+    List[EnemyInstance],
+    List[GrappleInstance],
+    int,
+    List[str],
+    Optional[DungeonState],
+]:
     order = list(payload.get("order", []))
     ui = payload.get("ui", {}) or {}
     selected_id = ui.get("selected_id")
@@ -304,8 +340,14 @@ def restore_state_from_payload(
 
     enemies_raw = payload.get("enemies", []) or []
     enemies = [enemy_from_dict(ed) for ed in enemies_raw]
+    enemy_ids = {enemy.instance_id for enemy in enemies}
+    grapples = [
+        grapple
+        for grapple in (grapple_from_dict(gd) for gd in (payload.get("grapples", []) or []))
+        if grapple.grappler_id in enemy_ids and grapple.target_id in enemy_ids and grapple.toughness_current > 0
+    ]
 
     dungeon_raw = payload.get("dungeon")
     dungeon = dungeon_state_from_dict(dungeon_raw) if isinstance(dungeon_raw, dict) else None
 
-    return order, selected_id, active_turn_id, turn_in_progress, room, movement_state, enemies, round, combat_log, dungeon
+    return order, selected_id, active_turn_id, turn_in_progress, room, movement_state, enemies, grapples, round, combat_log, dungeon

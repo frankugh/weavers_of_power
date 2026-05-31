@@ -708,6 +708,162 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(target.guard_current, 0)
         self.assertEqual(target.armor_current, 1)
 
+    def test_quick_attack_supports_conditional_attack_replacement(self) -> None:
+        session = self.context.create_session("quick-conditional")
+        session.add_enemy_from_template("C_WOLF")
+        attacker_id = session.selected_id
+        attacker = session.state.enemies[attacker_id]
+        session.add_enemy_from_template("C_GOBLIN")
+        target_id = session.selected_id
+        target = session.state.enemies[target_id]
+        target.toughness_current = 10
+        target.toughness_max = 10
+        target.guard_current = 0
+        target.armor_current = 0
+        target.statuses["poison"] = {"stacks": 1}
+        self.context.card_index["test_conditional_poison"] = Card(
+            id="test_conditional_poison",
+            title="Venom Bite",
+            effects=(
+                Effect(type="attack", amount=4),
+                Effect(
+                    type="conditional_attack",
+                    amount=7,
+                    modifiers=("replace_attack", "if_target_poisoned", "condition_any"),
+                ),
+            ),
+        )
+        attacker.deck_state.hand = ["test_conditional_poison"]
+        session.active_turn_id = attacker_id
+        session.turn_in_progress = True
+        session.select(target_id)
+
+        result = session.apply_quick_attack_from_active_draw()
+
+        self.assertEqual(target.toughness_current, 3)
+        self.assertIn("Attack 7", result["quickAttackNotice"])
+        self.assertIn("conditional attack", session.combat_log[1])
+
+    def test_grapple_apply_stacks_and_splits_by_grappler(self) -> None:
+        session = self.context.create_session("grapple-stack")
+        session.add_enemy_from_template("C_WOLF")
+        first_grappler = session.state.enemies[session.selected_id]
+        session.add_enemy_from_template("C_GOBLIN")
+        target = session.state.enemies[session.selected_id]
+        session.add_enemy_from_template("C_HOBGOBLIN")
+        second_grappler = session.state.enemies[session.selected_id]
+
+        session._apply_grapple(first_grappler, target, 3)
+        session._apply_grapple(first_grappler, target, 2)
+        session._apply_grapple(second_grappler, target, 4)
+
+        grapples = session._grapples_for_target(target.instance_id)
+        self.assertEqual(len(grapples), 2)
+        self.assertEqual(sorted(grapple.toughness_max for grapple in grapples), [4, 5])
+        snapshot_target = next(enemy for enemy in session.snapshot()["enemies"] if enemy["instance_id"] == target.instance_id)
+        self.assertEqual(len(snapshot_target["grappled_by"]), 2)
+        self.assertIn("grappled", snapshot_target["statuses"])
+
+    def test_manual_attack_can_damage_selected_units_grapple_without_reductions(self) -> None:
+        session = self.context.create_session("grapple-manual")
+        session.add_enemy_from_template("C_WOLF")
+        grappler = session.state.enemies[session.selected_id]
+        session.add_enemy_from_template("C_GOBLIN")
+        target = session.state.enemies[session.selected_id]
+        target.toughness_current = 10
+        target.toughness_max = 10
+        target.guard_current = 99
+        target.armor_current = 99
+        line = session._apply_grapple(grappler, target, 5)
+        self.assertIn("Grappled", line)
+        grapple = session._preferred_grapple_for_target(target.instance_id)
+        session.select(target.instance_id)
+
+        result = session.apply_attack_to_selected(
+            damage=3,
+            modifiers=[],
+            add_burn=False,
+            add_poison=False,
+            add_slow=False,
+            add_paralyze=False,
+            target_mode="grapple",
+            grapple_id=grapple.id,
+        )
+
+        self.assertEqual(target.toughness_current, 10)
+        self.assertEqual(target.guard_current, 99)
+        self.assertEqual(result["grappleEvents"][0]["toughnessAfter"], 2)
+        self.assertEqual(session.state.grapples[grapple.id].toughness_current, 2)
+
+    def test_damage_to_grappler_reduces_grapples_they_hold(self) -> None:
+        session = self.context.create_session("grapple-spill")
+        session.add_enemy_from_template("C_WOLF")
+        grappler = session.state.enemies[session.selected_id]
+        session.add_enemy_from_template("C_GOBLIN")
+        target = session.state.enemies[session.selected_id]
+        grappler.toughness_current = 10
+        grappler.toughness_max = 10
+        grappler.guard_current = 0
+        grappler.armor_current = 0
+        session._apply_grapple(grappler, target, 5)
+        grapple = session._preferred_grapple_for_target(target.instance_id)
+        session.select(grappler.instance_id)
+
+        session.apply_attack_to_selected(
+            damage=2,
+            modifiers=[],
+            add_burn=False,
+            add_poison=False,
+            add_slow=False,
+            add_paralyze=False,
+        )
+
+        self.assertEqual(grappler.toughness_current, 8)
+        self.assertEqual(session.state.grapples[grapple.id].toughness_current, 3)
+
+    def test_quick_attack_targets_lowest_toughness_grapple_when_active_is_grappled(self) -> None:
+        session = self.context.create_session("quick-grapple")
+        session.add_enemy_from_template("C_WOLF")
+        attacker_id = session.selected_id
+        attacker = session.state.enemies[attacker_id]
+        session.add_enemy_from_template("C_GOBLIN")
+        first_grappler = session.state.enemies[session.selected_id]
+        session.add_enemy_from_template("C_HOBGOBLIN")
+        second_grappler = session.state.enemies[session.selected_id]
+        session._apply_grapple(first_grappler, attacker, 4)
+        session._apply_grapple(second_grappler, attacker, 2)
+        attacker.deck_state.hand = ["basic_a3"]
+        session.active_turn_id = attacker_id
+        session.turn_in_progress = True
+        first_toughness = first_grappler.toughness_current
+        second_toughness = second_grappler.toughness_current
+
+        result = session.apply_quick_attack_from_active_draw()
+
+        self.assertEqual(result["quickAttack"]["targetType"], "grapple")
+        self.assertEqual(first_grappler.toughness_current, first_toughness)
+        self.assertEqual(second_grappler.toughness_current, second_toughness)
+        remaining_grapples = session._grapples_for_target(attacker.instance_id)
+        self.assertEqual(len(remaining_grapples), 1)
+        self.assertEqual(remaining_grapples[0].toughness_current, 4)
+
+    def test_save_load_preserves_grapple_state(self) -> None:
+        session = self.context.create_session("grapple-save")
+        session.add_enemy_from_template("C_WOLF")
+        grappler = session.state.enemies[session.selected_id]
+        session.add_enemy_from_template("C_GOBLIN")
+        target = session.state.enemies[session.selected_id]
+        session._apply_grapple(grappler, target, 5)
+
+        restored = self.context.create_session("grapple-restore")
+        restored.load_from_payload(session.undo_payload(), load_undo_stack=False)
+
+        self.assertEqual(len(restored.state.grapples), 1)
+        restored_grapple = next(iter(restored.state.grapples.values()))
+        self.assertEqual(restored_grapple.grappler_id, grappler.instance_id)
+        self.assertEqual(restored_grapple.target_id, target.instance_id)
+        self.assertEqual(restored_grapple.toughness_current, 5)
+
     def test_quick_attack_rejects_invalid_state(self) -> None:
         no_active = self.context.create_session("quick-no-active")
         no_active.add_enemy_from_template("C_WOLF")

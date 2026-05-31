@@ -56,6 +56,17 @@ class DeckState:
     discard_pile: list[str] = field(default_factory=list)
     hand: list[str] = field(default_factory=list)          # cards drawn this turn (ids)
 
+
+@dataclass
+class GrappleInstance:
+    id: str
+    grappler_id: str
+    target_id: str
+    toughness_current: int
+    toughness_max: int
+    created_order: int
+
+
 @dataclass
 class EnemyInstance:
     instance_id: str

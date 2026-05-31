@@ -5,7 +5,7 @@ import random
 import uuid
 
 from engine.models import Deck, EnemyTemplate, Card
-from engine.runtime_models import EnemyInstance, DeckState
+from engine.runtime_models import EnemyInstance, DeckState, GrappleInstance
 from engine.turn_hooks import on_turn_start, on_turn_end
 from engine.loot import roll_loot
 
@@ -235,6 +235,7 @@ def roll_loot_for_enemy(enemy: EnemyInstance, template: EnemyTemplate, *, rnd: O
 @dataclass
 class BattleState:
     enemies: dict[str, EnemyInstance] = field(default_factory=dict)
+    grapples: dict[str, GrappleInstance] = field(default_factory=dict)
 
     def add_enemy(self, enemy: EnemyInstance) -> None:
         if enemy.instance_id in self.enemies:
@@ -243,3 +244,8 @@ class BattleState:
 
     def remove_enemy(self, instance_id: str) -> None:
         self.enemies.pop(instance_id, None)
+        self.grapples = {
+            grapple_id: grapple
+            for grapple_id, grapple in self.grapples.items()
+            if grapple.grappler_id != instance_id and grapple.target_id != instance_id
+        }

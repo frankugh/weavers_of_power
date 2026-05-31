@@ -102,6 +102,8 @@ class AttackRequest(BaseModel):
     poison: bool = False
     slow: bool = False
     paralyze: bool = False
+    targetMode: Literal["creature", "grapple"] = "creature"
+    grappleId: str | None = None
 
 
 class HealRequest(BaseModel):
@@ -484,6 +486,8 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
                 add_poison=request.poison,
                 add_slow=request.slow,
                 add_paralyze=request.paralyze,
+                target_mode=request.targetMode,
+                grapple_id=request.grappleId,
             ),
         )
 

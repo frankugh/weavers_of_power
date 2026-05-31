@@ -585,10 +585,12 @@ describe("App", () => {
         },
       },
     };
+    const requestBodies = [];
     renderWithSnapshot(buildSnapshot(), {
       extraFetch: (url, requestOptions) => {
         if (url === "/api/combat-sim/simulate") {
           const body = JSON.parse(requestOptions.body);
+          requestBodies.push(body);
           expect(body.runs).toBe(1);
           expect(body.strategyA).toBe("highest_toughness");
           return jsonResponse(simResult);
@@ -602,6 +604,11 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Quick Simulate" }));
 
     await screen.findByText("Team A wins in round 1.");
+    expect(requestBodies[0].seed).toBeNull();
+    expect(screen.getByLabelText("Fixed seed")).toHaveValue(null);
+    await user.click(screen.getByRole("button", { name: "Quick Simulate" }));
+    await waitFor(() => expect(requestBodies).toHaveLength(2));
+    expect(requestBodies[1].seed).toBeNull();
     expect(screen.getAllByText("Init 8 (5+3)").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Bandit 1").length).toBeGreaterThan(0);
   });
@@ -1295,6 +1302,52 @@ describe("App", () => {
     expect(screen.getByLabelText("Toughness 4/5 after wounds")).toBeInTheDocument();
   });
 
+  it("shows grapple status and posts manual attacks against a selected grapple", async () => {
+    const user = userEvent.setup();
+    const grapple = {
+      id: "grapple-1",
+      grapplerId: "enemy-2",
+      targetId: "enemy-1",
+      grapplerName: "Wolf 1",
+      targetName: "Goblin 1",
+      toughnessCurrent: 5,
+      toughnessMax: 8,
+      createdOrder: 1,
+    };
+    const goblin = buildEnemy({
+      toughness_current: 10,
+      toughness_max: 10,
+      grappled_by: [grapple],
+      grappling: [],
+      statuses: { grappled: { stacks: 1 } },
+      status_text: "grappled(1)",
+    });
+    let postedAttack = null;
+
+    renderWithSnapshot(buildSnapshot({ enemies: [goblin] }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/attack" && requestOptions?.method === "POST") {
+          postedAttack = JSON.parse(requestOptions.body);
+          return jsonResponse(buildSnapshot({ enemies: [goblin] }));
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    expect(screen.getByText("Grappled T 5/8")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Attack enemy" }));
+    await user.click(await screen.findByRole("button", { name: "Target Grapple" }));
+    await user.click(screen.getByRole("button", { name: "Apply attack" }));
+
+    expect(postedAttack).toMatchObject({
+      damage: 1,
+      targetMode: "grapple",
+      grappleId: "grapple-1",
+    });
+  });
+
   it("posts quick attack from the action bar and shows player wounds", async () => {
     const user = userEvent.setup();
     const attacker = buildEnemy({
@@ -1368,6 +1421,72 @@ describe("App", () => {
     });
     expect(await screen.findByText("Player Wounds")).toBeInTheDocument();
     expect(screen.getByText((_, node) => node?.textContent === "Mira gains 1 wound.")).toBeInTheDocument();
+  });
+
+  it("posts quick attack without a selected target when the active NPC is grappled", async () => {
+    const user = userEvent.setup();
+    const grapple = {
+      id: "grapple-1",
+      grapplerId: "enemy-2",
+      targetId: "enemy-1",
+      grapplerName: "Wolf 1",
+      targetName: "Goblin 1",
+      toughnessCurrent: 2,
+      toughnessMax: 4,
+      createdOrder: 1,
+    };
+    const attacker = buildEnemy({
+      instance_id: "enemy-1",
+      name: "Goblin 1",
+      current_draw_text: ["Attack 3"],
+      current_draw_attacks: [{ damage: 3, modifiers: [], label: "Attack 3" }],
+      grappled_by: [grapple],
+      statuses: { grappled: { stacks: 1 } },
+      status_text: "grappled(1)",
+    });
+    const other = buildEnemy({
+      instance_id: "enemy-2",
+      name: "Wolf 1",
+      grid_x: 5,
+      grid_y: 3,
+    });
+    const attackedSnapshot = buildSnapshot({
+      selectedId: "enemy-1",
+      activeTurnId: "enemy-1",
+      turnInProgress: true,
+      order: ["enemy-1", "enemy-2"],
+      enemies: [{ ...attacker, grappled_by: [] }, other],
+      quickAttackNotice: "Quick Attack: Goblin 1 attacks Grapple on Goblin 1 with Attack 3.",
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "enemy-1",
+        activeTurnId: "enemy-1",
+        turnInProgress: true,
+        order: ["enemy-1", "enemy-2"],
+        enemies: [attacker, other],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/turn/quick-attack" && requestOptions?.method === "POST") {
+            return jsonResponse(attackedSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Quick Attack" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/turn/quick-attack",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(await screen.findByText("Quick Attack: Goblin 1 attacks Grapple on Goblin 1 with Attack 3.")).toBeInTheDocument();
   });
 
   it("shows player wound counts and confirms deck wound removal", async () => {

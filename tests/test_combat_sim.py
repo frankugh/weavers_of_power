@@ -82,6 +82,58 @@ class CombatSimTests(unittest.TestCase):
         self.assertEqual(parsed["manualNotes"], [])
         self.assertEqual(parsed["effects"][0]["modifiers"], ["sunder:2", "overwhelm", "shatter"])
 
+    def test_parser_helper_parses_simple_and_conditional_grapple(self) -> None:
+        conditional = parse_creature_action(
+            action_result="A1",
+            action_text="Claw - Attack 2. If this deals damage, Grappled 3.",
+        )
+        simple = parse_creature_action(action_result="A2", action_text="Grab - Grapple 8")
+        conditional_manual = parse_creature_action(
+            action_result="A3",
+            action_text=(
+                "Pack Drag - Attack 2. If this deals damage and another wolf is adjacent "
+                "to the target, the target becomes Prone and Grappled 4."
+            ),
+        )
+
+        self.assertEqual(
+            [(effect["type"], effect["amount"], effect["modifiers"]) for effect in conditional["effects"]],
+            [("attack", 2, []), ("grapple", 3, ["on_damage"])],
+        )
+        self.assertEqual(simple["effects"], [{"type": "grapple", "amount": 8, "modifiers": []}])
+        self.assertFalse(any(effect["type"] == "grapple" for effect in conditional_manual["effects"]))
+        self.assertIn(conditional_manual["coverageStatus"], {"manual", "warning"})
+
+    def test_parser_helper_parses_conditional_attack_replacements_for_known_conditions(self) -> None:
+        maul = parse_creature_action(
+            action_result="A1",
+            action_text=(
+                "Maul - Attack 4. If this deals damage, Grapple 6. "
+                "If the target is already Prone or Grappled, Attack 9 instead."
+            ),
+        )
+        poison = parse_creature_action(
+            action_result="A2",
+            action_text="Venom Bite - Attack 3. If the target is poisoned, deal Attack 7 instead.",
+        )
+        unknown = parse_creature_action(
+            action_result="A3",
+            action_text="Vengeful Strike - Attack 3. If the target is bloodied, Attack 7 instead.",
+        )
+
+        self.assertEqual(maul["coverageStatus"], "full")
+        self.assertEqual(
+            [(effect["type"], effect["amount"], effect["modifiers"]) for effect in maul["effects"]],
+            [
+                ("attack", 4, []),
+                ("conditional_attack", 9, ["replace_attack", "if_target_prone", "if_target_grappled", "condition_any"]),
+                ("grapple", 6, ["on_damage"]),
+            ],
+        )
+        self.assertEqual(poison["effects"][1]["modifiers"], ["replace_attack", "if_target_poisoned", "condition_any"])
+        self.assertFalse(any(effect["type"] == "conditional_attack" for effect in unknown["effects"]))
+        self.assertEqual(unknown["coverageStatus"], "warning")
+
     def test_single_sim_is_deterministic_for_fixed_seed(self) -> None:
         templates = {
             "attacker": make_template("attacker", "Attacker", initiative=3),
@@ -419,6 +471,150 @@ class CombatSimTests(unittest.TestCase):
         attacker = next(unit for unit in result["finalUnits"] if unit["templateId"] == "attacker")
         self.assertEqual(attacker["guardCurrent"], 2)
         self.assertIn("+1 draw", result["timeline"][0]["log"][1])
+
+    def test_grappled_unit_attacks_lowest_toughness_grapple(self) -> None:
+        templates = {
+            "grappler": make_template(
+                "grappler",
+                "Grappler",
+                initiative=10,
+                cards=(Card(id="grab", title="Grab", effects=(Effect(type="attack", amount=1), Effect(type="grapple", amount=5))),),
+            ),
+            "target": make_template(
+                "target",
+                "Target",
+                toughness=10,
+                initiative=0,
+                cards=(Card(id="break", title="Break", effects=(Effect(type="attack", amount=2),)),),
+            ),
+        }
+
+        result = simulate_combat_once(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[{"templateId": "grappler", "count": 1}],
+            team_b=[{"templateId": "target", "count": 1}],
+            seed=1,
+            max_rounds=1,
+        )
+
+        self.assertEqual(result["timeline"][0]["actions"][1]["type"], "grapple")
+        self.assertEqual(result["timeline"][1]["actions"][0]["targetType"], "grapple")
+        target = next(unit for unit in result["finalUnits"] if unit["templateId"] == "target")
+        self.assertEqual(target["grappledBy"][0]["toughnessCurrent"], 3)
+        self.assertIn("grappled", target["statuses"])
+
+    def test_turn_payload_keeps_reshuffle_card_visible_for_actor(self) -> None:
+        templates = {
+            "attacker": make_template(
+                "attacker",
+                "Attacker",
+                initiative=10,
+                cards=(
+                    Card(
+                        id="reshuffle_hit",
+                        title="Bear Up",
+                        effects=(Effect(type="guard", amount=2),),
+                        action_text="Bear Up - Gain 2 Guard.",
+                        reshuffle=True,
+                    ),
+                ),
+            ),
+            "target": make_template("target", "Target", power=0),
+        }
+
+        result = simulate_combat_once(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[{"templateId": "attacker", "count": 1}],
+            team_b=[{"templateId": "target", "count": 1}],
+            seed=1,
+            max_rounds=1,
+        )
+
+        turn = result["timeline"][0]
+        attacker = next(unit for unit in turn["units"] if unit["templateId"] == "attacker")
+        self.assertEqual(turn["draw"], ["Bear Up - Gain 2 Guard."])
+        self.assertEqual(attacker["currentDraw"], ["Bear Up - Gain 2 Guard."])
+        self.assertEqual(attacker["deckCounts"]["hand"], 0)
+
+    def test_conditional_attack_replaces_damage_when_target_condition_matches(self) -> None:
+        templates = {
+            "grappler": make_template(
+                "grappler",
+                "Grappler",
+                initiative=20,
+                cards=(Card(id="grab", title="Grab", effects=(Effect(type="grapple", amount=6),)),),
+            ),
+            "mauler": make_template(
+                "mauler",
+                "Mauler",
+                initiative=10,
+                cards=(
+                    Card(
+                        id="maul",
+                        title="Maul",
+                        effects=(
+                            Effect(type="attack", amount=4),
+                            Effect(
+                                type="conditional_attack",
+                                amount=9,
+                                modifiers=("replace_attack", "if_target_grappled", "condition_any"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            "target": make_template("target", "Target", toughness=12, power=0),
+        }
+
+        result = simulate_combat_once(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[{"templateId": "grappler", "count": 1}, {"templateId": "mauler", "count": 1}],
+            team_b=[{"templateId": "target", "count": 1}],
+            seed=1,
+            max_rounds=1,
+        )
+
+        maul_action = next(action for turn in result["timeline"] for action in turn["actions"] if action.get("cardId") == "maul")
+        self.assertEqual(maul_action["baseDamage"], 4)
+        self.assertEqual(maul_action["selectedDamage"], 9)
+        self.assertEqual(maul_action["damage"], 9)
+
+    def test_conditional_grapple_requires_toughness_damage(self) -> None:
+        templates = {
+            "grappler": make_template(
+                "grappler",
+                "Grappler",
+                initiative=10,
+                cards=(
+                    Card(
+                        id="bounce_grab",
+                        title="Bounce Grab",
+                        effects=(Effect(type="attack", amount=1), Effect(type="grapple", amount=5, modifiers=("on_damage",))),
+                    ),
+                ),
+            ),
+            "target": make_template("target", "Target", toughness=10, armor=5, power=0),
+        }
+
+        result = simulate_combat_once(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[{"templateId": "grappler", "count": 1}],
+            team_b=[{"templateId": "target", "count": 1}],
+            seed=1,
+            max_rounds=1,
+        )
+
+        self.assertEqual(result["timeline"][0]["actions"][1]["type"], "skipped")
+        target = next(unit for unit in result["finalUnits"] if unit["templateId"] == "target")
+        self.assertEqual(target["grappledBy"], [])
 
     def test_batch_uses_incrementing_seeds_and_keeps_last_combat(self) -> None:
         templates = {

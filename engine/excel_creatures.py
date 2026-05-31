@@ -349,6 +349,15 @@ def _coverage_status(action_text: str, effects: tuple[Effect, ...], manual_notes
         return SIM_COVERAGE_ERROR
     if not manual_notes:
         return SIM_COVERAGE_FULL
+    if any(
+        re.search(
+            r"\bif\s+(?:the\s+)?target\b.+\b(?:attack\s+\d+|\d+\s*(?:dmg|damage))\s+instead\b",
+            note,
+            flags=re.I,
+        )
+        for note in manual_notes
+    ):
+        return SIM_COVERAGE_WARNING
     return SIM_COVERAGE_MANUAL if _manual_notes_are_known(manual_notes) else SIM_COVERAGE_WARNING
 
 
@@ -407,6 +416,40 @@ def _parse_action_effects(body: str) -> tuple[tuple[Effect, ...], tuple[str, ...
         effects.append(Effect(type="attack", amount=int(attack.group(1)), modifiers=modifiers))
         simplified = simplified[:attack.start()] + simplified[attack.end():]
 
+    for conditional_attack in _iter_conditional_attack_matches(body):
+        condition_text = conditional_attack["conditions"]
+        condition_modifiers = _parse_conditional_attack_conditions(condition_text)
+        if condition_modifiers:
+            modifiers: list[str] = ["replace_attack", *condition_modifiers]
+            modifiers.append("condition_all" if _condition_text_uses_all(condition_text) else "condition_any")
+            effects.append(
+                Effect(
+                    type="conditional_attack",
+                    amount=max(0, int(conditional_attack["amount"])),
+                    modifiers=tuple(modifiers),
+                )
+            )
+            simplified = simplified.replace(conditional_attack["text"], "")
+
+    for grapple in re.finditer(r"\bgrappled?\s+(\d+)\b", body, flags=re.I):
+        amount = max(0, int(grapple.group(1)))
+        if amount <= 0:
+            continue
+        sentence_start = max(body.rfind(".", 0, grapple.start()) + 1, body.rfind(";", 0, grapple.start()) + 1)
+        prefix = body[sentence_start:grapple.start()]
+        conditional_prefix = prefix.strip().lower()
+        conditional_prefix = re.sub(r"^if\s+this\s+deals\s+damage\s*,?\s*", "", conditional_prefix)
+        conditional_prefix = conditional_prefix.strip(" ,.;:-")
+        if conditional_prefix and re.search(
+            r"\b(adjacent|nearby|within|range|prone|already|another|bloodied|down)\b",
+            conditional_prefix,
+            flags=re.I,
+        ):
+            continue
+        modifiers = ("on_damage",) if re.search(r"\bif\s+this\s+deals\s+damage\b", prefix, flags=re.I) else tuple()
+        effects.append(Effect(type="grapple", amount=amount, modifiers=modifiers))
+        simplified = simplified.replace(grapple.group(0), "")
+
     for guard in re.finditer(r"\bgains?\s+(\d+)\s+guard\b", body, flags=re.I):
         effects.append(Effect(type="guard", amount=int(guard.group(1))))
         simplified = simplified.replace(guard.group(0), "")
@@ -425,14 +468,74 @@ def _parse_action_effects(body: str) -> tuple[tuple[Effect, ...], tuple[str, ...
         r"\boverwhelm\b",
         r"\bshatter\b",
         r"\bparaly[sz]e\b",
+        r"\bif\s+this\s+deals\s+damage,?\b",
+        r"\bthe\s+target\s+becomes\b",
+        r"\btarget\s+becomes\b",
         r"\branged\s+",
         r"\bmagic\s+",
     ):
         simplified = re.sub(pattern, "", simplified, flags=re.I)
+    simplified = re.sub(r"\b(?:and|or)\b\s*$", "", simplified, flags=re.I)
     simplified = re.sub(r"^[\s,.;:—-]+|[\s,.;:—-]+$", "", simplified)
     simplified = re.sub(r"\s+", " ", simplified)
     manual_notes = (simplified,) if simplified else tuple()
     return tuple(effects), manual_notes
+
+
+def _iter_conditional_attack_matches(body: str) -> list[dict[str, str]]:
+    matches: list[dict[str, str]] = []
+    pattern = re.compile(
+        r"\bif\s+(?:the\s+)?target\s+(?:(?:is|has|is affected by)\s+)?(?:already\s+)?"
+        r"(?P<conditions>.+?)\s*,?\s+"
+        r"(?:deal\s+)?(?:attack\s+(?P<attack_amount>\d+)|(?P<damage_amount>\d+)\s*(?:dmg|damage))\s+instead\b",
+        flags=re.I,
+    )
+    for match in pattern.finditer(body):
+        amount = match.group("attack_amount") or match.group("damage_amount")
+        if amount:
+            matches.append({"text": match.group(0), "conditions": match.group("conditions"), "amount": amount})
+    return matches
+
+
+def _condition_text_uses_all(condition_text: str) -> bool:
+    return bool(re.search(r"\band\b", condition_text, flags=re.I)) and not re.search(r"\bor\b", condition_text, flags=re.I)
+
+
+def _parse_conditional_attack_conditions(condition_text: str) -> list[str]:
+    pieces = [
+        piece.strip(" ,.;:-")
+        for piece in re.split(r"\b(?:or|and)\b|/|,", condition_text, flags=re.I)
+        if piece.strip(" ,.;:-")
+    ]
+    modifiers: list[str] = []
+    for piece in pieces:
+        normalized = re.sub(r"\balready\b", "", piece, flags=re.I)
+        normalized = re.sub(r"\b(?:is|has|the|target|a|an)\b", "", normalized, flags=re.I)
+        normalized = re.sub(r"\s+", " ", normalized).strip().lower()
+        condition = _condition_modifier_for_text(normalized)
+        if condition is None:
+            return []
+        modifiers.append(condition)
+    return list(dict.fromkeys(modifiers))
+
+
+def _condition_modifier_for_text(text: str) -> str | None:
+    compact = text.strip().lower()
+    if re.fullmatch(r"grappled?|in a grapple", compact):
+        return "if_target_grappled"
+    if compact == "prone":
+        return "if_target_prone"
+    if compact in {"poisoned", "poison"}:
+        return "if_target_poisoned"
+    if compact in {"burning", "burned", "burn"}:
+        return "if_target_burning"
+    if compact in {"slowed", "slow"}:
+        return "if_target_slowed"
+    if compact in {"paralyzed", "paralysed", "paralyze", "paralyse"}:
+        return "if_target_paralyzed"
+    if compact in {"stunned", "stun"}:
+        return "if_target_stunned"
+    return None
 
 
 def _parse_attack_modifiers(body: str) -> tuple[str, ...]:

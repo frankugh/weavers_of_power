@@ -105,6 +105,8 @@ const DRAW_REVEAL_TIMING = {
 };
 const EMPTY_ATTACK_FORM = {
   damage: 1,
+  targetMode: "creature",
+  grappleId: "",
   pierceAmount: 1,
   sunderAmount: 1,
   modifiers: {
@@ -907,6 +909,8 @@ function App() {
   const selectedIsKo = Boolean(selectedEntity?.is_ko);
   const selectedPowerDrawUsed = Boolean(selectedEntity?.power_draw_used);
   const selectedWoundCounts = selectedEntity?.wound_counts || { hand: 0, discard: 0, draw_pile: 0, total: 0 };
+  const selectedGrappledBy = selectedEntity?.grappled_by || [];
+  const selectedGrappling = selectedEntity?.grappling || [];
   const movementState = snapshot?.movementState || null;
   const dungeon = snapshot?.dungeon || null;
   const selectedIsActive = Boolean(selectedEntity && snapshot?.activeTurnId === selectedEntity.instance_id);
@@ -974,13 +978,15 @@ function App() {
   }, [dungeon, selectedEntity?.grid_x, selectedEntity?.grid_y, selectedEntity?.instance_id]);
   const activeDrawAttacks = activeEntity?.current_draw_attacks || [];
   const quickAttackAlreadyUsed = Boolean(activeEntity?.quick_attack_used);
+  const activeEntityGrappled = Boolean(activeEntity?.grappled_by?.length);
   const hasQuickAttackTarget = Boolean(
     activeEntity &&
-      selectedEntity &&
       !activeEntity.is_player &&
       snapshot.turnInProgress &&
-      activeEntity.instance_id !== selectedEntity.instance_id &&
-      !selectedIsDown &&
+      (activeEntityGrappled ||
+        (selectedEntity &&
+          activeEntity.instance_id !== selectedEntity.instance_id &&
+          !selectedIsDown)) &&
       activeDrawAttacks.length > 0,
   );
   const canQuickAttack = hasQuickAttackTarget && !quickAttackAlreadyUsed;
@@ -2012,6 +2018,8 @@ function App() {
         body: JSON.stringify({
           damage: Number(attackForm.damage),
           modifiers,
+          targetMode: attackForm.targetMode || "creature",
+          grappleId: attackForm.targetMode === "grapple" ? attackForm.grappleId || null : null,
           burn: attackForm.statuses.burn,
           poison: attackForm.statuses.poison,
           slow: attackForm.statuses.slow,
@@ -2967,6 +2975,20 @@ function App() {
                       ) : null}
                       {activeDetachedEntity ? <span className="selected-meta">{`Turn: ${activeDetachedEntity.name}`}</span> : null}
                     </div>
+                    {selectedGrappledBy.length || selectedGrappling.length ? (
+                      <div className="selected-meta-row">
+                        {selectedGrappledBy.map((grapple) => (
+                          <span className="badge badge-status" key={grapple.id}>
+                            {`Grappled T ${grapple.toughnessCurrent}/${grapple.toughnessMax}`}
+                          </span>
+                        ))}
+                        {selectedGrappling.map((grapple) => (
+                          <span className="badge badge-status" key={grapple.id}>
+                            {`Grappling ${grapple.targetName || "target"} T ${grapple.toughnessCurrent}/${grapple.toughnessMax}`}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
 
                   {isPlayerSelected && selectedPowerDrawUsed && selectedEntity.power_draw_cards?.length > 0 ? (
@@ -3347,6 +3369,48 @@ function App() {
         closeOnOutsideClick={false}
       >
         <form className="modal-form" onSubmit={handleAttackSubmit}>
+          {selectedGrappledBy.length ? (
+            <div className="form-section">
+              <div className="form-section-title">Target</div>
+              <div className="segmented-control">
+                <button
+                  type="button"
+                  className={attackForm.targetMode !== "grapple" ? "active" : ""}
+                  onClick={() => setAttackForm((current) => ({ ...current, targetMode: "creature", grappleId: "" }))}
+                >
+                  Creature
+                </button>
+                <button
+                  type="button"
+                  className={attackForm.targetMode === "grapple" ? "active" : ""}
+                  onClick={() =>
+                    setAttackForm((current) => ({
+                      ...current,
+                      targetMode: "grapple",
+                      grappleId: current.grappleId || selectedGrappledBy[0]?.id || "",
+                    }))
+                  }
+                >
+                  Target Grapple
+                </button>
+              </div>
+              {attackForm.targetMode === "grapple" && selectedGrappledBy.length > 1 ? (
+                <label className="field">
+                  <span>Grapple</span>
+                  <select
+                    value={attackForm.grappleId || selectedGrappledBy[0]?.id || ""}
+                    onChange={(event) => setAttackForm((current) => ({ ...current, grappleId: event.target.value }))}
+                  >
+                    {selectedGrappledBy.map((grapple) => (
+                      <option key={grapple.id} value={grapple.id}>
+                        {`${grapple.grapplerName || "Grappler"} T ${grapple.toughnessCurrent}/${grapple.toughnessMax}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+            </div>
+          ) : null}
           <label className="field">
             <span>Damage</span>
             <input
@@ -4431,6 +4495,38 @@ function parseCombatActionPreview(result, actionText, sourceAction = {}) {
     effects.push({ type: "attack", amount: Number(attack[1]), modifiers: parseCombatAttackModifiers(body) });
     simplified = `${simplified.slice(0, attack.index)}${simplified.slice((attack.index || 0) + attack[0].length)}`;
   }
+  for (const match of body.matchAll(/\bif\s+(?:the\s+)?target\s+(?:(?:is|has|is affected by)\s+)?(?:already\s+)?(.+?)\s*,?\s+(?:deal\s+)?(?:attack\s+(\d+)|(\d+)\s*(?:dmg|damage))\s+instead\b/gi)) {
+    const conditionText = match[1] || "";
+    const conditionModifiers = parseCombatConditionalAttackConditions(conditionText);
+    const amount = Number(match[2] || match[3] || 0);
+    if (conditionModifiers.length && amount > 0) {
+      effects.push({
+        type: "conditional_attack",
+        amount,
+        modifiers: [
+          "replace_attack",
+          ...conditionModifiers,
+          conditionTextUsesAll(conditionText) ? "condition_all" : "condition_any",
+        ],
+      });
+      simplified = simplified.replace(match[0], "");
+    }
+  }
+  for (const match of body.matchAll(/\bgrappled?\s+(\d+)\b/gi)) {
+    const amount = Math.max(0, Number(match[1]) || 0);
+    if (amount <= 0) continue;
+    const matchIndex = match.index || 0;
+    const sentenceStart = Math.max(body.lastIndexOf(".", matchIndex) + 1, body.lastIndexOf(";", matchIndex) + 1);
+    const prefix = body.slice(sentenceStart, matchIndex);
+    let conditionalPrefix = prefix.toLowerCase().replace(/^if\s+this\s+deals\s+damage\s*,?\s*/, "");
+    conditionalPrefix = conditionalPrefix.replace(/^[\s,.;:-]+|[\s,.;:-]+$/g, "");
+    if (conditionalPrefix && /\b(adjacent|nearby|within|range|prone|already|another|bloodied|down)\b/i.test(conditionalPrefix)) {
+      continue;
+    }
+    const modifiers = /\bif\s+this\s+deals\s+damage\b/i.test(prefix) ? ["on_damage"] : [];
+    effects.push({ type: "grapple", amount, modifiers });
+    simplified = simplified.replace(match[0], "");
+  }
   for (const match of body.matchAll(/\bgain\s+(\d+)\s+guard\b/gi)) {
     effects.push({ type: "guard", amount: Number(match[1]), modifiers: [] });
     simplified = simplified.replace(match[0], "");
@@ -4449,11 +4545,15 @@ function parseCombatActionPreview(result, actionText, sourceAction = {}) {
     /\boverwhelm\b/gi,
     /\bshatter\b/gi,
     /\bparaly[sz]e\b/gi,
+    /\bif\s+this\s+deals\s+damage,?\b/gi,
+    /\bthe\s+target\s+becomes\b/gi,
+    /\btarget\s+becomes\b/gi,
     /\branged\s+/gi,
     /\bmagic\s+/gi,
   ].forEach((pattern) => {
     simplified = simplified.replace(pattern, "");
   });
+  simplified = simplified.replace(/\b(?:and|or)\b\s*$/gi, "");
   simplified = simplified.replace(/^[\s,.;:\u2014-]+|[\s,.;:\u2014-]+$/g, "").replace(/\s+/g, " ").trim();
   const manualNotes = simplified ? [simplified] : [];
   const coverageStatus = combatActionCoverageStatus(text, effects, manualNotes);
@@ -4497,6 +4597,13 @@ function combatActionCoverageStatus(actionText, effects, manualNotes) {
     return "error";
   }
   if (!manualNotes.length) return "full";
+  if (
+    manualNotes.some((note) =>
+      /\bif\s+(?:the\s+)?target\b.+\b(?:attack\s+\d+|\d+\s*(?:dmg|damage))\s+instead\b/i.test(note),
+    )
+  ) {
+    return "warning";
+  }
   return manualNotes.every((note) => combatManualNoteIsKnown(note)) ? "manual" : "warning";
 }
 
@@ -4691,7 +4798,60 @@ function formatCombatEffect(effect) {
   }
   if (effect.type === "guard") return `Guard ${effect.amount}`;
   if (effect.type === "draw") return `Draw ${effect.amount}`;
+  if (effect.type === "grapple") {
+    return (effect.modifiers || []).includes("on_damage")
+      ? `Grapple ${effect.amount} (on damage)`
+      : `Grapple ${effect.amount}`;
+  }
+  if (effect.type === "conditional_attack") {
+    const conditions = (effect.modifiers || [])
+      .filter((modifier) => String(modifier).startsWith("if_target_"))
+      .map(formatCombatConditionModifier);
+    return conditions.length
+      ? `If target ${conditions.join((effect.modifiers || []).includes("condition_all") ? " and " : " or ")}: Attack ${effect.amount} instead`
+      : `Conditional Attack ${effect.amount}`;
+  }
   return `${effect.type} ${effect.amount ?? ""}`.trim();
+}
+
+function formatCombatConditionModifier(modifier) {
+  return titleCaseFromSnake(String(modifier).replace(/^if_target_/, ""));
+}
+
+function conditionTextUsesAll(conditionText) {
+  return /\band\b/i.test(conditionText) && !/\bor\b/i.test(conditionText);
+}
+
+function parseCombatConditionalAttackConditions(conditionText) {
+  const pieces = String(conditionText || "")
+    .split(/\b(?:or|and)\b|\/|,/i)
+    .map((piece) =>
+      piece
+        .replace(/\balready\b/gi, "")
+        .replace(/\b(?:is|has|the|target|a|an)\b/gi, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase(),
+    )
+    .filter(Boolean);
+  const modifiers = [];
+  for (const piece of pieces) {
+    const modifier = combatConditionModifierForText(piece);
+    if (!modifier) return [];
+    modifiers.push(modifier);
+  }
+  return [...new Set(modifiers)];
+}
+
+function combatConditionModifierForText(text) {
+  if (/^(grappled?|in a grapple)$/.test(text)) return "if_target_grappled";
+  if (text === "prone") return "if_target_prone";
+  if (["poisoned", "poison"].includes(text)) return "if_target_poisoned";
+  if (["burning", "burned", "burn"].includes(text)) return "if_target_burning";
+  if (["slowed", "slow"].includes(text)) return "if_target_slowed";
+  if (["paralyzed", "paralysed", "paralyze", "paralyse"].includes(text)) return "if_target_paralyzed";
+  if (["stunned", "stun"].includes(text)) return "if_target_stunned";
+  return null;
 }
 
 function formatCombatModifier(modifier) {
@@ -4799,6 +4959,9 @@ function CombatSimView({ meta, onMetaUpdate }) {
     event.preventDefault();
     const normalizedA = normalizeTeam(teamA);
     const normalizedB = normalizeTeam(teamB);
+    const seedText = String(seed || "").trim();
+    const requestedSeed = Number(seedText);
+    const hasFixedSeed = seedText !== "" && Number.isFinite(requestedSeed) && requestedSeed > 0;
     if (!normalizedA.length || !normalizedB.length) {
       setSimError("Both teams need at least one creature.");
       return;
@@ -4814,7 +4977,7 @@ function CombatSimView({ meta, onMetaUpdate }) {
           teamB: normalizedB,
           strategyA,
           strategyB,
-          seed: seed === "" ? null : Number(seed),
+          seed: hasFixedSeed ? requestedSeed : null,
           runs: mode === "batch" ? Math.max(1, Math.min(1000, Number(runs) || 100)) : 1,
           precisionTargetPercent:
             mode === "batch" && precisionTargetPercent !== ""
@@ -4826,7 +4989,11 @@ function CombatSimView({ meta, onMetaUpdate }) {
       setSimResult(payload);
       setTurnIndex(0);
       const usedSeed = payload.result?.seed ?? payload.lastCombat?.seed;
-      if (usedSeed != null) setSeed(String(usedSeed));
+      if (hasFixedSeed && usedSeed != null) {
+        setSeed(String(usedSeed));
+      } else {
+        setSeed("");
+      }
     } catch (requestError) {
       setSimError(requestError.message);
     } finally {
@@ -4911,12 +5078,12 @@ function CombatSimView({ meta, onMetaUpdate }) {
               ))}
             </div>
             <label className="field combat-sim-seed-field">
-              <span>Seed</span>
+              <span>Fixed seed</span>
               <input
                 type="number"
                 value={seed}
                 onChange={(event) => setSeed(event.target.value)}
-                placeholder="Auto"
+                placeholder="Auto each run"
               />
             </label>
             {mode === "batch" ? (
@@ -5530,6 +5697,16 @@ function CombatSimUnitTable({ title, units, activeActorId = null }) {
                 Deck {unit.deckCounts?.draw ?? 0} | Hand {unit.deckCounts?.hand ?? 0} | Discard {unit.deckCounts?.discard ?? 0}
               </span>
             </div>
+            {unit.grappledBy?.length || unit.grappling?.length ? (
+              <div className="combat-unit-draw">
+                {(unit.grappledBy || []).map((grapple) => (
+                  <span key={`grappled-${grapple.id}`}>{`Grappled T ${grapple.toughnessCurrent}/${grapple.toughnessMax}`}</span>
+                ))}
+                {(unit.grappling || []).map((grapple) => (
+                  <span key={`grappling-${grapple.id}`}>{`Grappling T ${grapple.toughnessCurrent}/${grapple.toughnessMax}`}</span>
+                ))}
+              </div>
+            ) : null}
             {unit.currentDraw?.length ? (
               <div className="combat-unit-draw">
                 {unit.currentDraw.map((item, index) => (

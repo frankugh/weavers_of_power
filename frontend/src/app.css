@@ -293,6 +293,37 @@ button {
   color: #f0b1a6;
 }
 
+.badge-status {
+  border-color: rgba(98, 201, 210, 0.28);
+  background: rgba(98, 201, 210, 0.08);
+  color: #bde6e8;
+}
+
+.segmented-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 244, 216, 0.04);
+}
+
+.segmented-control button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.segmented-control button.active {
+  border-color: rgba(98, 201, 210, 0.34);
+  background: rgba(98, 201, 210, 0.12);
+  color: #d6f5f6;
+}
+
 .menu-button,
 .primary-button,
 .secondary-button,

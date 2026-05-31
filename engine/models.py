@@ -37,7 +37,7 @@ class Effect:
 
     def validate(self, path: str) -> list[str]:
         errs: list[str] = []
-        if self.type in {"attack", "guard", "disengage", "draw"} and self.amount <= 0:
+        if self.type in {"attack", "guard", "disengage", "draw", "grapple", "conditional_attack"} and self.amount <= 0:
             errs.append(f"{path}: effect amount must be > 0 (got {self.amount})")
         elif self.amount < 0:
             errs.append(f"{path}: effect amount cannot be negative (got {self.amount})")

@@ -18,7 +18,7 @@ from engine.excel_creatures import (
 )
 from engine.models import Card, Deck, EnemyTemplate, RangeInt
 from engine.runtime import draw_additional_cards, draw_cards, spawn_enemy, start_turn, end_turn
-from engine.runtime_models import EnemyInstance
+from engine.runtime_models import EnemyInstance, GrappleInstance
 
 DEFAULT_TARGET_STRATEGY = "highest_toughness"
 TARGET_STRATEGIES = {
@@ -68,6 +68,8 @@ class SimState:
     log: list[str] = field(default_factory=list)
     timeline: list[dict] = field(default_factory=list)
     used_card_ids: set[str] = field(default_factory=set)
+    grapples: dict[str, GrappleInstance] = field(default_factory=dict)
+    grapple_order: int = 0
     turns: int = 0
     attack_actions: int = 0
 
@@ -112,7 +114,7 @@ def simulate_combat_once(
     )
 
     state.log.append("Initiative: " + ", ".join(_initiative_label(unit.entity) for unit in order))
-    initial_units = _serialize_units(units, card_index=sim_card_index, image_url_for=image_url_for)
+    initial_units = _serialize_units(units, card_index=sim_card_index, image_url_for=image_url_for, grapples=state.grapples.values())
 
     winner = _winner(units)
     round_number = 0
@@ -135,7 +137,8 @@ def simulate_combat_once(
     else:
         state.log.append(f"Team {winner} wins in round {round_number}.")
 
-    final_units = _serialize_units(units, card_index=sim_card_index, image_url_for=image_url_for)
+    _cleanup_grapples(state, lines=state.log)
+    final_units = _serialize_units(units, card_index=sim_card_index, image_url_for=image_url_for, grapples=state.grapples.values())
     _finalize_team_totals(state, units)
 
     return {
@@ -146,6 +149,7 @@ def simulate_combat_once(
         "attackActions": state.attack_actions,
         "initialUnits": initial_units,
         "finalUnits": final_units,
+        "grapples": [_grapple_payload(state, grapple) for grapple in sorted(state.grapples.values(), key=lambda g: g.created_order)],
         "timeline": state.timeline,
         "combatLog": list(state.log),
         "teamTotals": state.team_totals,
@@ -603,8 +607,9 @@ def _run_unit_turn(
     entity = unit.entity
     state.turns += 1
     turn_number = state.turns
-    before = _serialize_units(state.units, card_index=state.card_index, image_url_for=image_url_for)
     lines: list[str] = [f"Round {round_number}, Turn {turn_number}: {entity.name}"]
+    _cleanup_grapples(state, lines=lines)
+    before = _serialize_units(state.units, card_index=state.card_index, image_url_for=image_url_for, grapples=state.grapples.values())
     actions: list[dict] = []
 
     start_log = start_turn(entity)
@@ -614,12 +619,15 @@ def _run_unit_turn(
         lines.append(f"{entity.name} is down before drawing.")
         end_turn(entity)
         state.log.extend(lines)
-        state.timeline.append(_turn_payload(round_number, turn_number, unit, before, state, lines, actions, image_url_for))
+        state.timeline.append(
+            _turn_payload(round_number, turn_number, unit, before, state, lines, actions, image_url_for, turn_card_ids=[])
+        )
         return
 
     draw_count = _draw_count_for(entity)
     draw_result = draw_cards(entity, draw_count, rnd=state.rng)
     draw_resolution = _resolve_draw_effects(state, entity, draw_result.drawn)
+    turn_card_ids = list(draw_resolution["cardIds"])
     state.used_card_ids.update(draw_resolution["cardIds"])
     drawn_text = [_card_text(state.card_index, card_id) for card_id in draw_resolution["cardIds"]]
     if drawn_text:
@@ -638,12 +646,51 @@ def _run_unit_turn(
         card = state.card_index.get(card_id)
         if not card:
             continue
+        last_unit_target: Optional[SimUnit] = None
+        last_attack_damage_to_hp = 0
         for effect in card.effects:
             if effect.type == "attack":
-                target_unit = _choose_target(state, unit)
+                target_grapple = _preferred_grapple_for_target(state, entity.instance_id)
+                if target_grapple is not None:
+                    action = _apply_attack_to_grapple(state, unit, target_grapple, card, effect)
+                    last_unit_target = None
+                    last_attack_damage_to_hp = 0
+                else:
+                    target_unit = _choose_target(state, unit)
+                    if target_unit is None:
+                        continue
+                    base_damage = int(effect.amount)
+                    selected_damage = _conditional_attack_amount(state, card, target_unit.entity, base_damage)
+                    damage = _effective_attack_damage(state, entity, selected_damage, target_is_grapple=False)
+                    action = _apply_attack_effect(
+                        state,
+                        unit,
+                        target_unit,
+                        card,
+                        effect,
+                        base_damage=base_damage,
+                        selected_damage=selected_damage,
+                        damage=damage,
+                    )
+                    last_unit_target = target_unit
+                    last_attack_damage_to_hp = int(action["damageToToughness"])
+                actions.append(action)
+                lines.extend(action["log"])
+            elif effect.type == "grapple":
+                if _preferred_grapple_for_target(state, entity.instance_id) is not None:
+                    text = _effect_label(effect)
+                    actions.append({"type": "ignored", "card": card.title or card.id, "effect": text})
+                    lines.append(f"{entity.name} is Grappled and cannot apply {text} in simulation.")
+                    continue
+                if "on_damage" in effect.modifiers and last_attack_damage_to_hp <= 0:
+                    text = _effect_label(effect)
+                    actions.append({"type": "skipped", "card": card.title or card.id, "effect": text, "reason": "no damage dealt"})
+                    lines.append(f"{entity.name} does not apply {text}; the attack dealt no Toughness damage.")
+                    continue
+                target_unit = last_unit_target or _choose_target(state, unit)
                 if target_unit is None:
                     continue
-                action = _apply_attack_effect(state, unit, target_unit, card, effect)
+                action = _apply_grapple_effect(state, unit, target_unit, card, effect)
                 actions.append(action)
                 lines.extend(action["log"])
             elif effect.type in {"guard", "draw"}:
@@ -659,7 +706,9 @@ def _run_unit_turn(
         lines.append(f"{entity.name} reshuffles their deck.")
 
     state.log.extend(lines)
-    state.timeline.append(_turn_payload(round_number, turn_number, unit, before, state, lines, actions, image_url_for))
+    state.timeline.append(
+        _turn_payload(round_number, turn_number, unit, before, state, lines, actions, image_url_for, turn_card_ids=turn_card_ids)
+    )
 
 
 def _turn_payload(
@@ -671,7 +720,9 @@ def _turn_payload(
     lines: list[str],
     actions: list[dict],
     image_url_for: Optional[Callable[[EnemyTemplate], str]],
+    turn_card_ids: list[str],
 ) -> dict:
+    current_draw_override = {unit.entity.instance_id: list(turn_card_ids)} if turn_card_ids else {}
     return {
         "round": round_number,
         "turn": turn_number,
@@ -679,8 +730,15 @@ def _turn_payload(
         "actorName": unit.entity.name,
         "team": unit.team,
         "beforeUnits": before,
-        "units": _serialize_units(state.units, card_index=state.card_index, image_url_for=image_url_for),
-        "draw": [_card_text(state.card_index, card_id) for card_id in unit.entity.deck_state.hand],
+        "units": _serialize_units(
+            state.units,
+            card_index=state.card_index,
+            image_url_for=image_url_for,
+            grapples=state.grapples.values(),
+            current_draw_override_by_id=current_draw_override,
+        ),
+        "grapples": [_grapple_payload(state, grapple) for grapple in sorted(state.grapples.values(), key=lambda g: g.created_order)],
+        "draw": [_card_text(state.card_index, card_id) for card_id in turn_card_ids],
         "actions": actions,
         "log": list(lines),
     }
@@ -720,13 +778,25 @@ def _resolve_draw_effects(state: SimState, entity: EnemyInstance, card_ids: list
     return {"cardIds": resolved, "guardAdded": guard_added, "extraDrawn": extra_drawn}
 
 
-def _apply_attack_effect(state: SimState, attacker: SimUnit, target: SimUnit, card: Card, effect) -> dict:
+def _apply_attack_effect(
+    state: SimState,
+    attacker: SimUnit,
+    target: SimUnit,
+    card: Card,
+    effect,
+    *,
+    base_damage: int,
+    selected_damage: int,
+    damage: int,
+) -> dict:
     modifiers = _normalize_modifiers(effect.modifiers)
     before_toughness = target.entity.toughness_current
-    log: CombatLog = apply_attack(target.entity, int(effect.amount), mods=modifiers)
+    log: CombatLog = apply_attack(target.entity, max(0, int(damage)), mods=modifiers)
     state.attack_actions += 1
     state.team_totals[attacker.team]["damageDealt"] += log.damage_to_hp
     state.team_totals[target.team]["damagePrevented"] += log.guarded_total
+    spill_lines = _damage_grapples_held_by(state, target.entity, log.damage_to_hp)
+    cleanup_lines = _cleanup_grapples(state)
     label = _attack_label(effect.amount, modifiers)
     lines = [
         f"{attacker.entity.name} targets {target.entity.name} with {label}.",
@@ -736,25 +806,267 @@ def _apply_attack_effect(state: SimState, attacker: SimUnit, target: SimUnit, ca
             f"G {log.guard_before}->{log.guard_after}, AR {log.armor_before}->{log.armor_after}."
         ),
     ]
+    if selected_damage != base_damage:
+        lines.insert(1, f"{target.entity.name} meets a conditional attack clause; damage changes from {base_damage} to {selected_damage}.")
+    if selected_damage != log.input_damage:
+        lines.insert(1 if selected_damage == base_damage else 2, f"{attacker.entity.name} is Grappled; damage is halved from {selected_damage} to {log.input_damage}.")
     if log.applied_statuses:
         lines.append(f"{target.entity.name} gains {', '.join(log.applied_statuses)}.")
+    lines.extend(spill_lines)
     if _is_down(target.entity):
         lines.append(f"{target.entity.name} is down.")
+    lines.extend(cleanup_lines)
     return {
         "type": "attack",
+        "targetType": "unit",
         "cardId": card.id,
         "cardTitle": card.title or card.id,
         "attackerId": attacker.entity.instance_id,
         "attackerName": attacker.entity.name,
         "targetId": target.entity.instance_id,
         "targetName": target.entity.name,
-        "damage": int(effect.amount),
+        "baseDamage": int(base_damage),
+        "selectedDamage": int(selected_damage),
+        "damage": log.input_damage,
         "modifiers": modifiers,
         "damageToToughness": log.damage_to_hp,
         "damagePrevented": log.guarded_total,
         "targetToughnessBefore": before_toughness,
         "targetToughnessAfter": target.entity.toughness_current,
         "log": lines,
+    }
+
+
+def _conditional_attack_amount(state: SimState, card: Card, target: EnemyInstance, base_damage: int) -> int:
+    amount = int(base_damage)
+    for effect in card.effects:
+        if effect.type != "conditional_attack":
+            continue
+        if "replace_attack" not in effect.modifiers:
+            continue
+        if _target_matches_conditional_attack(state, target, effect.modifiers):
+            amount = int(effect.amount)
+    return amount
+
+
+def _target_matches_conditional_attack(state: SimState, target: EnemyInstance, modifiers: Iterable[str]) -> bool:
+    modifier_set = set(modifiers or ())
+    statuses = getattr(target, "statuses", {}) or {}
+    checks: list[bool] = []
+    if "if_target_grappled" in modifier_set:
+        checks.append(bool(_grapples_for_target(state, target.instance_id) or _status_present(statuses, "grappled")))
+    if "if_target_prone" in modifier_set:
+        checks.append(_status_present(statuses, "prone"))
+    if "if_target_poisoned" in modifier_set:
+        checks.append(_status_present(statuses, "poison", "poisoned"))
+    if "if_target_burning" in modifier_set:
+        checks.append(_status_present(statuses, "burn", "burning", "burned"))
+    if "if_target_slowed" in modifier_set:
+        checks.append(_status_present(statuses, "slow", "slowed"))
+    if "if_target_paralyzed" in modifier_set:
+        checks.append(_status_present(statuses, "paralyzed", "paralysed", "paralyze", "paralyse"))
+    if "if_target_stunned" in modifier_set:
+        checks.append(_status_present(statuses, "stun", "stunned"))
+    if not checks:
+        return False
+    return all(checks) if "condition_all" in modifier_set else any(checks)
+
+
+def _status_present(statuses: dict, *keys: str) -> bool:
+    normalized = {str(key).strip().lower() for key in statuses.keys()}
+    return any(key in normalized for key in keys)
+
+
+def _apply_attack_to_grapple(state: SimState, attacker: SimUnit, grapple: GrappleInstance, card: Card, effect) -> dict:
+    before = int(grapple.toughness_current)
+    before_payload = _grapple_payload(state, grapple)
+    damage = max(0, int(effect.amount))
+    dealt = min(before, damage)
+    grapple.toughness_current = max(0, before - damage)
+    state.attack_actions += 1
+    state.team_totals[attacker.team]["damageDealt"] += dealt
+    cleanup_lines = _cleanup_grapples(state)
+    label = _attack_label(effect.amount, _normalize_modifiers(effect.modifiers))
+    lines = [
+        f"{attacker.entity.name} targets Grapple on {_entity_name(state, grapple.target_id)} with {label}.",
+        f"Grapple takes {dealt} damage, T {before}->{grapple.toughness_current}.",
+    ]
+    lines.extend(cleanup_lines)
+    return {
+        "type": "attack",
+        "targetType": "grapple",
+        "cardId": card.id,
+        "cardTitle": card.title or card.id,
+        "attackerId": attacker.entity.instance_id,
+        "attackerName": attacker.entity.name,
+        "targetId": grapple.id,
+        "targetName": f"Grapple on {_entity_name(state, grapple.target_id)}",
+        "grappleBefore": before_payload,
+        "grappleAfter": _grapple_payload(state, grapple),
+        "baseDamage": int(effect.amount),
+        "damage": damage,
+        "modifiers": _normalize_modifiers(effect.modifiers),
+        "damageToToughness": dealt,
+        "damagePrevented": 0,
+        "targetToughnessBefore": before,
+        "targetToughnessAfter": max(0, int(grapple.toughness_current)),
+        "log": lines,
+    }
+
+
+def _apply_grapple_effect(state: SimState, attacker: SimUnit, target: SimUnit, card: Card, effect) -> dict:
+    before = _existing_grapple_between(state, attacker.entity.instance_id, target.entity.instance_id)
+    before_payload = _grapple_payload(state, before) if before else None
+    grapple, line = _apply_grapple(state, attacker.entity, target.entity, int(effect.amount))
+    return {
+        "type": "grapple",
+        "targetType": "unit",
+        "cardId": card.id,
+        "cardTitle": card.title or card.id,
+        "attackerId": attacker.entity.instance_id,
+        "attackerName": attacker.entity.name,
+        "targetId": target.entity.instance_id,
+        "targetName": target.entity.name,
+        "amount": int(effect.amount),
+        "modifiers": list(effect.modifiers),
+        "grappleBefore": before_payload,
+        "grappleAfter": _grapple_payload(state, grapple),
+        "log": [line],
+    }
+
+
+def _existing_grapple_between(state: SimState, grappler_id: str, target_id: str) -> Optional[GrappleInstance]:
+    return next(
+        (
+            grapple
+            for grapple in _grapples_for_target(state, target_id)
+            if grapple.grappler_id == grappler_id
+        ),
+        None,
+    )
+
+
+def _apply_grapple(state: SimState, grappler: EnemyInstance, target: EnemyInstance, amount: int) -> tuple[GrappleInstance, str]:
+    amount = max(0, int(amount))
+    existing = _existing_grapple_between(state, grappler.instance_id, target.instance_id)
+    if existing is not None:
+        before_current = existing.toughness_current
+        before_max = existing.toughness_max
+        existing.toughness_current += amount
+        existing.toughness_max += amount
+        return (
+            existing,
+            (
+                f"{grappler.name}'s Grapple on {target.name} increases by {amount}: "
+                f"T {before_current}/{before_max}->{existing.toughness_current}/{existing.toughness_max}."
+            ),
+        )
+    state.grapple_order += 1
+    grapple = GrappleInstance(
+        id=f"sim-grapple-{state.grapple_order}",
+        grappler_id=grappler.instance_id,
+        target_id=target.instance_id,
+        toughness_current=amount,
+        toughness_max=amount,
+        created_order=state.grapple_order,
+    )
+    state.grapples[grapple.id] = grapple
+    return grapple, f"{target.name} is Grappled by {grappler.name} (T {amount}/{amount})."
+
+
+def _damage_grapples_held_by(state: SimState, grappler: EnemyInstance, damage: int) -> list[str]:
+    if damage <= 0:
+        return []
+    lines: list[str] = []
+    for grapple in list(_grapples_by_grappler(state, grappler.instance_id)):
+        before = int(grapple.toughness_current)
+        grapple.toughness_current = max(0, before - int(damage))
+        lines.append(
+            f"Damage to {grappler.name} also reduces Grapple on {_entity_name(state, grapple.target_id)}: "
+            f"T {before}->{grapple.toughness_current}."
+        )
+    return lines
+
+
+def _cleanup_grapples(state: SimState, lines: Optional[list[str]] = None) -> list[str]:
+    cleanup_lines: list[str] = []
+    for grapple_id, grapple in list(state.grapples.items()):
+        grappler = _unit_by_id(state, grapple.grappler_id)
+        target = _unit_by_id(state, grapple.target_id)
+        reason: Optional[str] = None
+        if grapple.toughness_current <= 0:
+            reason = "T 0"
+        elif grappler is None or _is_down(grappler.entity):
+            reason = "grappler is down"
+        elif target is None or _is_down(target.entity):
+            reason = "target is down"
+        if reason is None:
+            continue
+        state.grapples.pop(grapple_id, None)
+        cleanup_lines.append(
+            f"Grapple between {_entity_name(state, grapple.grappler_id)} and {_entity_name(state, grapple.target_id)} ends ({reason})."
+        )
+    if lines is not None:
+        lines.extend(cleanup_lines)
+    return cleanup_lines
+
+
+def _grapples_for_target(state: SimState, target_id: str) -> list[GrappleInstance]:
+    return sorted(
+        [
+            grapple
+            for grapple in state.grapples.values()
+            if grapple.target_id == target_id and grapple.toughness_current > 0
+        ],
+        key=lambda grapple: (grapple.toughness_current, grapple.created_order),
+    )
+
+
+def _grapples_by_grappler(state: SimState, grappler_id: str) -> list[GrappleInstance]:
+    return sorted(
+        [
+            grapple
+            for grapple in state.grapples.values()
+            if grapple.grappler_id == grappler_id and grapple.toughness_current > 0
+        ],
+        key=lambda grapple: grapple.created_order,
+    )
+
+
+def _preferred_grapple_for_target(state: SimState, target_id: str) -> Optional[GrappleInstance]:
+    grapples = _grapples_for_target(state, target_id)
+    return grapples[0] if grapples else None
+
+
+def _effective_attack_damage(state: SimState, attacker: EnemyInstance, damage: int, *, target_is_grapple: bool) -> int:
+    damage = max(0, int(damage))
+    if target_is_grapple:
+        return damage
+    if _grapples_for_target(state, attacker.instance_id):
+        return damage // 2
+    return damage
+
+
+def _unit_by_id(state: SimState, instance_id: str) -> Optional[SimUnit]:
+    return next((unit for unit in state.units if unit.entity.instance_id == instance_id), None)
+
+
+def _entity_name(state: SimState, instance_id: str) -> str:
+    unit = _unit_by_id(state, instance_id)
+    return unit.entity.name if unit else instance_id
+
+
+def _grapple_payload(state: SimState, grapple: GrappleInstance) -> dict:
+    return {
+        "id": grapple.id,
+        "grapplerId": grapple.grappler_id,
+        "targetId": grapple.target_id,
+        "grapplerName": _entity_name(state, grapple.grappler_id),
+        "targetName": _entity_name(state, grapple.target_id),
+        "toughnessCurrent": max(0, int(grapple.toughness_current)),
+        "toughnessMax": max(0, int(grapple.toughness_max)),
+        "createdOrder": int(grapple.created_order),
+        "label": f"Grapple T {max(0, int(grapple.toughness_current))}/{max(0, int(grapple.toughness_max))}",
     }
 
 
@@ -1024,8 +1336,21 @@ def _serialize_units(
     *,
     card_index: dict[str, Card],
     image_url_for: Optional[Callable[[EnemyTemplate], str]],
+    grapples: Iterable[GrappleInstance] = (),
+    current_draw_override_by_id: Optional[dict[str, list[str]]] = None,
 ) -> list[dict]:
-    return [_serialize_unit(unit, card_index=card_index, image_url_for=image_url_for) for unit in units]
+    grapple_list = list(grapples)
+    draw_overrides = current_draw_override_by_id or {}
+    return [
+        _serialize_unit(
+            unit,
+            card_index=card_index,
+            image_url_for=image_url_for,
+            grapples=grapple_list,
+            current_draw_override=draw_overrides.get(unit.entity.instance_id),
+        )
+        for unit in units
+    ]
 
 
 def _serialize_unit(
@@ -1033,6 +1358,8 @@ def _serialize_unit(
     *,
     card_index: dict[str, Card],
     image_url_for: Optional[Callable[[EnemyTemplate], str]],
+    grapples: Iterable[GrappleInstance] = (),
+    current_draw_override: Optional[list[str]] = None,
 ) -> dict:
     entity = unit.entity
     deck_state = entity.deck_state
@@ -1040,6 +1367,27 @@ def _serialize_unit(
     modifier = int(getattr(entity, "initiative_modifier", 0))
     total = entity.initiative_total
     image_url = image_url_for(unit.template) if image_url_for else None
+    grapple_list = list(grapples)
+    unit_grappled_by = [
+        _serialize_unit_grapple(grapple)
+        for grapple in sorted(
+            [grapple for grapple in grapple_list if grapple.target_id == entity.instance_id and grapple.toughness_current > 0],
+            key=lambda grapple: (grapple.toughness_current, grapple.created_order),
+        )
+    ]
+    unit_grappling = [
+        _serialize_unit_grapple(grapple)
+        for grapple in sorted(
+            [grapple for grapple in grapple_list if grapple.grappler_id == entity.instance_id and grapple.toughness_current > 0],
+            key=lambda grapple: grapple.created_order,
+        )
+    ]
+    statuses = dict(getattr(entity, "statuses", {}) or {})
+    if unit_grappled_by:
+        statuses["grappled"] = {"stacks": len(unit_grappled_by)}
+    if unit_grappling:
+        statuses["grappling"] = {"stacks": len(unit_grappling)}
+    current_draw_ids = list(deck_state.hand if current_draw_override is None else current_draw_override)
     return {
         "id": entity.instance_id,
         "team": unit.team,
@@ -1060,9 +1408,11 @@ def _serialize_unit(
         "initiativeModifier": modifier,
         "initiativeTotal": total,
         "initiativeText": f"Init {total} ({roll}+{modifier})" if roll is not None and total is not None else "Init -",
-        "statuses": dict(getattr(entity, "statuses", {}) or {}),
-        "statusText": _status_text(entity),
-        "currentDraw": [_card_text(card_index, card_id) for card_id in deck_state.hand],
+        "statuses": statuses,
+        "statusText": _status_text(statuses),
+        "grappledBy": unit_grappled_by,
+        "grappling": unit_grappling,
+        "currentDraw": [_card_text(card_index, card_id) for card_id in current_draw_ids],
         "deckCounts": {
             "draw": len(deck_state.draw_pile),
             "hand": len(deck_state.hand),
@@ -1073,14 +1423,26 @@ def _serialize_unit(
     }
 
 
+def _serialize_unit_grapple(grapple: GrappleInstance) -> dict:
+    return {
+        "id": grapple.id,
+        "grapplerId": grapple.grappler_id,
+        "targetId": grapple.target_id,
+        "toughnessCurrent": max(0, int(grapple.toughness_current)),
+        "toughnessMax": max(0, int(grapple.toughness_max)),
+        "createdOrder": int(grapple.created_order),
+        "label": f"Grapple T {max(0, int(grapple.toughness_current))}/{max(0, int(grapple.toughness_max))}",
+    }
+
+
 def _unit_action_coverage(template: EnemyTemplate, card_index: dict[str, Card]) -> dict:
     if not template.action_deck:
         return _coverage_counts([], card_index)
     return _coverage_counts([card.id for card in template.action_deck.cards], card_index)
 
 
-def _status_text(entity: EnemyInstance) -> str:
-    statuses = getattr(entity, "statuses", {}) or {}
+def _status_text(statuses: dict) -> str:
+    statuses = statuses or {}
     if not statuses:
         return "-"
     parts = []
@@ -1108,6 +1470,16 @@ def _effect_label(effect) -> str:
         return f"Guard {effect.amount}"
     if effect.type == "draw":
         return f"Draw {effect.amount}"
+    if effect.type == "grapple":
+        suffix = " (on damage)" if "on_damage" in getattr(effect, "modifiers", ()) else ""
+        return f"Grapple {effect.amount}{suffix}"
+    if effect.type == "conditional_attack":
+        conditions = ", ".join(
+            _format_condition_modifier(modifier)
+            for modifier in getattr(effect, "modifiers", ())
+            if str(modifier).startswith("if_target_")
+        )
+        return f"If target {conditions}: Attack {effect.amount} instead" if conditions else f"Conditional Attack {effect.amount}"
     if effect.type == "disengage":
         return f"Disengage {effect.amount}"
     return str(effect.type)
@@ -1148,6 +1520,10 @@ def _format_modifier(modifier: str) -> str:
     if modifier.startswith("sunder:"):
         return f"sunder {modifier.split(':', 1)[1]}"
     return modifier
+
+
+def _format_condition_modifier(modifier: str) -> str:
+    return modifier.removeprefix("if_target_").replace("_", " ")
 
 
 def _initiative_label(entity: EnemyInstance) -> str:
