@@ -84,12 +84,19 @@ class DrawExactRequest(BaseModel):
     count: int = Field(default=1, ge=1)
 
 
-class StrengthenRequest(BaseModel):
+class ActionAmountRequest(BaseModel):
     x: int = Field(default=1, ge=1)
 
 
 class HelpRequest(BaseModel):
     targetId: str
+
+
+class OpportunityResolveRequest(BaseModel):
+    action: Literal["attack", "skip"]
+    useWillpower: Optional[bool] = None
+    manualSuccesses: Optional[int] = Field(default=None, ge=0)
+    manualFate: Optional[int] = Field(default=None, ge=0)
 
 
 class RemoveWoundRequest(BaseModel):
@@ -205,6 +212,7 @@ class CreatureTemplateSaveOverridesRequest(BaseModel):
     statOverrides: dict[str, Any] = Field(default_factory=dict)
     skillOverrides: dict[str, Any] = Field(default_factory=dict)
     actionOverrides: dict[str, Any] = Field(default_factory=dict)
+    infoOverrides: dict[str, Any] = Field(default_factory=dict)
 
 
 class CombatSimTeamEntryRequest(BaseModel):
@@ -446,8 +454,16 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
         return run_mutation(sid, lambda session: session.prepare_pc())
 
     @api_app.post("/api/battle/sessions/{sid}/action/strengthen")
-    def strengthen_pc(sid: str, request: StrengthenRequest):
+    def strengthen_pc(sid: str, request: ActionAmountRequest):
         return run_mutation(sid, lambda session: session.strengthen_pc(request.x))
+
+    @api_app.post("/api/battle/sessions/{sid}/action/guard")
+    def guard_pc(sid: str, request: ActionAmountRequest):
+        return run_mutation(sid, lambda session: session.guard_pc(request.x))
+
+    @api_app.post("/api/battle/sessions/{sid}/action/hitdraw")
+    def hitdraw_pc(sid: str):
+        return run_mutation(sid, lambda session: session.hitdraw_pc())
 
     @api_app.post("/api/battle/sessions/{sid}/action/shed")
     def shed_wound(sid: str):
@@ -456,6 +472,19 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.post("/api/battle/sessions/{sid}/action/disengage")
     def disengage_pc(sid: str):
         return run_mutation(sid, lambda session: session.disengage_pc())
+
+    @api_app.post("/api/battle/sessions/{sid}/opportunity/resolve")
+    def resolve_opportunity(sid: str, request: OpportunityResolveRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.resolve_opportunity_attack(
+                action=request.action,
+                use_willpower=request.useWillpower,
+                manual_successes=request.manualSuccesses,
+                manual_fate=request.manualFate,
+            ),
+            undoable=False,
+        )
 
     @api_app.post("/api/battle/sessions/{sid}/action/help")
     def help_pc(sid: str, request: HelpRequest):

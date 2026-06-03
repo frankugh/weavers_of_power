@@ -943,6 +943,76 @@ class BattleApiTests(unittest.TestCase):
         player = next(e for e in second.json()["enemies"] if e["instance_id"] == player_id)
         self.assertEqual(len(player["current_draw_groups"]), 2)
 
+    def test_guard_action_endpoint_adds_guard(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        added = self.client.post(f"/api/battle/sessions/{sid}/players", json={"name": "Mira"}).json()
+        player_id = added["selectedId"]
+
+        response = self.client.post(f"/api/battle/sessions/{sid}/action/guard", json={"x": 3})
+
+        self.assertEqual(response.status_code, 200)
+        player = next(e for e in response.json()["enemies"] if e["instance_id"] == player_id)
+        self.assertEqual(player["guard_current"], 3)
+        self.assertEqual(player["actions_used"], 1)
+        self.assertIn("Mira guards: +3 guard.", response.json()["combatLog"])
+
+    def test_hitdraw_endpoint_returns_result_after_draw_of_power(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        added = self.client.post(f"/api/battle/sessions/{sid}/players", json={"name": "Mira", "power": 1}).json()
+        player_id = added["selectedId"]
+        session = self.context.load_session(sid)
+        player = session.state.enemies[player_id]
+        player.deck_state.draw_pile = ["hf_martial_success_2"]
+        player.deck_state.discard_pile = []
+        player.deck_state.hand = []
+        session.active_turn_id = player_id
+        session.autosave()
+
+        early = self.client.post(f"/api/battle/sessions/{sid}/action/hitdraw")
+        self.assertEqual(early.status_code, 400)
+        self.assertIn("Draw of Power", early.json()["detail"])
+
+        session = self.context.load_session(sid)
+        session.active_turn_id = None
+        session.autosave()
+
+        self.assertEqual(self.client.post(f"/api/battle/sessions/{sid}/turn/draw").status_code, 200)
+        session = self.context.load_session(sid)
+        player = session.state.enemies[player_id]
+        player.deck_state.draw_pile = ["hf_martial_success_3", "hf_martial_fate_1", WOUND_CARD_ID]
+        player.deck_state.discard_pile = []
+        session.autosave()
+
+        response = self.client.post(f"/api/battle/sessions/{sid}/action/hitdraw")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["hitDraw"]["drawnText"], ["Success", "Fate", "Fail"])
+        self.assertEqual(
+            payload["hitDraw"]["drawnCards"],
+            [
+                {"label": "Success", "detail": "Martial 3 energy"},
+                {"label": "Fate", "detail": "Martial 1 energy"},
+                {"label": "Fail", "detail": "Wound"},
+            ],
+        )
+        self.assertEqual(payload["hitDraw"]["summary"]["outcomes"], {"success": 1, "fate": 1, "fail": 1})
+        player_payload = next(e for e in payload["enemies"] if e["instance_id"] == player_id)
+        self.assertEqual(player_payload["actions_used"], 1)
+        self.assertEqual(player_payload["current_draw_text"], ["Martial 2 energy success"])
+
+    def test_hitdraw_endpoint_rejects_physical_players(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        self.client.post(
+            f"/api/battle/sessions/{sid}/players",
+            json={"name": "Mira", "physicalCards": True},
+        )
+
+        response = self.client.post(f"/api/battle/sessions/{sid}/action/hitdraw")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Physical-card players", response.json()["detail"])
+
     def test_roll_initiative_endpoint(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"})
@@ -1049,6 +1119,7 @@ class BattleApiTests(unittest.TestCase):
                 "statOverrides": {"toughness": 14, "armor": 3},
                 "skillOverrides": {"alertness": 7},
                 "actionOverrides": {"A1": "Saved Strike - Attack 8 pierce 1"},
+                "infoOverrides": {"playtestStatus": "Retest_Needed"},
             },
         )
 
@@ -1061,14 +1132,16 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(goblin_meta["simStats"]["armor"]["value"], 3)
         self.assertEqual(goblin_meta["skills"]["alertness"], 7)
         self.assertEqual(goblin_meta["simStats"]["initiativeModifier"], 7)
+        self.assertEqual(goblin_meta["playtestStatus"], "Retest_Needed")
         self.assertEqual(next(action for action in goblin_meta["simActions"] if action["result"] == "A1")["text"], "Saved Strike - Attack 8 pierce 1")
         self.assertEqual(context.enemy_templates["C_GOBLIN"].initiative_modifier, 7)
 
-        values = self._workbook_values(workbook_path, "C_GOBLIN", ["Toughness", "Armor", "Alertness", "A1"])
+        values = self._workbook_values(workbook_path, "C_GOBLIN", ["Toughness", "Armor", "Alertness", "A1", "Playtest_Status"])
         self.assertEqual(values["Toughness"], 14)
         self.assertEqual(values["Armor"], 3)
         self.assertEqual(values["Alertness"], 7)
         self.assertEqual(values["A1"], "Saved Strike - Attack 8 pierce 1")
+        self.assertEqual(values["Playtest_Status"], "Retest_Needed")
 
         after_session = client.get(f"/api/battle/sessions/{sid}").json()
         after_enemy = next(enemy for enemy in after_session["enemies"] if enemy["instance_id"] == entity_id)

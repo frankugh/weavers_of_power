@@ -134,6 +134,32 @@ class CombatSimTests(unittest.TestCase):
         self.assertFalse(any(effect["type"] == "conditional_attack" for effect in unknown["effects"]))
         self.assertEqual(unknown["coverageStatus"], "warning")
 
+    def test_parser_helper_parses_charge_and_ranged_attack(self) -> None:
+        parsed = parse_creature_action(
+            action_result="A1",
+            action_text="Pounce - Ranged Attack 4. Charge 5.",
+        )
+        prone = parse_creature_action(
+            action_result="A2",
+            action_text="Knockdown - Attack 2. Target becomes Prone.",
+        )
+        conditional_prone = parse_creature_action(
+            action_result="A3",
+            action_text="Trip - Attack 2. If this deals damage, Prone.",
+        )
+
+        self.assertEqual(parsed["coverageStatus"], "full")
+        self.assertEqual(
+            [(effect["type"], effect["amount"], effect["modifiers"]) for effect in parsed["effects"]],
+            [("attack", 4, ["ranged"]), ("charge", 5, [])],
+        )
+        self.assertEqual(prone["coverageStatus"], "full")
+        self.assertEqual(
+            [(effect["type"], effect["amount"], effect["modifiers"]) for effect in prone["effects"]],
+            [("attack", 2, []), ("prone", 1, [])],
+        )
+        self.assertEqual(conditional_prone["effects"][1], {"type": "prone", "amount": 1, "modifiers": ["on_damage"]})
+
     def test_single_sim_is_deterministic_for_fixed_seed(self) -> None:
         templates = {
             "attacker": make_template("attacker", "Attacker", initiative=3),
@@ -584,6 +610,92 @@ class CombatSimTests(unittest.TestCase):
         self.assertEqual(maul_action["baseDamage"], 4)
         self.assertEqual(maul_action["selectedDamage"], 9)
         self.assertEqual(maul_action["damage"], 9)
+
+    def test_charge_applies_grapple_prone_and_prone_melee_ranged_damage_adjustments(self) -> None:
+        templates = {
+            "charger": make_template(
+                "charger",
+                "Charger",
+                initiative=30,
+                cards=(Card(id="charge", title="Charge", effects=(Effect(type="charge", amount=5),)),),
+            ),
+            "mauler": make_template(
+                "mauler",
+                "Mauler",
+                initiative=20,
+                cards=(Card(id="maul", title="Maul", effects=(Effect(type="attack", amount=4),)),),
+            ),
+            "archer": make_template(
+                "archer",
+                "Archer",
+                initiative=10,
+                cards=(Card(id="shot", title="Shot", effects=(Effect(type="attack", amount=4, modifiers=("ranged",)),)),),
+            ),
+            "target": make_template("target", "Target", toughness=20, initiative=0, power=0),
+        }
+
+        result = simulate_combat_once(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[
+                {"templateId": "charger", "count": 1},
+                {"templateId": "mauler", "count": 1},
+                {"templateId": "archer", "count": 1},
+            ],
+            team_b=[{"templateId": "target", "count": 1}],
+            seed=1,
+            max_rounds=1,
+        )
+
+        charge_action = next(action for turn in result["timeline"] for action in turn["actions"] if action.get("type") == "charge")
+        maul_action = next(action for turn in result["timeline"] for action in turn["actions"] if action.get("cardId") == "maul")
+        shot_action = next(action for turn in result["timeline"] for action in turn["actions"] if action.get("cardId") == "shot")
+        target = next(unit for unit in result["finalUnits"] if unit["templateId"] == "target")
+
+        self.assertEqual(charge_action["grappleAfter"]["toughnessCurrent"], 5)
+        self.assertIn("prone", target["statuses"])
+        self.assertEqual(maul_action["proneAdjustment"], 2)
+        self.assertEqual(maul_action["damage"], 6)
+        self.assertEqual(shot_action["proneAdjustment"], -2)
+        self.assertEqual(shot_action["damage"], 2)
+        self.assertEqual(target["toughnessCurrent"], 12)
+
+    def test_standalone_prone_effect_enables_melee_advantage_in_sim(self) -> None:
+        templates = {
+            "knockdown": make_template(
+                "knockdown",
+                "Knockdown",
+                initiative=30,
+                cards=(Card(id="prone", title="Prone", effects=(Effect(type="prone", amount=1),)),),
+            ),
+            "mauler": make_template(
+                "mauler",
+                "Mauler",
+                initiative=20,
+                cards=(Card(id="maul", title="Maul", effects=(Effect(type="attack", amount=4),)),),
+            ),
+            "target": make_template("target", "Target", toughness=10, initiative=0, power=0),
+        }
+
+        result = simulate_combat_once(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[{"templateId": "knockdown", "count": 1}, {"templateId": "mauler", "count": 1}],
+            team_b=[{"templateId": "target", "count": 1}],
+            seed=1,
+            max_rounds=1,
+        )
+
+        prone_action = next(action for turn in result["timeline"] for action in turn["actions"] if action.get("type") == "prone")
+        maul_action = next(action for turn in result["timeline"] for action in turn["actions"] if action.get("cardId") == "maul")
+        target_after_maul = next(unit for unit in result["timeline"][1]["units"] if unit["templateId"] == "target")
+
+        self.assertEqual(prone_action["targetName"], "Target 1")
+        self.assertIn("prone", target_after_maul["statuses"])
+        self.assertEqual(maul_action["proneAdjustment"], 2)
+        self.assertEqual(maul_action["damage"], 6)
 
     def test_conditional_grapple_requires_toughness_damage(self) -> None:
         templates = {

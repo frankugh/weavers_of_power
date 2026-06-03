@@ -432,6 +432,25 @@ def _parse_action_effects(body: str) -> tuple[tuple[Effect, ...], tuple[str, ...
             )
             simplified = simplified.replace(conditional_attack["text"], "")
 
+    for charge in re.finditer(r"\bcharged?\s+(\d+)\b", body, flags=re.I):
+        amount = max(0, int(charge.group(1)))
+        if amount <= 0:
+            continue
+        sentence_start = max(body.rfind(".", 0, charge.start()) + 1, body.rfind(";", 0, charge.start()) + 1)
+        prefix = body[sentence_start:charge.start()]
+        conditional_prefix = prefix.strip().lower()
+        conditional_prefix = re.sub(r"^if\s+this\s+deals\s+damage\s*,?\s*", "", conditional_prefix)
+        conditional_prefix = conditional_prefix.strip(" ,.;:-")
+        if conditional_prefix and re.search(
+            r"\b(adjacent|nearby|within|range|prone|already|another|bloodied|down)\b",
+            conditional_prefix,
+            flags=re.I,
+        ):
+            continue
+        modifiers = ("on_damage",) if re.search(r"\bif\s+this\s+deals\s+damage\b", prefix, flags=re.I) else tuple()
+        effects.append(Effect(type="charge", amount=amount, modifiers=modifiers))
+        simplified = simplified.replace(charge.group(0), "")
+
     for grapple in re.finditer(r"\bgrappled?\s+(\d+)\b", body, flags=re.I):
         amount = max(0, int(grapple.group(1)))
         if amount <= 0:
@@ -450,6 +469,23 @@ def _parse_action_effects(body: str) -> tuple[tuple[Effect, ...], tuple[str, ...
         modifiers = ("on_damage",) if re.search(r"\bif\s+this\s+deals\s+damage\b", prefix, flags=re.I) else tuple()
         effects.append(Effect(type="grapple", amount=amount, modifiers=modifiers))
         simplified = simplified.replace(grapple.group(0), "")
+
+    prone_source = simplified
+    for prone in re.finditer(r"\bprone\b", prone_source, flags=re.I):
+        sentence_start = max(prone_source.rfind(".", 0, prone.start()) + 1, prone_source.rfind(";", 0, prone.start()) + 1)
+        prefix = prone_source[sentence_start:prone.start()]
+        conditional_prefix = prefix.strip().lower()
+        conditional_prefix = re.sub(r"^if\s+this\s+deals\s+damage\s*,?\s*", "", conditional_prefix)
+        conditional_prefix = conditional_prefix.strip(" ,.;:-")
+        if conditional_prefix and re.search(
+            r"\b(adjacent|nearby|within|range|already|another|bloodied|down)\b",
+            conditional_prefix,
+            flags=re.I,
+        ):
+            continue
+        modifiers = ("on_damage",) if re.search(r"\bif\s+this\s+deals\s+damage\b", prefix, flags=re.I) else tuple()
+        effects.append(Effect(type="prone", amount=1, modifiers=modifiers))
+        simplified = re.sub(r"\bprone\b", "", simplified, count=1, flags=re.I)
 
     for guard in re.finditer(r"\bgains?\s+(\d+)\s+guard\b", body, flags=re.I):
         effects.append(Effect(type="guard", amount=int(guard.group(1))))
@@ -541,6 +577,8 @@ def _condition_modifier_for_text(text: str) -> str | None:
 
 def _parse_attack_modifiers(body: str) -> tuple[str, ...]:
     modifiers: list[str] = []
+    if re.search(r"\branged\s+(?:magic\s+)?attack\b", body, flags=re.I):
+        modifiers.append("ranged")
     for match in re.finditer(r"\bpierce\s+(\d+)\b", body, flags=re.I):
         amount = max(0, int(match.group(1)))
         if amount > 0:

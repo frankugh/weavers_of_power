@@ -152,6 +152,8 @@ def enemy_to_dict(e: EnemyInstance) -> Dict[str, Any]:
     d.setdefault("is_ko", bool(getattr(e, "is_ko", False)))
     d.setdefault("physical_cards", bool(getattr(e, "physical_cards", False)))
     d.setdefault("physical_wounds", int(getattr(e, "physical_wounds", 0)))
+    d.setdefault("opportunity_attack_used_round", int(getattr(e, "opportunity_attack_used_round", 0)))
+    d.setdefault("melee_weapon", dict(getattr(e, "melee_weapon", {}) or {}))
     d.setdefault("loot_rolled", getattr(e, "loot_rolled", False))
     d.setdefault("rolled_loot", getattr(e, "rolled_loot", None))
     d.setdefault("grid_x", getattr(e, "grid_x", None))
@@ -204,6 +206,8 @@ def enemy_from_dict(d: Dict[str, Any]) -> EnemyInstance:
         is_ko=bool(d.get("is_ko", False)),
         physical_cards=bool(d.get("physical_cards", False)),
         physical_wounds=max(0, int(d.get("physical_wounds", 0) or 0)),
+        opportunity_attack_used_round=max(0, int(d.get("opportunity_attack_used_round", 0) or 0)),
+        melee_weapon=dict(d.get("melee_weapon", {}) or {}),
         statuses=dict(d.get("statuses", {})),
     )
 

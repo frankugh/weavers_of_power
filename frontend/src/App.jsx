@@ -266,7 +266,7 @@ function isTemplateSpawnable(template) {
 }
 
 function isTemplateDesignCandidate(template) {
-  const status = String(template?.playtestStatus || "").toLowerCase();
+  const status = normalizePlaytestStatus(template?.playtestStatus).toLowerCase();
   return template?.spawnable === false || status.includes("design");
 }
 
@@ -300,7 +300,8 @@ function getTemplateStatusLabel(template) {
   if (!isTemplateSpawnable(template)) {
     return isTemplateDesignCandidate(template) ? "To Design" : "Blocked";
   }
-  return template?.playtestStatus ? titleCaseFromSnake(String(template.playtestStatus)) : "Ready";
+  const status = normalizePlaytestStatus(template?.playtestStatus);
+  return status ? titleCaseFromSnake(status) : "Ready";
 }
 
 function getTemplateInitials(template) {
@@ -569,6 +570,143 @@ function DopHandPanel({ cards, summary }) {
   );
 }
 
+function opportunityHitDrawLabel(text) {
+  const value = String(text || "").trim();
+  if (/\bsuccess\b/i.test(value)) return "Success";
+  if (/\bfate\b/i.test(value)) return "Fate";
+  if (/\bfail\b/i.test(value)) return "Fail";
+  return value || "Card";
+}
+
+function opportunityHitDrawGroups(pendingOpportunity) {
+  const drawnText = pendingOpportunity?.drawnText || [];
+  if (!drawnText.length) return [];
+  return [
+    {
+      label: "Hit draw",
+      items: drawnText.map(opportunityHitDrawLabel),
+      summary: pendingOpportunity.summary || null,
+    },
+  ];
+}
+
+function opportunityNoWillpowerLabel(pendingOpportunity) {
+  const successes = Number(pendingOpportunity?.successCount || 0);
+  if (successes <= 0) return "Miss";
+  if (successes === 1) return "Hit";
+  if (successes === 2) return "Precise hit";
+  return "Critical hit";
+}
+
+function opportunityWillpowerLabel(pendingOpportunity) {
+  const successes = Number(pendingOpportunity?.successCount || 0);
+  const fate = Number(pendingOpportunity?.fateCount || 0);
+  const total = successes + fate;
+  if (total >= 3) return "Willpower inzetten voor critical hit";
+  if (total === 2) return "Willpower inzetten voor precise hit";
+  if (total === 1) return "Willpower inzetten voor hit";
+  return "Willpower inzetten";
+}
+
+function opportunityHasFate(pendingOpportunity) {
+  return Number(pendingOpportunity?.fateCount || 0) > 0;
+}
+
+function opportunityModalForPending(pendingOpportunity) {
+  const phase = pendingOpportunity?.phase;
+  if (phase === "willpower" || phase === "confirm") return "opportunity-willpower";
+  return "opportunity";
+}
+
+function opportunityResultTitle(pendingOpportunity) {
+  return opportunityHasFate(pendingOpportunity) ? "Fate getrokken - Willpower inzetten?" : "Opportunity Attack";
+}
+
+function opportunityResultSubtitle(pendingOpportunity) {
+  if (!pendingOpportunity) return "";
+  const successes = Number(pendingOpportunity.successCount || 0);
+  const fate = Number(pendingOpportunity.fateCount || 0);
+  return fate > 0 ? `${successes} successen + ${fate} fate` : `${successes} successen`;
+}
+
+function opportunityResolutionTitle(opportunityResolution) {
+  const count = opportunityResolution?.events?.length || 0;
+  return count === 1 ? "Enemy Opportunity Attack" : "Enemy Opportunity Attacks";
+}
+
+function opportunityResolutionSubtitle(opportunityResolution) {
+  const count = opportunityResolution?.events?.length || 0;
+  if (count <= 0) return "";
+  const stopped = opportunityResolution.events.some((event) => event?.stopped);
+  return `${count} attack${count === 1 ? "" : "s"} resolved${stopped ? " - movement stopped" : ""}`;
+}
+
+function opportunityEventDamageLine(event) {
+  const damage = Number(event?.damage || 0);
+  const toughness = Number(event?.damageToToughness || 0);
+  if (damage <= 0) return "No regular attack damage.";
+  const parts = [`Attack ${damage}`, `${toughness} to Toughness`];
+  if (event?.unpreventable) parts.push("unpreventable");
+  return `${parts.join(", ")}.`;
+}
+
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return null;
+}
+
+function woundTargetEntity(woundEvent, entities) {
+  if (!woundEvent || !Array.isArray(entities)) return null;
+  const targetId = woundEvent.instanceId || woundEvent.instance_id || "";
+  if (targetId) {
+    const byId = entities.find((entity) => entity?.instance_id === targetId || entity?.instanceId === targetId);
+    if (byId) return byId;
+  }
+  const targetName = woundEvent.name || "";
+  if (!targetName) return null;
+  return entities.find((entity) => entity?.name === targetName) || null;
+}
+
+function woundEventWithCurrentToughness(woundEvent, entities = []) {
+  if (!woundEvent) return null;
+  const entity = woundTargetEntity(woundEvent, entities);
+  if (!entity) return woundEvent;
+  const finalToughness = firstFiniteNumber(entity?.toughness_current, entity?.toughnessCurrent);
+  const finalMax = firstFiniteNumber(entity?.toughness_max, entity?.toughnessMax);
+  if (finalToughness === null && finalMax === null) return woundEvent;
+  return {
+    ...woundEvent,
+    toughnessAfter: finalToughness ?? woundEvent.toughnessAfter,
+    toughnessMax: finalMax ?? woundEvent.toughnessMax,
+  };
+}
+
+function combinedWoundEvent(woundEvents, entities = []) {
+  const events = Array.isArray(woundEvents)
+    ? woundEvents.filter((event) => event && Number(event.wounds || 0) > 0)
+    : [];
+  if (!events.length) return null;
+  const first = events[0];
+  const firstTarget = first.instanceId || first.name || "";
+  if (!events.every((event) => (event.instanceId || event.name || "") === firstTarget)) {
+    return woundEventWithCurrentToughness(first, entities);
+  }
+  const merged = events.reduce(
+    (merged, event) => ({
+      ...merged,
+      ...event,
+      wounds: Number(merged.wounds || 0) + Number(event.wounds || 0),
+      toughnessAfter: event.toughnessAfter ?? merged.toughnessAfter,
+      toughnessMax: event.toughnessMax ?? merged.toughnessMax,
+    }),
+    { ...first, wounds: 0 },
+  );
+  return woundEventWithCurrentToughness(merged, entities);
+}
+
 function CreatureInfoPanel({ info }) {
   if (!info) return null;
   const skills = Object.entries(info.skills || {});
@@ -641,6 +779,7 @@ function App() {
   const [healForm, setHealForm] = useState(EMPTY_HEAL_FORM);
   const [drawExactCount, setDrawExactCount] = useState(1);
   const [strengthenCount, setStrengthenCount] = useState(1);
+  const [guardCount, setGuardCount] = useState(1);
   const [actionWarningAcknowledged, setActionWarningAcknowledged] = useState(false);
   const [pendingActionFn, setPendingActionFn] = useState(null);
   const [helpTargets, setHelpTargets] = useState([]);
@@ -651,6 +790,8 @@ function App() {
   const [drawDetail, setDrawDetail] = useState(null);
   const [woundNotice, setWoundNotice] = useState(null);
   const [pendingWoundRemove, setPendingWoundRemove] = useState(null);
+  const [opportunityResolution, setOpportunityResolution] = useState(null);
+  const [opportunityManual, setOpportunityManual] = useState({ successes: 0, fate: 0 });
   const [customForm, setCustomForm] = useState({
     name: "Custom",
     toughness: 10,
@@ -847,6 +988,22 @@ function App() {
   }, [activeView, snapshot?.pendingSearch?.hasFate]);
 
   useEffect(() => {
+    if (activeView !== APP_VIEWS.BATTLE || !snapshot?.pendingOpportunity) {
+      return;
+    }
+    setModal(opportunityModalForPending(snapshot.pendingOpportunity));
+  }, [
+    activeView,
+    snapshot?.pendingOpportunity?.attackerId,
+    snapshot?.pendingOpportunity?.targetId,
+    snapshot?.pendingOpportunity?.phase,
+  ]);
+
+  useEffect(() => {
+    setOpportunityManual({ successes: 0, fate: 0 });
+  }, [snapshot?.pendingOpportunity?.attackerId, snapshot?.pendingOpportunity?.targetId]);
+
+  useEffect(() => {
     setActionWarningAcknowledged(false);
     setPendingActionFn(null);
   }, [snapshot?.activeTurnId]);
@@ -929,7 +1086,10 @@ function App() {
     selectedIsActive && movementState?.entityId === selectedEntity?.instance_id
       ? Number(movementState.movementUsed)
       : 0;
-  const selectedMovementRemaining = Math.max(0, selectedMovementBase * 2 - selectedMovementUsed);
+  const selectedMovementRemaining =
+    selectedIsActive && movementState?.entityId === selectedEntity?.instance_id && movementState?.movementStopped
+      ? 0
+      : Math.max(0, selectedMovementBase * 2 - selectedMovementUsed);
   const canUseMove = Boolean(
     selectedEntity &&
       selectedIsActive &&
@@ -1000,6 +1160,14 @@ function App() {
       !selectedUsesPhysicalCards &&
       (isPlayerSelected ? !selectedPowerDrawUsed : !snapshot.turnInProgress),
   );
+  const canHitdraw = Boolean(
+    selectedEntity &&
+      isPlayerSelected &&
+      !selectedIsDown &&
+      selectedIsActive &&
+      !selectedUsesPhysicalCards &&
+      selectedPowerDrawUsed,
+  );
   const canDrawExact = Boolean(selectedEntity && isPlayerSelected && !selectedUsesPhysicalCards && !selectedIsDown && selectedIsActive);
   const playerActionsUsed = (selectedEntity?.actions_used ?? 0) + (snapshot?.movementState?.dashUsed ? 1 : 0);
   const pcEntitiesInRange = isPlayerSelected && selectedEntity?.grid_x != null
@@ -1018,6 +1186,7 @@ function App() {
     : [];
   const canHelp = isPlayerSelected && !selectedIsDown && pcEntitiesInRange.length > 0;
 
+  const pendingOpportunity = snapshot?.pendingOpportunity ?? null;
   const pendingSearch = snapshot?.pendingSearch ?? null;
   const currentPcRoomId = selectedEntity?.room_id ?? null;
   const roomAlreadySearched = Boolean(currentPcRoomId && (dungeon?.searchedRoomIds || []).includes(currentPcRoomId));
@@ -1077,7 +1246,7 @@ function App() {
   const canAttackOrHeal = Boolean(visibleSelectedEntity && !selectedIsDown);
   const selectedTargetNoun = isPlayerSelected ? "player" : "enemy";
   const canRollLoot = isTemplateLootable(visibleSelectedEntity);
-  const canDisengage = Boolean(isPlayerSelected && !selectedIsDown);
+  const canDisengage = Boolean(selectedEntity && selectedIsActive && !selectedIsDown);
   const canContextRollLoot = Boolean(contextMenuEntity?.is_down && !contextMenuEntity?.loot_rolled && isTemplateLootable(contextMenuEntity));
   const canContextQuickAttack = Boolean(
     contextMenuEntity &&
@@ -1164,6 +1333,8 @@ function App() {
     setPreviewEntityId(null);
     setWoundNotice(null);
     setPendingWoundRemove(null);
+    setOpportunityResolution(null);
+    setOpportunityManual({ successes: 0, fate: 0 });
   }
 
   function showDrawReveal(payload, kind) {
@@ -1183,6 +1354,26 @@ function App() {
       groups: entity.is_player && latestGroup ? [latestGroup] : [],
       sticky: Boolean(entity.is_player),
       kind,
+      phase: "enter",
+    });
+  }
+
+  function showHitDrawReveal(payload) {
+    const hitDraw = payload?.hitDraw;
+    const cardItems = Array.isArray(hitDraw?.drawnCards) ? hitDraw.drawnCards : [];
+    const items = cardItems.length ? cardItems : Array.isArray(hitDraw?.drawnText) ? hitDraw.drawnText : [];
+    if (!hitDraw || !items.length) {
+      return;
+    }
+    setDrawReveal({
+      key: `hitdraw-${hitDraw.entityId}-${Date.now()}`,
+      entityId: hitDraw.entityId,
+      entityName: hitDraw.entityName,
+      items,
+      groups: [{ label: "Hit draw", items, summary: null }],
+      sticky: true,
+      kind: "hit draw",
+      showEnergies: false,
       phase: "enter",
     });
   }
@@ -1410,6 +1601,42 @@ function App() {
       body: JSON.stringify({ useWillpower }),
     });
     showSearchFlavour(resolved);
+  }
+
+  function handleOpportunityPayload(payload) {
+    if (!payload) return;
+    if (payload.opportunityNotice) {
+      setNotice(payload.opportunityNotice);
+    }
+    const nextPending = payload.pendingOpportunity;
+    if (nextPending) {
+      setModal(opportunityModalForPending(nextPending));
+      return;
+    }
+    const opportunityEvents = Array.isArray(payload.opportunityEvents) ? payload.opportunityEvents : [];
+    const woundEvent = combinedWoundEvent(payload.woundEvents, payload.enemies);
+    if (opportunityEvents.length > 0) {
+      setOpportunityResolution({ events: opportunityEvents, woundEvent });
+      setModal("opportunity-resolved");
+      return;
+    }
+    if (woundEvent && Number(woundEvent.wounds) > 0) {
+      setWoundNotice(woundEvent);
+      setModal("wounds");
+      return;
+    }
+    setModal(null);
+  }
+
+  function handleOpportunityResolutionClose() {
+    const woundEvent = opportunityResolution?.woundEvent;
+    setOpportunityResolution(null);
+    if (woundEvent && Number(woundEvent.wounds) > 0) {
+      setWoundNotice(woundEvent);
+      setModal("wounds");
+      return;
+    }
+    setModal(null);
   }
 
   async function handleInteractSuspect(edgeKey) {
@@ -1686,8 +1913,8 @@ function App() {
     );
     if (payload) {
       setPendingDashMove(null);
-      setModal(null);
       setMapModeAfterMovement(payload);
+      handleOpportunityPayload(payload);
     }
   }
 
@@ -1852,6 +2079,27 @@ function App() {
       { method: "POST", body: JSON.stringify({ x }) },
       `Strengthened +${x}`,
     );
+  }
+
+  async function handleGuard(explicitX) {
+    const x = explicitX !== undefined ? explicitX : Number(guardCount);
+    closeModal();
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/action/guard`,
+      { method: "POST", body: JSON.stringify({ x }) },
+      `Guard +${x}`,
+    );
+  }
+
+  async function handleHitdraw() {
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/action/hitdraw`,
+      { method: "POST" },
+      "Hitdraw",
+    );
+    if (payload) {
+      showHitDrawReveal(payload);
+    }
   }
 
   async function handleShed() {
@@ -2035,7 +2283,7 @@ function App() {
     );
     if (payload) {
       setAttackForm(EMPTY_ATTACK_FORM);
-      const woundEvent = Array.isArray(payload.woundEvents) ? payload.woundEvents[0] : null;
+      const woundEvent = combinedWoundEvent(payload.woundEvents, payload.enemies);
       if (woundEvent && Number(woundEvent.wounds) > 0) {
         setWoundNotice(woundEvent);
         setModal("wounds");
@@ -2061,11 +2309,32 @@ function App() {
     if (payload.quickAttackNotice) {
       setNotice(payload.quickAttackNotice);
     }
-    const woundEvent = Array.isArray(payload.woundEvents) ? payload.woundEvents[0] : null;
+    const woundEvent = combinedWoundEvent(payload.woundEvents, payload.enemies);
     if (woundEvent && Number(woundEvent.wounds) > 0) {
       setWoundNotice(woundEvent);
       setModal("wounds");
     }
+  }
+
+  async function handleOpportunityResolve(action, extra = {}) {
+    const body = { action, ...extra };
+    if (action === "attack" && pendingOpportunity?.attackerPhysicalCards && pendingOpportunity?.successCount == null) {
+      body.manualSuccesses = Math.max(0, Number(opportunityManual.successes || 0));
+      body.manualFate = Math.max(0, Number(opportunityManual.fate || 0));
+    }
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/opportunity/resolve`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+      action === "skip" ? "Opportunity attack skipped" : "Opportunity attack resolved",
+    );
+    handleOpportunityPayload(payload);
+  }
+
+  function handleOpportunityWillpower(useWillpower) {
+    handleOpportunityResolve("attack", { useWillpower });
   }
 
   async function handleHealSubmit(event) {
@@ -2216,6 +2485,7 @@ function App() {
     "--display-brightness": displayBrightnessScale.toFixed(2),
     "--display-brightness-lift": displayBrightnessLift.toFixed(3),
   };
+  const visibleWoundNotice = woundEventWithCurrentToughness(woundNotice, snapshot?.enemies);
 
   return (
     <div className="shell" style={displayBrightnessStyle}>
@@ -2630,11 +2900,15 @@ function App() {
                     className="primary-button"
                     onClick={() => {
                       setActionMenuOpen(false);
-                      handleDraw();
+                      if (isPlayerSelected && selectedPowerDrawUsed) {
+                        withActionCheck(handleHitdraw);
+                      } else {
+                        handleDraw();
+                      }
                     }}
-                    disabled={!canDraw || busy}
+                    disabled={(isPlayerSelected && selectedPowerDrawUsed ? !canHitdraw : !canDraw) || busy}
                   >
-                    Draw
+                    {isPlayerSelected && selectedPowerDrawUsed ? "Hitdraw" : "Draw"}
                   </button>
                 ) : null}
                 {canDrawExact && (
@@ -2677,6 +2951,18 @@ function App() {
                     disabled={busy}
                   >
                     Strengthen
+                  </button>
+                )}
+                {isPlayerSelected && !selectedIsDown && (
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      withActionCheck(() => { setGuardCount(1); setModal("guard"); });
+                    }}
+                    disabled={busy}
+                  >
+                    Guard
                   </button>
                 )}
                 {canShed && (
@@ -3651,13 +3937,59 @@ function App() {
       </ModalShell>
 
       <ModalShell
-        open={modal === "wounds" && Boolean(woundNotice)}
+        open={modal === "opportunity-resolved" && Boolean(opportunityResolution)}
+        title={opportunityResolutionTitle(opportunityResolution)}
+        subtitle={opportunityResolutionSubtitle(opportunityResolution)}
+        onClose={handleOpportunityResolutionClose}
+        closeOnOutsideClick={false}
+      >
+        <div className="panel-body modal-form">
+          <div className="subtle-copy">
+            {opportunityResolution?.events?.length === 1
+              ? "An enemy resolved an opportunity attack."
+              : `${opportunityResolution?.events?.length || 0} enemies resolved opportunity attacks.`}
+          </div>
+          <div className="draw-groups">
+            {(opportunityResolution?.events || []).map((event, index) => (
+              <div className="draw-group" key={`${event.attackerId || "enemy"}-${index}`}>
+                <div className="draw-group-header">
+                  <div className="draw-group-label">
+                    {event.attackerName} {"->"} {event.targetName}
+                  </div>
+                </div>
+                <div className="card-list">
+                  <div className="draw-card">
+                    {event.cardText || "No card drawn"}
+                    {event.reshuffled ? " (reshuffled first)" : ""}
+                  </div>
+                  <div className="draw-card">
+                    {opportunityEventDamageLine(event)}
+                  </div>
+                  {event.special || event.stopped ? (
+                    <div className="draw-card">
+                      {event.special ? "Special: movement stopped." : "Movement stopped."}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="modal-actions">
+            <button className="primary-button" type="button" onClick={handleOpportunityResolutionClose}>
+              OK
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "wounds" && Boolean(visibleWoundNotice)}
         title="Player Wounds"
         onClose={closeModal}
         closeOnOutsideClick={false}
         className="modal-shell-wound"
       >
-        {woundNotice ? (
+        {visibleWoundNotice ? (
           <div className="panel-body wound-modal-body">
             <div className="wound-mark" aria-hidden="true">
               <span className="wound-slash wound-slash-main" />
@@ -3666,24 +3998,24 @@ function App() {
             <div className="wound-modal-content">
               <div className="wound-kicker">Wound taken</div>
               <div className="wound-headline">
-                <strong>{woundNotice.name}</strong>
-                {` gains ${woundNotice.wounds} wound${Number(woundNotice.wounds) === 1 ? "" : "s"}.`}
+                <strong>{visibleWoundNotice.name}</strong>
+                {` gains ${visibleWoundNotice.wounds} wound${Number(visibleWoundNotice.wounds) === 1 ? "" : "s"}.`}
               </div>
               <div className="wound-card-row">
-                <div className="wound-card-mini" aria-label={`${woundNotice.wounds} wound cards`}>
+                <div className="wound-card-mini" aria-label={`${visibleWoundNotice.wounds} wound cards`}>
                   <span>Wound</span>
-                  <strong>{`x${woundNotice.wounds}`}</strong>
+                  <strong>{`x${visibleWoundNotice.wounds}`}</strong>
                 </div>
                 <div
                   className="wound-toughness-box"
-                  aria-label={`Toughness ${woundNotice.toughnessAfter}/${woundNotice.toughnessMax} after wounds`}
+                  aria-label={`Toughness ${visibleWoundNotice.toughnessAfter}/${visibleWoundNotice.toughnessMax} after wounds`}
                 >
                   <span>Toughness</span>
-                  <strong>{`${woundNotice.toughnessAfter}/${woundNotice.toughnessMax}`}</strong>
+                  <strong>{`${visibleWoundNotice.toughnessAfter}/${visibleWoundNotice.toughnessMax}`}</strong>
                   <div className="wound-toughness-track" aria-hidden="true">
                     <div
                       className="wound-toughness-fill"
-                      style={{ width: `${percent(woundNotice.toughnessAfter, woundNotice.toughnessMax)}%` }}
+                      style={{ width: `${percent(visibleWoundNotice.toughnessAfter, visibleWoundNotice.toughnessMax)}%` }}
                     />
                   </div>
                 </div>
@@ -4439,6 +4771,101 @@ function App() {
       </ModalShell>
 
       <ModalShell
+        open={modal === "opportunity" && Boolean(pendingOpportunity)}
+        title="Opportunity Attack"
+        subtitle={pendingOpportunity ? `${pendingOpportunity.attackerName} vs ${pendingOpportunity.targetName}` : ""}
+        onClose={() => handleOpportunityResolve("skip")}
+        closeOnOutsideClick={false}
+      >
+        <div className="panel-body modal-form">
+          <div className="subtle-copy">
+            {pendingOpportunity
+              ? `${pendingOpportunity.targetName} moves away from ${pendingOpportunity.attackerName}. Base DMG ${pendingOpportunity.baseDamage}, reach ${pendingOpportunity.reach}, hit draw ${pendingOpportunity.hitDrawCount || 3}.`
+              : ""}
+          </div>
+          {pendingOpportunity?.drawnText?.length ? (
+            <DrawCardView
+              entityName={pendingOpportunity.attackerName}
+              items={opportunityHitDrawGroups(pendingOpportunity)[0]?.items || []}
+              groups={opportunityHitDrawGroups(pendingOpportunity)}
+              kind="hit draw"
+              showEnergies={false}
+            />
+          ) : null}
+          {pendingOpportunity?.attackerPhysicalCards && pendingOpportunity?.successCount == null ? (
+            <div className="form-grid compact-grid">
+              <label className="field">
+                <span>Successes</span>
+                <input
+                  type="number"
+                  min="0"
+                  value={opportunityManual.successes}
+                  onChange={(event) => setOpportunityManual((current) => ({ ...current, successes: event.target.value }))}
+                />
+              </label>
+              <label className="field">
+                <span>Fate</span>
+                <input
+                  type="number"
+                  min="0"
+                  value={opportunityManual.fate}
+                  onChange={(event) => setOpportunityManual((current) => ({ ...current, fate: event.target.value }))}
+                />
+              </label>
+            </div>
+          ) : null}
+          <div className="modal-actions">
+            <button className="primary-button" type="button" onClick={() => handleOpportunityResolve("attack")} disabled={busy}>
+              Attack
+            </button>
+            <button className="secondary-button" type="button" onClick={() => handleOpportunityResolve("skip")} disabled={busy}>
+              Skip
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "opportunity-willpower" && Boolean(pendingOpportunity)}
+        title={opportunityResultTitle(pendingOpportunity)}
+        subtitle={opportunityResultSubtitle(pendingOpportunity)}
+        onClose={() => handleOpportunityWillpower(false)}
+        closeOnOutsideClick={false}
+      >
+        <div className="panel-body modal-form">
+          {opportunityHasFate(pendingOpportunity) ? (
+            <div className="subtle-copy">
+              Zet willpower in om alle fate-kaarten als successen te tellen voor deze opportunity attack.
+            </div>
+          ) : null}
+          {pendingOpportunity?.drawnText?.length ? (
+            <DrawCardView
+              entityName={pendingOpportunity.attackerName}
+              items={opportunityHitDrawGroups(pendingOpportunity)[0]?.items || []}
+              groups={opportunityHitDrawGroups(pendingOpportunity)}
+              kind="hit draw"
+              showEnergies={false}
+            />
+          ) : null}
+          <div className="modal-actions">
+            {opportunityHasFate(pendingOpportunity) ? (
+              <button className="primary-button" type="button" onClick={() => handleOpportunityWillpower(true)} disabled={busy}>
+                {opportunityWillpowerLabel(pendingOpportunity)}
+              </button>
+            ) : null}
+            <button
+              className={opportunityHasFate(pendingOpportunity) ? "secondary-button" : "primary-button"}
+              type="button"
+              onClick={() => handleOpportunityWillpower(false)}
+              disabled={busy}
+            >
+              {opportunityNoWillpowerLabel(pendingOpportunity)}
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
         open={modal === "search-flavour"}
         title="Search"
         onClose={closeModal}
@@ -4462,7 +4889,7 @@ function App() {
       >
         <div className="panel-body modal-form">
           <p className="subtle-copy">
-            {selectedEntity?.name ?? "De speler"} mag deze beurt vrij bewegen zonder opportunity attacks uit te lokken.
+            {selectedEntity?.name ?? "Deze unit"} mag deze beurt vrij bewegen zonder opportunity attacks uit te lokken.
           </p>
           <div className="modal-actions">
             <button className="primary-button" type="button" onClick={closeModal}>
@@ -4584,6 +5011,51 @@ function App() {
       </ModalShell>
 
       <ModalShell
+        open={modal === "guard"}
+        title="Guard"
+        subtitle="Gain Guard X. Guard is added to the current temporary guard pool."
+        onClose={closeModal}
+      >
+        <div className="panel-body">
+          <div className="draw-exact-row">
+            <div className="draw-exact-presets">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  className="primary-button draw-exact-preset-btn"
+                  onClick={() => handleGuard(n)}
+                  disabled={busy}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <span className="draw-exact-sep" aria-hidden="true" />
+            <form
+              className="draw-exact-custom"
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleGuard();
+              }}
+            >
+              <input
+                className="draw-exact-input"
+                type="number"
+                min="1"
+                max="99"
+                value={guardCount}
+                onChange={(e) => setGuardCount(Number(e.target.value))}
+              />
+              <button className="primary-button" type="submit" disabled={busy}>
+                Guard
+              </button>
+            </form>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
         open={modal === "new-round" && pendingNewRound}
         title={`Round ${snapshot?.round || 1} complete`}
         subtitle="Continue to the next round or make GM adjustments first."
@@ -4646,6 +5118,21 @@ function parseCombatActionPreview(result, actionText, sourceAction = {}) {
       simplified = simplified.replace(match[0], "");
     }
   }
+  for (const match of body.matchAll(/\bcharged?\s+(\d+)\b/gi)) {
+    const amount = Math.max(0, Number(match[1]) || 0);
+    if (amount <= 0) continue;
+    const matchIndex = match.index || 0;
+    const sentenceStart = Math.max(body.lastIndexOf(".", matchIndex) + 1, body.lastIndexOf(";", matchIndex) + 1);
+    const prefix = body.slice(sentenceStart, matchIndex);
+    let conditionalPrefix = prefix.toLowerCase().replace(/^if\s+this\s+deals\s+damage\s*,?\s*/, "");
+    conditionalPrefix = conditionalPrefix.replace(/^[\s,.;:-]+|[\s,.;:-]+$/g, "");
+    if (conditionalPrefix && /\b(adjacent|nearby|within|range|prone|already|another|bloodied|down)\b/i.test(conditionalPrefix)) {
+      continue;
+    }
+    const modifiers = /\bif\s+this\s+deals\s+damage\b/i.test(prefix) ? ["on_damage"] : [];
+    effects.push({ type: "charge", amount, modifiers });
+    simplified = simplified.replace(match[0], "");
+  }
   for (const match of body.matchAll(/\bgrappled?\s+(\d+)\b/gi)) {
     const amount = Math.max(0, Number(match[1]) || 0);
     if (amount <= 0) continue;
@@ -4660,6 +5147,20 @@ function parseCombatActionPreview(result, actionText, sourceAction = {}) {
     const modifiers = /\bif\s+this\s+deals\s+damage\b/i.test(prefix) ? ["on_damage"] : [];
     effects.push({ type: "grapple", amount, modifiers });
     simplified = simplified.replace(match[0], "");
+  }
+  const proneSource = simplified;
+  for (const match of proneSource.matchAll(/\bprone\b/gi)) {
+    const matchIndex = match.index || 0;
+    const sentenceStart = Math.max(proneSource.lastIndexOf(".", matchIndex) + 1, proneSource.lastIndexOf(";", matchIndex) + 1);
+    const prefix = proneSource.slice(sentenceStart, matchIndex);
+    let conditionalPrefix = prefix.toLowerCase().replace(/^if\s+this\s+deals\s+damage\s*,?\s*/, "");
+    conditionalPrefix = conditionalPrefix.replace(/^[\s,.;:-]+|[\s,.;:-]+$/g, "");
+    if (conditionalPrefix && /\b(adjacent|nearby|within|range|already|another|bloodied|down)\b/i.test(conditionalPrefix)) {
+      continue;
+    }
+    const modifiers = /\bif\s+this\s+deals\s+damage\b/i.test(prefix) ? ["on_damage"] : [];
+    effects.push({ type: "prone", amount: 1, modifiers });
+    simplified = simplified.replace(/\bprone\b/i, "");
   }
   for (const match of body.matchAll(/\bgain\s+(\d+)\s+guard\b/gi)) {
     effects.push({ type: "guard", amount: Number(match[1]), modifiers: [] });
@@ -4707,6 +5208,7 @@ function parseCombatActionPreview(result, actionText, sourceAction = {}) {
 
 function parseCombatAttackModifiers(body) {
   const modifiers = [];
+  if (/\branged\s+(?:magic\s+)?attack\b/i.test(body)) modifiers.push("ranged");
   for (const match of body.matchAll(/\bpierce\s+(\d+)\b/gi)) {
     const amount = Math.max(0, Number(match[1]) || 0);
     if (amount > 0) modifiers.push(`pierce:${amount}`);
@@ -4930,8 +5432,88 @@ function isEmptyCombatOverrides(overrides) {
   return (
     !Object.keys(overrides?.statOverrides || {}).length &&
     !Object.keys(overrides?.skillOverrides || {}).length &&
-    !Object.keys(overrides?.actionOverrides || {}).length
+    !Object.keys(overrides?.actionOverrides || {}).length &&
+    !Object.keys(overrides?.infoOverrides || {}).length
   );
+}
+
+function combatOverridesHaveNonStatusEdit(overrides) {
+  if (!overrides) return false;
+  if (Object.keys(overrides.statOverrides || {}).length) return true;
+  if (Object.keys(overrides.skillOverrides || {}).length) return true;
+  if (Object.keys(overrides.actionOverrides || {}).length) return true;
+  return Object.keys(overrides.infoOverrides || {}).some((key) => key !== "playtestStatus");
+}
+
+function combatEntryHasSimulationOverrides(entry) {
+  return Boolean(entry?.overrides && combatOverridesHaveNonStatusEdit(entry.overrides));
+}
+
+function isNormalGoblinTemplate(template) {
+  const id = String(template?.id || "").trim().toLowerCase();
+  const name = String(template?.name || "").trim().toLowerCase();
+  return id === "goblin" || id === "c_goblin" || name === "goblin";
+}
+
+function autoRetestOverridesForSavedEdit(template, overrides) {
+  if (!template || !overrides) return overrides;
+  if (!EDIT_AUTO_RETEST_STATUSES.has(normalizePlaytestStatus(template.playtestStatus))) return overrides;
+  if (!combatOverridesHaveNonStatusEdit(overrides)) return overrides;
+  if (Object.prototype.hasOwnProperty.call(overrides.infoOverrides || {}, "playtestStatus")) return overrides;
+  return {
+    ...overrides,
+    infoOverrides: {
+      ...(overrides.infoOverrides || {}),
+      playtestStatus: "Retest_Needed",
+    },
+  };
+}
+
+function combatSimPrecisionTargetMet(result, requestedPrecisionTargetPercent) {
+  const target = Number(requestedPrecisionTargetPercent);
+  if (!Number.isFinite(target) || target > SIM_PROMOTION_PRECISION_TARGET_PERCENT) return false;
+  return Boolean(result?.summary?.precision?.targetMet);
+}
+
+function combatSimWinRatesAreBalanced(result) {
+  const winRates = result?.summary?.winRates || {};
+  const rateA = Number(winRates.A || 0);
+  const rateB = Number(winRates.B || 0);
+  const nonDraw = rateA + rateB;
+  if (!Number.isFinite(rateA) || !Number.isFinite(rateB) || nonDraw <= 0) return false;
+  const teamAShare = rateA / nonDraw;
+  const winnerShare = Math.max(teamAShare, 1 - teamAShare);
+  return winnerShare <= SIM_PROMOTION_MAX_NON_DRAW_WIN_SHARE;
+}
+
+function benchmarkCandidateForAutoSimulation(team, opposingTeam, templateLookup) {
+  if (!Array.isArray(team) || !Array.isArray(opposingTeam) || team.length !== 1 || opposingTeam.length !== 1) {
+    return null;
+  }
+  const candidateEntry = team[0];
+  const goblinEntry = opposingTeam[0];
+  if (combatEntryHasSimulationOverrides(candidateEntry) || combatEntryHasSimulationOverrides(goblinEntry)) return null;
+  const candidate = templateLookup.get(candidateEntry.templateId);
+  const goblin = templateLookup.get(goblinEntry.templateId);
+  if (!candidate || !SIM_AUTO_PROMOTE_STATUSES.has(normalizePlaytestStatus(candidate.playtestStatus))) return null;
+  if (Math.max(1, Number(candidateEntry.count) || 1) !== 1) return null;
+  if (!isNormalGoblinTemplate(goblin)) return null;
+  const expectedGoblins = Math.max(1, Number(getTemplateThreatLevel(candidate)) || 1);
+  if (Math.max(1, Number(goblinEntry.count) || 1) !== expectedGoblins) return null;
+  return candidate.id;
+}
+
+function autoSimulatedTemplateIds({ teamA, teamB, templateLookup, result, precisionTargetPercent }) {
+  if (
+    !combatSimPrecisionTargetMet(result, precisionTargetPercent) ||
+    !combatSimWinRatesAreBalanced(result)
+  ) {
+    return [];
+  }
+  return [
+    benchmarkCandidateForAutoSimulation(teamA, teamB, templateLookup),
+    benchmarkCandidateForAutoSimulation(teamB, teamA, templateLookup),
+  ].filter(Boolean);
 }
 
 function formatCombatEffect(effect) {
@@ -4946,6 +5528,14 @@ function formatCombatEffect(effect) {
     return (effect.modifiers || []).includes("on_damage")
       ? `Grapple ${effect.amount} (on damage)`
       : `Grapple ${effect.amount}`;
+  }
+  if (effect.type === "charge") {
+    return (effect.modifiers || []).includes("on_damage")
+      ? `Charge ${effect.amount} (on damage)`
+      : `Charge ${effect.amount}`;
+  }
+  if (effect.type === "prone") {
+    return (effect.modifiers || []).includes("on_damage") ? "Prone (on damage)" : "Prone";
   }
   if (effect.type === "conditional_attack") {
     const conditions = (effect.modifiers || [])
@@ -5113,6 +5703,10 @@ function CombatSimView({ meta, onMetaUpdate }) {
     setSimBusy(true);
     setSimError("");
     setSimNotice("");
+    const requestedPrecisionTargetPercent =
+      mode === "batch" && precisionTargetPercent !== ""
+        ? Math.max(0.1, Number(precisionTargetPercent) || SIM_PROMOTION_PRECISION_TARGET_PERCENT)
+        : null;
     try {
       const payload = await requestJson("/api/combat-sim/simulate", {
         method: "POST",
@@ -5123,10 +5717,7 @@ function CombatSimView({ meta, onMetaUpdate }) {
           strategyB,
           seed: hasFixedSeed ? requestedSeed : null,
           runs: mode === "batch" ? Math.max(1, Math.min(1000, Number(runs) || 100)) : 1,
-          precisionTargetPercent:
-            mode === "batch" && precisionTargetPercent !== ""
-              ? Math.max(0.1, Number(precisionTargetPercent) || 5)
-              : null,
+          precisionTargetPercent: requestedPrecisionTargetPercent,
           maxRounds: Math.max(1, Number(maxRounds) || 100),
         }),
       });
@@ -5139,20 +5730,39 @@ function CombatSimView({ meta, onMetaUpdate }) {
         setSeed("");
       }
       if (mode === "batch") {
-        const allIds = [...new Set([...normalizedA, ...normalizedB].map((e) => e.templateId))];
-        for (const templateId of allIds) {
-          const template = templateLookup.get(templateId);
-          if (template?.playtestStatus === "Untested") {
-            try {
-              const saved = await requestJson(`/api/battle/creature-templates/${encodeURIComponent(templateId)}/save-overrides`, {
-                method: "POST",
-                body: JSON.stringify({ infoOverrides: { playtestStatus: "Simulated" } }),
-              });
-              if (saved.metadata) onMetaUpdate?.(saved.metadata);
-            } catch {
-              // silent — don't interrupt the sim result display
-            }
+        const autoIds = [
+          ...new Set(autoSimulatedTemplateIds({
+            teamA: normalizedA,
+            teamB: normalizedB,
+            templateLookup,
+            result: payload.result,
+            precisionTargetPercent: requestedPrecisionTargetPercent,
+          })),
+        ];
+        const autoSavedNames = [];
+        const autoSaveFailures = [];
+        for (const templateId of autoIds) {
+          const templateName = templateLookup.get(templateId)?.name || templateId;
+          try {
+            const saved = await requestJson(`/api/battle/creature-templates/${encodeURIComponent(templateId)}/save-overrides`, {
+              method: "POST",
+              body: JSON.stringify({ infoOverrides: { playtestStatus: "Simulated" } }),
+            });
+            if (saved.metadata) onMetaUpdate?.(saved.metadata);
+            autoSavedNames.push(templateName);
+          } catch (saveError) {
+            autoSaveFailures.push(`${templateName}: ${saveError.message}`);
           }
+        }
+        const autoStatusMessages = [];
+        if (autoSavedNames.length) {
+          autoStatusMessages.push(`Auto-marked ${autoSavedNames.join(", ")} as Simulated.`);
+        }
+        if (autoSaveFailures.length) {
+          autoStatusMessages.push(`Auto status update failed: ${autoSaveFailures.join("; ")}`);
+        }
+        if (autoStatusMessages.length) {
+          setSimNotice(autoStatusMessages.join(" "));
         }
       }
     } catch (requestError) {
@@ -5164,7 +5774,10 @@ function CombatSimView({ meta, onMetaUpdate }) {
 
   async function saveTemplateOverrides(templateId) {
     const template = templateLookup.get(templateId);
-    const overrides = buildCombatOverridesPayload(templateOverrides[templateId], template);
+    const overrides = autoRetestOverridesForSavedEdit(
+      template,
+      buildCombatOverridesPayload(templateOverrides[templateId], template),
+    );
     if (!template || !overrides) {
       return;
     }
@@ -5495,22 +6108,43 @@ function CombatCoverageChip({ coverage }) {
 }
 
 const PLAYTEST_STATUSES = ["To_Design", "Untested", "Simulated", "Playtested", "Retest_Needed"];
+const SIM_AUTO_PROMOTE_STATUSES = new Set(["Untested", "Retest_Needed"]);
+const EDIT_AUTO_RETEST_STATUSES = new Set(["Simulated", "Playtested"]);
+const SIM_PROMOTION_MAX_NON_DRAW_WIN_SHARE = 0.65;
+const SIM_PROMOTION_PRECISION_TARGET_PERCENT = 5;
 const CREATURE_SIZES = ["Tiny", "Small", "Medium", "Large", "Huge", "Gargantuan"];
 
+function normalizePlaytestStatus(status) {
+  const text = String(status ?? "").trim();
+  if (!text) return "";
+  const key = text.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  const alias = {
+    todesign: "To_Design",
+    to_design: "To_Design",
+    untested: "Untested",
+    simulated: "Simulated",
+    playtested: "Playtested",
+    retestneeded: "Retest_Needed",
+    retest_needed: "Retest_Needed",
+  }[key];
+  return alias || text;
+}
+
 function playtestStatusClass(status) {
-  switch (status) {
+  switch (normalizePlaytestStatus(status)) {
     case "To_Design": return "playtest-to-design";
     case "Untested": return "playtest-untested";
     case "Simulated": return "playtest-simulated";
-    case "Tested": return "playtest-tested";
+    case "Playtested": return "playtest-tested";
     case "Retest_Needed": return "playtest-retest";
     default: return "playtest-none";
   }
 }
 
 function playtestStatusLabel(status) {
-  if (!status) return "No status";
-  return status.replace(/_/g, " ");
+  const normalized = normalizePlaytestStatus(status);
+  if (!normalized) return "No status";
+  return normalized.replace(/_/g, " ");
 }
 
 function CombatSimEntryEditorModal({ teamLabel, entry, template, overrides, onClose, onUpdateOverrides, onSaveOverrides, saveBusy }) {
@@ -5524,7 +6158,7 @@ function CombatSimEntryEditorModal({ teamLabel, entry, template, overrides, onCl
   const coverage = summarizeCombatCoverage(actions);
   const savePayload = buildCombatOverridesPayload(overrides, template);
 
-  const effectivePlaytestStatus = infoOverrides.playtestStatus ?? template.playtestStatus ?? "";
+  const effectivePlaytestStatus = normalizePlaytestStatus(infoOverrides.playtestStatus ?? template.playtestStatus);
 
   function updateStatOverride(key, value) {
     onUpdateOverrides((current) => {
@@ -6165,13 +6799,26 @@ function DrawRevealPanel({ reveal }) {
       aria-live="polite"
       data-draw-reveal-phase={reveal.phase}
     >
-      <DrawCardView entityName={reveal.entityName} items={reveal.items} groups={reveal.groups || []} kind={reveal.kind} />
+      <DrawCardView
+        entityName={reveal.entityName}
+        items={reveal.items}
+        groups={reveal.groups || []}
+        kind={reveal.kind}
+        showEnergies={reveal.showEnergies !== false}
+      />
     </aside>
   );
 }
 
-function DrawCardView({ entityName, items, groups = [], kind = "draw" }) {
-  const title = kind === "redraw" ? "Redraw" : kind === "previous draw" ? "Previous draw" : "Current draw";
+function DrawCardView({ entityName, items, groups = [], kind = "draw", showEnergies = true }) {
+  const title =
+    kind === "redraw"
+      ? "Redraw"
+      : kind === "previous draw"
+        ? "Previous draw"
+        : kind === "hit draw"
+          ? "Hit draw"
+          : "Current draw";
   const visibleGroups = groups.length ? groups : items?.length ? [{ label: "Draw 1", items }] : [];
   const count = visibleGroups.reduce((total, group) => total + group.items.length, 0);
 
@@ -6184,12 +6831,12 @@ function DrawCardView({ entityName, items, groups = [], kind = "draw" }) {
         </div>
         <span className="draw-card-view-count">{count}</span>
       </div>
-      <DrawGroupsList groups={visibleGroups} />
+      <DrawGroupsList groups={visibleGroups} showEnergies={showEnergies} />
     </div>
   );
 }
 
-function DrawSummary({ summary }) {
+function DrawSummary({ summary, showEnergies = true }) {
   if (!summary) {
     return null;
   }
@@ -6198,7 +6845,7 @@ function DrawSummary({ summary }) {
   const outcomeItems = ["success", "fate", "fail"].map((key) => [key, Number(outcomes[key] || 0)]);
   const energyItems = Object.entries(energies).filter(([, value]) => Number(value) > 0);
   const hasOutcomes = outcomeItems.some(([, value]) => value > 0);
-  const hasEnergies = energyItems.length > 0;
+  const hasEnergies = showEnergies && energyItems.length > 0;
   if (!hasOutcomes && !hasEnergies) {
     return null;
   }
@@ -6227,7 +6874,7 @@ function DrawSummary({ summary }) {
   );
 }
 
-function DrawGroupsList({ groups, compact = false, onCardClick = null }) {
+function DrawGroupsList({ groups, compact = false, onCardClick = null, showEnergies = true }) {
   return (
     <div className={`draw-groups ${compact ? "draw-groups-compact" : ""}`.trim()}>
       {groups.map((group, index) => (
@@ -6235,7 +6882,7 @@ function DrawGroupsList({ groups, compact = false, onCardClick = null }) {
           {groups.length > 1 || group.summary ? (
             <div className="draw-group-header">
               {groups.length > 1 ? <div className="draw-group-label">{group.label}</div> : null}
-              <DrawSummary summary={group.summary} />
+              <DrawSummary summary={group.summary} showEnergies={showEnergies} />
             </div>
           ) : null}
           <CardList items={group.items} compact={compact} onCardClick={onCardClick} />
@@ -6246,6 +6893,18 @@ function DrawGroupsList({ groups, compact = false, onCardClick = null }) {
 }
 
 function CardList({ items, compact = false, onCardClick = null }) {
+  const cardText = (item) => (typeof item === "string" ? item : item?.label || "");
+  const cardDetail = (item) => (typeof item === "string" ? "" : item?.detail || "");
+  const renderContent = (item) => {
+    const detail = cardDetail(item);
+    if (!detail) return cardText(item);
+    return (
+      <>
+        <span className="draw-card-detail">{detail}</span>
+        <span className="draw-card-main">{cardText(item)}</span>
+      </>
+    );
+  };
   return (
     <div className={`card-list ${compact ? "card-list-compact" : ""}`}>
       {items.map((item, index) =>
@@ -6253,15 +6912,15 @@ function CardList({ items, compact = false, onCardClick = null }) {
           <button
             type="button"
             className={`draw-card ${compact ? "draw-card-compact" : ""}`.trim()}
-            key={`${item}-${index}`}
+            key={`${cardText(item)}-${cardDetail(item)}-${index}`}
             onClick={onCardClick}
-            aria-label={`Open draw card detail: ${item}`}
+            aria-label={`Open draw card detail: ${cardText(item)}`}
           >
-            {item}
+            {renderContent(item)}
           </button>
         ) : (
-          <div className={`draw-card ${compact ? "draw-card-compact" : ""}`.trim()} key={`${item}-${index}`}>
-            {item}
+          <div className={`draw-card ${compact ? "draw-card-compact" : ""}`.trim()} key={`${cardText(item)}-${cardDetail(item)}-${index}`}>
+            {renderContent(item)}
           </div>
         ),
       )}

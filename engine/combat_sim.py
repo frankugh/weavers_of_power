@@ -609,6 +609,7 @@ def _run_unit_turn(
     turn_number = state.turns
     lines: list[str] = [f"Round {round_number}, Turn {turn_number}: {entity.name}"]
     _cleanup_grapples(state, lines=lines)
+    _clear_prone_if_free(state, entity, lines)
     before = _serialize_units(state.units, card_index=state.card_index, image_url_for=image_url_for, grapples=state.grapples.values())
     actions: list[dict] = []
 
@@ -661,7 +662,9 @@ def _run_unit_turn(
                         continue
                     base_damage = int(effect.amount)
                     selected_damage = _conditional_attack_amount(state, card, target_unit.entity, base_damage)
-                    damage = _effective_attack_damage(state, entity, selected_damage, target_is_grapple=False)
+                    prone_adjustment = _prone_attack_damage_adjustment(target_unit.entity, effect.modifiers)
+                    damage_before_reduction = max(0, selected_damage + prone_adjustment)
+                    damage = _effective_attack_damage(state, entity, damage_before_reduction, target_is_grapple=False)
                     action = _apply_attack_effect(
                         state,
                         unit,
@@ -670,13 +673,15 @@ def _run_unit_turn(
                         effect,
                         base_damage=base_damage,
                         selected_damage=selected_damage,
+                        prone_adjustment=prone_adjustment,
+                        damage_before_reduction=damage_before_reduction,
                         damage=damage,
                     )
                     last_unit_target = target_unit
                     last_attack_damage_to_hp = int(action["damageToToughness"])
                 actions.append(action)
                 lines.extend(action["log"])
-            elif effect.type == "grapple":
+            elif effect.type in {"grapple", "charge", "prone"}:
                 if _preferred_grapple_for_target(state, entity.instance_id) is not None:
                     text = _effect_label(effect)
                     actions.append({"type": "ignored", "card": card.title or card.id, "effect": text})
@@ -690,7 +695,12 @@ def _run_unit_turn(
                 target_unit = last_unit_target or _choose_target(state, unit)
                 if target_unit is None:
                     continue
-                action = _apply_grapple_effect(state, unit, target_unit, card, effect)
+                if effect.type == "charge":
+                    action = _apply_charge_effect(state, unit, target_unit, card, effect)
+                elif effect.type == "prone":
+                    action = _apply_prone_effect(unit, target_unit, card, effect)
+                else:
+                    action = _apply_grapple_effect(state, unit, target_unit, card, effect)
                 actions.append(action)
                 lines.extend(action["log"])
             elif effect.type in {"guard", "draw"}:
@@ -787,6 +797,8 @@ def _apply_attack_effect(
     *,
     base_damage: int,
     selected_damage: int,
+    prone_adjustment: int,
+    damage_before_reduction: int,
     damage: int,
 ) -> dict:
     modifiers = _normalize_modifiers(effect.modifiers)
@@ -808,8 +820,15 @@ def _apply_attack_effect(
     ]
     if selected_damage != base_damage:
         lines.insert(1, f"{target.entity.name} meets a conditional attack clause; damage changes from {base_damage} to {selected_damage}.")
-    if selected_damage != log.input_damage:
-        lines.insert(1 if selected_damage == base_damage else 2, f"{attacker.entity.name} is Grappled; damage is halved from {selected_damage} to {log.input_damage}.")
+    insert_at = 1 + (1 if selected_damage != base_damage else 0)
+    if prone_adjustment > 0:
+        lines.insert(insert_at, f"{target.entity.name} is Prone; melee damage increases by {prone_adjustment} to {damage_before_reduction}.")
+        insert_at += 1
+    elif prone_adjustment < 0:
+        lines.insert(insert_at, f"{target.entity.name} is Prone; ranged damage decreases by {abs(prone_adjustment)} to {damage_before_reduction}.")
+        insert_at += 1
+    if damage_before_reduction != log.input_damage:
+        lines.insert(insert_at, f"{attacker.entity.name} is Grappled; damage is halved from {damage_before_reduction} to {log.input_damage}.")
     if log.applied_statuses:
         lines.append(f"{target.entity.name} gains {', '.join(log.applied_statuses)}.")
     lines.extend(spill_lines)
@@ -827,6 +846,8 @@ def _apply_attack_effect(
         "targetName": target.entity.name,
         "baseDamage": int(base_damage),
         "selectedDamage": int(selected_damage),
+        "proneAdjustment": int(prone_adjustment),
+        "damageBeforeReduction": int(damage_before_reduction),
         "damage": log.input_damage,
         "modifiers": modifiers,
         "damageToToughness": log.damage_to_hp,
@@ -935,6 +956,47 @@ def _apply_grapple_effect(state: SimState, attacker: SimUnit, target: SimUnit, c
     }
 
 
+def _apply_charge_effect(state: SimState, attacker: SimUnit, target: SimUnit, card: Card, effect) -> dict:
+    before = _existing_grapple_between(state, attacker.entity.instance_id, target.entity.instance_id)
+    before_payload = _grapple_payload(state, before) if before else None
+    grapple, grapple_line = _apply_grapple(state, attacker.entity, target.entity, int(effect.amount))
+    prone_line = _apply_prone(target.entity)
+    return {
+        "type": "charge",
+        "targetType": "unit",
+        "cardId": card.id,
+        "cardTitle": card.title or card.id,
+        "attackerId": attacker.entity.instance_id,
+        "attackerName": attacker.entity.name,
+        "targetId": target.entity.instance_id,
+        "targetName": target.entity.name,
+        "amount": int(effect.amount),
+        "modifiers": list(effect.modifiers),
+        "grappleBefore": before_payload,
+        "grappleAfter": _grapple_payload(state, grapple),
+        "appliedStatuses": ["prone"],
+        "log": [f"{attacker.entity.name} charges {target.entity.name}.", grapple_line, prone_line],
+    }
+
+
+def _apply_prone_effect(attacker: SimUnit, target: SimUnit, card: Card, effect) -> dict:
+    line = _apply_prone(target.entity)
+    return {
+        "type": "prone",
+        "targetType": "unit",
+        "cardId": card.id,
+        "cardTitle": card.title or card.id,
+        "attackerId": attacker.entity.instance_id,
+        "attackerName": attacker.entity.name,
+        "targetId": target.entity.instance_id,
+        "targetName": target.entity.name,
+        "amount": int(effect.amount),
+        "modifiers": list(effect.modifiers),
+        "appliedStatuses": ["prone"],
+        "log": [line],
+    }
+
+
 def _existing_grapple_between(state: SimState, grappler_id: str, target_id: str) -> Optional[GrappleInstance]:
     return next(
         (
@@ -972,6 +1034,29 @@ def _apply_grapple(state: SimState, grappler: EnemyInstance, target: EnemyInstan
     )
     state.grapples[grapple.id] = grapple
     return grapple, f"{target.name} is Grappled by {grappler.name} (T {amount}/{amount})."
+
+
+def _apply_prone(target: EnemyInstance) -> str:
+    if _status_present(getattr(target, "statuses", {}) or {}, "prone"):
+        return f"{target.name} is already Prone."
+    target.statuses["prone"] = {"stacks": 1}
+    return f"{target.name} is Prone."
+
+
+def _clear_prone_if_free(state: SimState, entity: EnemyInstance, lines: list[str]) -> None:
+    if not _status_present(getattr(entity, "statuses", {}) or {}, "prone"):
+        return
+    if _grapples_for_target(state, entity.instance_id):
+        return
+    entity.statuses.pop("prone", None)
+    lines.append(f"{entity.name} stands up from Prone.")
+
+
+def _prone_attack_damage_adjustment(target: EnemyInstance, modifiers: Iterable[str]) -> int:
+    if not _status_present(getattr(target, "statuses", {}) or {}, "prone"):
+        return 0
+    modifier_set = {str(modifier).strip().lower() for modifier in modifiers or ()}
+    return -2 if "ranged" in modifier_set else 2
 
 
 def _damage_grapples_held_by(state: SimState, grappler: EnemyInstance, damage: int) -> list[str]:
@@ -1473,6 +1558,12 @@ def _effect_label(effect) -> str:
     if effect.type == "grapple":
         suffix = " (on damage)" if "on_damage" in getattr(effect, "modifiers", ()) else ""
         return f"Grapple {effect.amount}{suffix}"
+    if effect.type == "charge":
+        suffix = " (on damage)" if "on_damage" in getattr(effect, "modifiers", ()) else ""
+        return f"Charge {effect.amount}{suffix}"
+    if effect.type == "prone":
+        suffix = " (on damage)" if "on_damage" in getattr(effect, "modifiers", ()) else ""
+        return f"Prone{suffix}"
     if effect.type == "conditional_attack":
         conditions = ", ".join(
             _format_condition_modifier(modifier)

@@ -104,6 +104,7 @@ function buildMovementState(overrides = {}) {
     movementUsed: 0,
     diagonalStepsUsed: 0,
     dashUsed: false,
+    movementStopped: false,
     baseMovement: 6,
     maxMovement: 6,
     remainingMovement: 6,
@@ -830,6 +831,264 @@ describe("App", () => {
     expect(screen.getByText("769")).toBeInTheDocument();
   });
 
+  it("auto-marks a qualifying untested or retest benchmark batch as simulated", async () => {
+    const user = userEvent.setup();
+    const benchmarkMeta = {
+      ...metaPayload,
+      enemyTemplates: metaPayload.enemyTemplates.map((template) =>
+        template.id === "bandit"
+          ? { ...template, playtestStatus: "Retest_Needed", threatLevel: 2, simStats: { ...template.simStats, threatLevel: 2 } }
+          : template,
+      ),
+    };
+    const batchResult = {
+      mode: "batch",
+      result: {
+        seed: 777,
+        runs: 400,
+        runCap: 1000,
+        summary: {
+          wins: { A: 220, B: 180, draw: 0 },
+          winRates: { A: 0.55, B: 0.45, draw: 0 },
+          avgRounds: 3,
+          avgTurns: 6,
+          avgAttackActions: 5,
+          avgWinnerRemainingToughness: 2,
+          teamAverages: {
+            A: { damageDealt: 5, damagePrevented: 1, unitsLost: 0.4, remainingToughness: 2 },
+            B: { damageDealt: 4, damagePrevented: 1, unitsLost: 1.5, remainingToughness: 1 },
+          },
+          precision: {
+            verdict: "Target met",
+            targetMet: true,
+            adjustedRerunFluctuation95: 0.04,
+            requiredRunsForTarget: 400,
+            observedRequiredRunsForTarget: 400,
+            worstCaseRequiredRunsForTarget: 769,
+            runCap: 1000,
+            outcomes: {},
+          },
+        },
+        lastCombat: {
+          seed: 778,
+          winner: "A",
+          rounds: 3,
+          turns: 6,
+          attackActions: 5,
+          initialUnits: [],
+          finalUnits: [],
+          timeline: [],
+          combatLog: ["Team A wins in round 3."],
+          teamTotals: {
+            A: { damageDealt: 5, damagePrevented: 1, unitsLost: 0, remainingToughness: 2, units: 1 },
+            B: { damageDealt: 4, damagePrevented: 1, unitsLost: 2, remainingToughness: 0, units: 2 },
+          },
+          coverageSummary: {
+            available: { total: 2, full: 2, manual: 0, warning: 0, error: 0 },
+            used: { total: 1, full: 1, manual: 0, warning: 0, error: 0 },
+          },
+        },
+      },
+    };
+    let simBody = null;
+    let statusSaveBody = null;
+
+    renderWithSnapshot(buildSnapshot(), {
+      meta: benchmarkMeta,
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/combat-sim/simulate") {
+          simBody = JSON.parse(requestOptions.body);
+          return jsonResponse(batchResult);
+        }
+        if (url === "/api/battle/creature-templates/bandit/save-overrides") {
+          statusSaveBody = JSON.parse(requestOptions.body);
+          return jsonResponse({
+            metadata: {
+              ...benchmarkMeta,
+              enemyTemplates: benchmarkMeta.enemyTemplates.map((template) =>
+                template.id === "bandit" ? { ...template, playtestStatus: "Simulated" } : template,
+              ),
+            },
+          });
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Combat Sim" }));
+    const creatureSelects = screen.getAllByLabelText("Creature");
+    await user.selectOptions(creatureSelects[0], "bandit");
+    await user.selectOptions(creatureSelects[1], "goblin");
+    fireEvent.change(screen.getAllByLabelText("Count")[1], { target: { value: "2" } });
+    await user.click(screen.getByRole("button", { name: "Run Batch" }));
+
+    await screen.findByText("Team A wins in round 3.");
+    expect(simBody.precisionTargetPercent).toBe(5);
+    expect(simBody.teamA).toEqual([{ templateId: "bandit", count: 1 }]);
+    expect(simBody.teamB).toEqual([{ templateId: "goblin", count: 2 }]);
+    expect(statusSaveBody).toEqual({ infoOverrides: { playtestStatus: "Simulated" } });
+  });
+
+  it("auto-marks an uppercase Great Bear versus tier-matched normal Goblins batch as simulated", async () => {
+    const user = userEvent.setup();
+    const sourceGoblin = metaPayload.enemyTemplates.find((template) => template.id === "goblin");
+    const sourceBandit = metaPayload.enemyTemplates.find((template) => template.id === "bandit");
+    const cGoblin = {
+      ...sourceGoblin,
+      id: "C_GOBLIN",
+      imageUrl: "/images/Changelings/Greenskins/C_GOBLIN.png",
+      playtestStatus: "Simulated",
+    };
+    const greatBear = {
+      ...sourceBandit,
+      id: "C_GREAT_BEAR",
+      name: "Great Bear",
+      imageUrl: "/images/Changelings/Beasts_and_Predators/C_GREAT_BEAR.png",
+      category: "Changelings",
+      threatLevel: 4,
+      playtestStatus: " untested ",
+      simStats: {
+        ...sourceBandit.simStats,
+        toughness: { min: 17, max: 17, value: 17 },
+        armor: { min: 1, max: 1, value: 1 },
+        magicArmor: { min: 0, max: 0, value: 0 },
+        baseGuard: { min: 1, max: 1, value: 1 },
+        movement: 8,
+        initiativeModifier: 4,
+        threatLevel: 4,
+      },
+    };
+    const bearMeta = {
+      ...metaPayload,
+      enemyTemplates: [cGoblin, greatBear],
+    };
+    const batchResult = {
+      mode: "batch",
+      result: {
+        seed: 430193556,
+        runs: 759,
+        runCap: 1000,
+        summary: {
+          wins: { A: 450, B: 309, draw: 0 },
+          winRates: { A: 450 / 759, B: 309 / 759, draw: 0 },
+          avgRounds: 3,
+          avgTurns: 7,
+          avgAttackActions: 6,
+          avgWinnerRemainingToughness: 2,
+          teamAverages: {
+            A: { damageDealt: 9, damagePrevented: 2, unitsLost: 0.4, remainingToughness: 4 },
+            B: { damageDealt: 8, damagePrevented: 1, unitsLost: 2.5, remainingToughness: 2 },
+          },
+          precision: {
+            verdict: "Target met",
+            targetMet: true,
+            adjustedRerunFluctuation95: 0.05,
+            requiredRunsForTarget: 759,
+            observedRequiredRunsForTarget: 759,
+            worstCaseRequiredRunsForTarget: 1000,
+            runCap: 1000,
+            outcomes: {},
+          },
+        },
+        lastCombat: {
+          seed: 430193557,
+          winner: "A",
+          rounds: 4,
+          turns: 8,
+          attackActions: 7,
+          initialUnits: [],
+          finalUnits: [],
+          timeline: [],
+          combatLog: ["Team A wins in round 4."],
+          teamTotals: {
+            A: { damageDealt: 12, damagePrevented: 2, unitsLost: 0, remainingToughness: 5, units: 1 },
+            B: { damageDealt: 8, damagePrevented: 1, unitsLost: 4, remainingToughness: 0, units: 4 },
+          },
+          coverageSummary: {
+            available: { total: 6, full: 1, manual: 5, warning: 0, error: 0 },
+            used: { total: 5, full: 1, manual: 4, warning: 0, error: 0 },
+          },
+        },
+      },
+    };
+    let simBody = null;
+    let statusSaveBody = null;
+
+    renderWithSnapshot(buildSnapshot(), {
+      meta: bearMeta,
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/combat-sim/simulate") {
+          simBody = JSON.parse(requestOptions.body);
+          return jsonResponse(batchResult);
+        }
+        if (url === "/api/battle/creature-templates/C_GREAT_BEAR/save-overrides") {
+          statusSaveBody = JSON.parse(requestOptions.body);
+          return jsonResponse({
+            metadata: {
+              ...bearMeta,
+              enemyTemplates: bearMeta.enemyTemplates.map((template) =>
+                template.id === "C_GREAT_BEAR" ? { ...template, playtestStatus: "Simulated" } : template,
+              ),
+            },
+          });
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Combat Sim" }));
+    const creatureSelects = screen.getAllByLabelText("Creature");
+    await user.selectOptions(creatureSelects[0], "C_GREAT_BEAR");
+    await user.selectOptions(creatureSelects[1], "C_GOBLIN");
+    fireEvent.change(screen.getAllByLabelText("Count")[1], { target: { value: "4" } });
+    await user.click(screen.getByRole("button", { name: "Run Batch" }));
+
+    expect(await screen.findByText("Team A wins in round 4.")).toBeInTheDocument();
+    expect(simBody.teamA).toEqual([{ templateId: "C_GREAT_BEAR", count: 1 }]);
+    expect(simBody.teamB).toEqual([{ templateId: "C_GOBLIN", count: 4 }]);
+    expect(statusSaveBody).toEqual({ infoOverrides: { playtestStatus: "Simulated" } });
+    expect(await screen.findByText("Auto-marked Great Bear as Simulated.")).toBeInTheDocument();
+  });
+
+  it("marks simulated or playtested templates as retest needed when saved edits change them", async () => {
+    const user = userEvent.setup();
+    const playtestedMeta = {
+      ...metaPayload,
+      enemyTemplates: metaPayload.enemyTemplates.map((template) =>
+        template.id === "goblin" ? { ...template, playtestStatus: "Playtested" } : template,
+      ),
+    };
+    let saveBody = null;
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderWithSnapshot(buildSnapshot(), {
+      meta: playtestedMeta,
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/creature-templates/goblin/save-overrides") {
+          saveBody = JSON.parse(requestOptions.body);
+          return jsonResponse({
+            metadata: {
+              ...playtestedMeta,
+              enemyTemplates: playtestedMeta.enemyTemplates.map((template) =>
+                template.id === "goblin" ? { ...template, playtestStatus: "Retest_Needed" } : template,
+              ),
+            },
+          });
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Combat Sim" }));
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    const modal = screen.getByText("Team A: Goblin").closest(".modal-shell");
+    await user.type(within(modal).getByLabelText("T"), "12");
+    await user.click(within(modal).getByRole("button", { name: "Save to Excel" }));
+
+    expect(saveBody.statOverrides.toughness).toBe(12);
+    expect(saveBody.infoOverrides.playtestStatus).toBe("Retest_Needed");
+  });
+
   it("deletes manual saves from the load modal", async () => {
     const user = userEvent.setup();
     const save = {
@@ -1030,6 +1289,39 @@ describe("App", () => {
     expect(screen.queryByRole("menuitem", { name: "Enemy turn (no draw)" })).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "End turn" })).not.toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Roll loot" })).toBeInTheDocument();
+  });
+
+  it("allows the active NPC to disengage from the More menu", async () => {
+    const user = userEvent.setup();
+    const disengagedSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState({ disengaged: true }),
+      combatLog: ["Goblin 1 disengages (no opportunity attacks this turn)."],
+    });
+
+    renderWithSnapshot(buildSnapshot({ activeTurnId: "enemy-1", movementState: buildMovementState() }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/action/disengage" && requestOptions?.method === "POST") {
+          return jsonResponse(disengagedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "More" }));
+    const disengageItem = screen.getByRole("menuitem", { name: "Disengage" });
+    expect(disengageItem).toBeEnabled();
+
+    await user.click(disengageItem);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/action/disengage",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(await screen.findByText("Goblin 1 disengages (no opportunity attacks this turn).")).toBeInTheDocument();
   });
 
   it("starts an encounter from the turn button when no unit is active", async () => {
@@ -1750,7 +2042,7 @@ describe("App", () => {
     expect(screen.queryByRole("complementary", { name: "Draw Card Inspector" })).not.toBeInTheDocument();
   });
 
-  it("disables player power draw after use and keeps Draw X available", async () => {
+  it("changes player Draw of Power into Hitdraw and keeps Draw X available", async () => {
     const player = buildEnemy({
       instance_id: "player-1",
       template_id: "player",
@@ -1847,7 +2139,8 @@ describe("App", () => {
       "/api/battle/sessions/sid-123/turn/draw",
       expect.objectContaining({ method: "POST" }),
     );
-    expect(screen.getByRole("button", { name: "Draw" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Draw" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hitdraw" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Draw X" })).toBeEnabled();
     const reveal = screen.getByRole("complementary", { name: "Draw Card Inspector" });
     expect(within(reveal).getByText("Martial energy success")).toBeInTheDocument();
@@ -1869,6 +2162,175 @@ describe("App", () => {
     const draw2 = screen.getByText("Draw 2");
     expect(draw2.compareDocumentPosition(draw1) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getAllByText("4").length).toBeGreaterThan(0);
+  });
+
+  it("opens Guard X from the action bar and posts the chosen guard amount", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      toughness_current: 4,
+      toughness_max: 4,
+      guard_current: 0,
+      guard_base: 1,
+      power_base: 4,
+      actions_used: 0,
+      wound_counts: { hand: 0, discard: 0, draw_pile: 0, total: 0 },
+    });
+    const guardedSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "player-1",
+      turnInProgress: true,
+      order: ["player-1"],
+      enemies: [{ ...player, guard_current: 3, actions_used: 1 }],
+      combatLog: ["Mira guards: +3 guard."],
+    });
+    let guardBody = null;
+
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "player-1",
+        activeTurnId: "player-1",
+        turnInProgress: true,
+        order: ["player-1"],
+        enemies: [player],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/action/guard" && requestOptions?.method === "POST") {
+            guardBody = JSON.parse(requestOptions.body);
+            return jsonResponse(guardedSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Guard" }));
+    const modal = screen.getByText("Gain Guard X. Guard is added to the current temporary guard pool.").closest(".modal-shell");
+    await user.click(within(modal).getByRole("button", { name: "3" }));
+
+    expect(guardBody).toEqual({ x: 3 });
+    expect(await screen.findByText("1/2 acties")).toBeInTheDocument();
+    expect(screen.getByText("Mira guards: +3 guard.")).toBeInTheDocument();
+  });
+
+  it("posts Hitdraw and shows success/fate/fail without energy results", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      toughness_current: 4,
+      toughness_max: 4,
+      guard_current: 0,
+      guard_base: 1,
+      power_base: 4,
+      power_draw_used: true,
+      current_draw_text: ["Martial energy success"],
+      current_draw_groups: [
+        {
+          label: "Draw 1",
+          items: ["Martial energy success"],
+          summary: { outcomes: { success: 1, fate: 0, fail: 0 }, energies: { Martial: 1 } },
+        },
+      ],
+      actions_used: 0,
+      wound_counts: { hand: 0, discard: 0, draw_pile: 0, total: 0 },
+    });
+    const hitdrawSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "player-1",
+      turnInProgress: true,
+      order: ["player-1"],
+      enemies: [{ ...player, actions_used: 1 }],
+      hitDraw: {
+        entityId: "player-1",
+        entityName: "Mira",
+        drawnCardIds: ["success-card", "fate-card", "fail-card"],
+        drawnText: ["Success", "Fate", "Fail"],
+        drawnCards: [
+          { label: "Success", detail: "Martial 3 energy" },
+          { label: "Fate", detail: "Class: Fighter's Resolve" },
+          { label: "Fail", detail: "Ancestry: Human Ancestry" },
+        ],
+        summary: { outcomes: { success: 1, fate: 1, fail: 1 }, energies: { Martial: 9 } },
+        reshuffled: false,
+      },
+      combatLog: ["Mira hits draw: Success, Fate, Fail (success 1, fate 1, fail 1)"],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "player-1",
+        activeTurnId: "player-1",
+        turnInProgress: true,
+        order: ["player-1"],
+        enemies: [player],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/action/hitdraw" && requestOptions?.method === "POST") {
+            return jsonResponse(hitdrawSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Hitdraw" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/action/hitdraw",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    const reveal = await screen.findByRole("complementary", { name: "Draw Card Inspector" });
+    expect(within(reveal).getByText("Hit draw")).toBeInTheDocument();
+    expect(within(reveal).getByText("Success")).toBeInTheDocument();
+    expect(within(reveal).getByText("Fate")).toBeInTheDocument();
+    expect(within(reveal).getByText("Fail")).toBeInTheDocument();
+    expect(within(reveal).getByText("Martial 3 energy")).toBeInTheDocument();
+    expect(within(reveal).getByText("Class: Fighter's Resolve")).toBeInTheDocument();
+    expect(within(reveal).getByText("Ancestry: Human Ancestry")).toBeInTheDocument();
+    expect(within(reveal).queryByText("success 1")).not.toBeInTheDocument();
+    expect(within(reveal).queryByText("fate 1")).not.toBeInTheDocument();
+    expect(within(reveal).queryByText("fail 1")).not.toBeInTheDocument();
+    expect(within(reveal).queryByText("Martial 9")).not.toBeInTheDocument();
+    expect(screen.getByText("1/2 acties")).toBeInTheDocument();
+  });
+
+  it("does not show Hitdraw for physical-card player characters", async () => {
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      physical_cards: true,
+      power_draw_used: true,
+      toughness_current: 4,
+      toughness_max: 4,
+      wound_counts: { total: 0 },
+    });
+
+    renderWithSnapshot(buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "player-1",
+      turnInProgress: true,
+      order: ["player-1"],
+      enemies: [player],
+    }));
+
+    await findMapToken("Mira");
+
+    expect(screen.queryByRole("button", { name: "Hitdraw" })).not.toBeInTheDocument();
   });
 
   it("settles the draw card inspector immediately when the screen is clicked", async () => {
@@ -2484,6 +2946,395 @@ describe("App", () => {
       );
     });
     expect(await screen.findByText("Moved Goblin 1 to (1, 1)")).toBeInTheDocument();
+  });
+
+  it("opens and resolves the opportunity attack popup from a move response", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 1,
+      grid_y: 0,
+    });
+    const enemies = [buildEnemy({ grid_x: 1, grid_y: 1 }), player];
+    const pendingOpportunity = {
+      phase: "choose",
+      attackerId: "player-1",
+      attackerName: "Mira",
+      targetId: "enemy-1",
+      targetName: "Goblin 1",
+      attackerIsPlayer: true,
+      targetIsPlayer: false,
+      attackerPhysicalCards: false,
+      baseDamage: 2,
+      reach: 1,
+      drawnCardIds: [],
+      drawnText: [],
+      summary: null,
+      successCount: null,
+      fateCount: null,
+      useWillpower: null,
+    };
+    const pendingSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState({ movementUsed: 1, remainingMovement: 5 }),
+      order: ["enemy-1", "player-1"],
+      enemies,
+      pendingOpportunity,
+      combatLog: ["Goblin 1 provokes an opportunity attack from Mira."],
+    });
+    const confirmSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState({ movementUsed: 1, remainingMovement: 5 }),
+      order: ["enemy-1", "player-1"],
+      enemies,
+      pendingOpportunity: {
+        ...pendingOpportunity,
+        phase: "confirm",
+        drawnCardIds: ["hit-success-1", "hit-success-2", "hit-fail"],
+        drawnText: ["Success", "Success", "Fail"],
+        summary: { outcomes: { success: 2, fate: 0, fail: 1 }, energies: {} },
+        successCount: 2,
+        fateCount: 0,
+      },
+      combatLog: ["Mira resolves an opportunity hit draw against Goblin 1; waiting for confirmation."],
+    });
+    const resolvedSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState({ movementUsed: 2, remainingMovement: 4 }),
+      order: ["enemy-1", "player-1"],
+      enemies,
+      combatLog: ["Opportunity Attack by Mira on Goblin 1: miss."],
+    });
+    const resolveBodies = [];
+
+    renderWithSnapshot(
+      buildSnapshot({
+        activeTurnId: "enemy-1",
+        movementState: buildMovementState(),
+        order: ["enemy-1", "player-1"],
+        enemies,
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/entities/enemy-1/move" && requestOptions?.method === "POST") {
+            return jsonResponse(pendingSnapshot);
+          }
+          if (url === "/api/battle/sessions/sid-123/opportunity/resolve" && requestOptions?.method === "POST") {
+            const body = JSON.parse(requestOptions.body);
+            resolveBodies.push(body);
+            return jsonResponse(body.useWillpower === false ? resolvedSnapshot : confirmSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Move" }));
+    pointerClickMapCell(0, 0);
+
+    expect(await screen.findByText("Opportunity Attack")).toBeInTheDocument();
+    expect(screen.getByText("Goblin 1 moves away from Mira. Base DMG 2, reach 1, hit draw 3.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Attack" }));
+
+    expect(await screen.findByText("Hit draw")).toBeInTheDocument();
+    expect(screen.queryByText(/Willpower inzetten/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Precise hit" }));
+
+    await waitFor(() => expect(resolveBodies).toEqual([{ action: "attack" }, { action: "attack", useWillpower: false }]));
+  });
+
+  it("shows automatic enemy opportunity attack resolution before wounds", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      hp_current: 1,
+      hp_max: 5,
+      grid_x: 1,
+      grid_y: 1,
+    });
+    const goblin = buildEnemy({ grid_x: 2, grid_y: 1 });
+    const goblinTwo = buildEnemy({
+      instance_id: "enemy-2",
+      name: "Goblin 2",
+      grid_x: 2,
+      grid_y: 0,
+    });
+    const movedSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "player-1",
+      movementState: buildMovementState({ entityId: "player-1", movementUsed: 1, remainingMovement: 5 }),
+      order: ["player-1", "enemy-1", "enemy-2"],
+      enemies: [player, goblin, goblinTwo],
+      opportunityEvents: [
+        {
+          attackerId: "enemy-1",
+          attackerName: "Goblin 1",
+          targetId: "player-1",
+          targetName: "Mira",
+          cardText: "Attack 3",
+          damage: 3,
+          damageToToughness: 3,
+          special: false,
+          unpreventable: false,
+          stopped: false,
+          reshuffled: false,
+        },
+        {
+          attackerId: "enemy-2",
+          attackerName: "Goblin 2",
+          targetId: "player-1",
+          targetName: "Mira",
+          cardText: "Special Strike - Attack 4",
+          damage: 4,
+          damageToToughness: 4,
+          special: true,
+          unpreventable: true,
+          stopped: true,
+          reshuffled: false,
+        },
+      ],
+      woundEvents: [
+        {
+          instanceId: "player-1",
+          name: "Mira",
+          wounds: 1,
+          toughnessAfter: 2,
+          toughnessMax: 5,
+        },
+        {
+          instanceId: "player-1",
+          name: "Mira",
+          wounds: 1,
+          toughnessAfter: 1,
+          toughnessMax: 5,
+        },
+      ],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "player-1",
+        activeTurnId: "player-1",
+        movementState: buildMovementState({ entityId: "player-1" }),
+        order: ["player-1", "enemy-1", "enemy-2"],
+        enemies: [player, goblin, goblinTwo],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/entities/player-1/move" && requestOptions?.method === "POST") {
+            return jsonResponse(movedSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Mira");
+    await user.click(screen.getByRole("button", { name: "Move" }));
+    pointerClickMapCell(0, 1);
+
+    expect(await screen.findByText("Enemy Opportunity Attacks")).toBeInTheDocument();
+    expect(screen.getByText("2 attacks resolved - movement stopped")).toBeInTheDocument();
+    expect(screen.getByText("Goblin 1 -> Mira")).toBeInTheDocument();
+    expect(screen.getByText("Goblin 2 -> Mira")).toBeInTheDocument();
+    expect(screen.getByText("Attack 3, 3 to Toughness.")).toBeInTheDocument();
+    expect(screen.getByText("Attack 4, 4 to Toughness, unpreventable.")).toBeInTheDocument();
+    expect(screen.getByText("Special: movement stopped.")).toBeInTheDocument();
+    expect(screen.queryByText("Player Wounds")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "OK" }));
+
+    expect(await screen.findByText("Player Wounds")).toBeInTheDocument();
+    expect(screen.getByText(/gains 2 wounds/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Toughness 1/5 after wounds")).toBeInTheDocument();
+  });
+
+  it("uses final target toughness in the opportunity wound popup after later non-wound damage", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      toughness_current: 4,
+      toughness_max: 4,
+      grid_x: 1,
+      grid_y: 1,
+    });
+    const finalPlayer = {
+      ...player,
+      toughness_current: 1,
+      wound_counts: { hand: 1, discard: 0, draw_pile: 0, total: 1 },
+    };
+    const goblin = buildEnemy({ grid_x: 2, grid_y: 1 });
+    const goblinTwo = buildEnemy({
+      instance_id: "enemy-2",
+      name: "Goblin 2",
+      grid_x: 2,
+      grid_y: 0,
+    });
+    const movedSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "player-1",
+      movementState: buildMovementState({ entityId: "player-1", movementUsed: 1, remainingMovement: 0, movementStopped: true }),
+      order: ["player-1", "enemy-1", "enemy-2"],
+      enemies: [finalPlayer, goblin, goblinTwo],
+      opportunityEvents: [
+        {
+          attackerId: "enemy-1",
+          attackerName: "Goblin 1",
+          targetId: "player-1",
+          targetName: "Mira",
+          cardText: "Dirty Stab - Attack 4",
+          damage: 4,
+          damageToToughness: 4,
+          special: true,
+          unpreventable: true,
+          stopped: true,
+          reshuffled: false,
+        },
+        {
+          attackerId: "enemy-2",
+          attackerName: "Goblin 2",
+          targetId: "player-1",
+          targetName: "Mira",
+          cardText: "Attack 2",
+          damage: 2,
+          damageToToughness: 2,
+          special: false,
+          unpreventable: false,
+          stopped: false,
+          reshuffled: false,
+        },
+      ],
+      woundEvents: [
+        {
+          instanceId: "player-1",
+          name: "Mira",
+          wounds: 1,
+          toughnessAfter: 3,
+          toughnessMax: 4,
+        },
+      ],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "player-1",
+        activeTurnId: "player-1",
+        movementState: buildMovementState({ entityId: "player-1" }),
+        order: ["player-1", "enemy-1", "enemy-2"],
+        enemies: [player, goblin, goblinTwo],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/entities/player-1/move" && requestOptions?.method === "POST") {
+            return jsonResponse(movedSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Mira");
+    await user.click(screen.getByRole("button", { name: "Move" }));
+    pointerClickMapCell(0, 1);
+
+    expect(await screen.findByText("Enemy Opportunity Attacks")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "OK" }));
+
+    expect(await screen.findByText("Player Wounds")).toBeInTheDocument();
+    expect(screen.getByText(/gains 1 wound/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Toughness 1/4 after wounds")).toBeInTheDocument();
+  });
+
+  it("shows opportunity willpower choices without energy draw results", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 1,
+      grid_y: 0,
+    });
+    const enemies = [buildEnemy({ grid_x: 1, grid_y: 1 }), player];
+    const pendingOpportunity = {
+      phase: "willpower",
+      attackerId: "player-1",
+      attackerName: "Mira",
+      targetId: "enemy-1",
+      targetName: "Goblin 1",
+      attackerIsPlayer: true,
+      targetIsPlayer: false,
+      attackerPhysicalCards: false,
+      baseDamage: 2,
+      reach: 1,
+      drawnCardIds: ["hf_void_fate_1", "hf_master_fate_1", "hf_martial_success_3"],
+      drawnText: ["Void fate", "Master energy fate", "Martial 3 energy success"],
+      summary: { outcomes: { success: 1, fate: 2, fail: 0 }, energies: { Martial: 3, Master: 1 } },
+      successCount: 1,
+      fateCount: 2,
+      useWillpower: null,
+    };
+    const resolvedSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState({ movementUsed: 2, remainingMovement: 4 }),
+      order: ["enemy-1", "player-1"],
+      enemies,
+      combatLog: ["Opportunity Attack by Mira on Goblin 1: hit."],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        activeTurnId: "enemy-1",
+        movementState: buildMovementState(),
+        order: ["enemy-1", "player-1"],
+        enemies,
+        pendingOpportunity,
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/opportunity/resolve" && requestOptions?.method === "POST") {
+            return jsonResponse(resolvedSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    expect(await screen.findByText("Hit draw")).toBeInTheDocument();
+    expect(screen.queryByText("Master energy fate")).not.toBeInTheDocument();
+    expect(screen.queryByText("Martial 3 energy success")).not.toBeInTheDocument();
+    expect(screen.queryByText("Martial 3")).not.toBeInTheDocument();
+    expect(screen.queryByText("Master 1")).not.toBeInTheDocument();
+    expect(screen.getByText("Willpower inzetten voor critical hit")).toBeInTheDocument();
+    expect(screen.queryByText("Willpower inzetten voor precise hit")).not.toBeInTheDocument();
+    expect(screen.queryByText("Hit zonder willpower")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hit" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Hit" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/opportunity/resolve",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ action: "attack", useWillpower: false }),
+        }),
+      );
+    });
   });
 
   it("does not offer diagonal movement past a target-corner wall", async () => {
@@ -3344,6 +4195,19 @@ describe("App", () => {
 
     expect(getMapViewport().dataset.mapMode).toBe("idle");
     expect(screen.queryByRole("button", { name: "Cancel Move" })).not.toBeInTheDocument();
+  });
+
+  it("disables movement when an opportunity attack stopped the active unit", async () => {
+    renderWithSnapshot(
+      buildSnapshot({
+        activeTurnId: "enemy-1",
+        movementState: buildMovementState({ movementUsed: 1, remainingMovement: 0, movementStopped: true }),
+      }),
+    );
+
+    await findMapToken("Goblin 1");
+
+    expect(screen.getByRole("button", { name: "Move" })).toBeDisabled();
   });
 
   it("repositions the selected unit from the More menu without active-turn movement", async () => {

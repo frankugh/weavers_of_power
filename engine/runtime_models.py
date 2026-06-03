@@ -110,6 +110,8 @@ class EnemyInstance:
     is_ko: bool = False
     physical_cards: bool = False
     physical_wounds: int = 0
+    opportunity_attack_used_round: int = 0
+    melee_weapon: dict = field(default_factory=dict)
 
     statuses: dict[str, dict] = field(default_factory=dict)
 

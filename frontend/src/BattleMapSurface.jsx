@@ -813,6 +813,9 @@ function getReachableMovementCells(room, selectedEntity, movementState, blocking
   if (!hasGridPosition(selectedEntity, room, dungeon)) {
     return reachable;
   }
+  if (movementState?.movementStopped) {
+    return reachable;
+  }
 
   const baseMovement = Math.max(
     0,

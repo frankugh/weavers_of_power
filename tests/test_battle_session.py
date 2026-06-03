@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from battle_session import BattleSessionContext
+from battle_session import BattleSession, BattleSessionContext
 from engine.combat import WOUND_CARD_ID, apply_attack
 from engine.loader import load_decks, load_enemies
 from engine.models import Card, Effect
@@ -226,6 +226,341 @@ class BattleSessionTests(unittest.TestCase):
         self.assertTrue(session.movement_state["dash_used"])
         moved = session.state.enemies[entity_id]
         self.assertEqual((moved.grid_x, moved.grid_y), (7, 3))
+
+    def test_npc_opportunity_attack_triggers_when_pc_moves_away(self) -> None:
+        session = self.context.create_session("npc-opportunity")
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0)
+        player_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        player = session.state.enemies[player_id]
+        goblin = session.state.enemies[goblin_id]
+        session.set_entity_position(player_id, 1, 1)
+        session.set_entity_position(goblin_id, 2, 1)
+        session.active_turn_id = player_id
+        goblin.deck_state.draw_pile = ["basic_a3"]
+        goblin.deck_state.discard_pile = []
+
+        result = session.move_entity_with_movement(player_id, 0, 1)
+
+        self.assertEqual((player.grid_x, player.grid_y), (0, 1))
+        self.assertEqual(player.toughness_current, 2)
+        self.assertEqual(goblin.opportunity_attack_used_round, session.round)
+        self.assertEqual(len(result["opportunityEvents"]), 1)
+        self.assertEqual(result["opportunityEvents"][0]["attackerName"], goblin.name)
+        self.assertEqual(result["opportunityEvents"][0]["damage"], 3)
+        self.assertEqual(result["opportunityEvents"][0]["damageToToughness"], 3)
+
+    def test_multiple_npc_opportunity_attacks_are_reported_together(self) -> None:
+        session = self.context.create_session("multi-npc-opportunity")
+        session.add_player(name="Mira", toughness=20, armor=0, magic_armor=0)
+        player_id = session.selected_id
+        goblin_ids = []
+        draw_cards = ["basic_a2", "basic_a2", "basic_a3"]
+        for index, position in enumerate([(2, 1), (2, 0), (2, 2)]):
+            session.add_enemy_from_template("C_GOBLIN")
+            goblin_id = session.selected_id
+            goblin_ids.append(goblin_id)
+            goblin = session.state.enemies[goblin_id]
+            session.set_entity_position(goblin_id, position[0], position[1])
+            goblin.deck_state.draw_pile = [draw_cards[index]]
+            goblin.deck_state.discard_pile = []
+        player = session.state.enemies[player_id]
+        session.set_entity_position(player_id, 1, 1)
+        session.active_turn_id = player_id
+
+        result = session.move_entity_with_movement(player_id, 0, 1)
+
+        self.assertEqual((player.grid_x, player.grid_y), (0, 1))
+        self.assertEqual(player.toughness_current, 13)
+        self.assertEqual([event["damage"] for event in result["opportunityEvents"]], [2, 2, 3])
+        self.assertEqual(len(result["opportunityEvents"]), 3)
+        for goblin_id in goblin_ids:
+            self.assertEqual(session.state.enemies[goblin_id].opportunity_attack_used_round, session.round)
+        self.assertTrue(any("provokes 3 enemy opportunity attacks" in line for line in session.combat_log))
+
+    def test_npc_special_opportunity_stops_pc_before_step_and_is_unpreventable(self) -> None:
+        session = self.context.create_session("npc-special-opportunity")
+        session.add_player(name="Mira", toughness=5, armor=99, magic_armor=99)
+        player_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        player = session.state.enemies[player_id]
+        goblin = session.state.enemies[goblin_id]
+        special_id = "C_GOBLIN__S__9"
+        session.set_entity_position(player_id, 1, 1)
+        session.set_entity_position(goblin_id, 2, 1)
+        session.active_turn_id = player_id
+        goblin.deck_state.draw_pile = [special_id]
+        goblin.deck_state.discard_pile = []
+
+        result = session.move_entity_with_movement(player_id, 0, 1)
+
+        self.assertEqual((player.grid_x, player.grid_y), (1, 1))
+        self.assertEqual(player.toughness_current, 1)
+        self.assertEqual(session.movement_state["movement_used"], 0)
+        self.assertTrue(session.movement_state["movement_stopped"])
+        self.assertEqual(session.snapshot()["movementState"]["remainingMovement"], 0)
+        self.assertEqual(result["opportunityEvents"][0]["special"], True)
+        self.assertEqual(result["opportunityEvents"][0]["unpreventable"], True)
+        self.assertEqual(result["opportunityEvents"][0]["stopped"], True)
+        with self.assertRaisesRegex(ValueError, "movement has been stopped"):
+            session.move_entity_with_movement(player_id, 0, 1)
+
+    def test_opportunity_does_not_trigger_when_distance_stays_the_same(self) -> None:
+        session = self.context.create_session("opportunity-same-distance")
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0)
+        player_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        player = session.state.enemies[player_id]
+        goblin = session.state.enemies[goblin_id]
+        session.set_entity_position(player_id, 1, 1)
+        session.set_entity_position(goblin_id, 2, 1)
+        session.active_turn_id = player_id
+        goblin.deck_state.draw_pile = ["basic_a3"]
+        goblin.deck_state.discard_pile = []
+
+        session.move_entity_with_movement(player_id, 1, 0)
+
+        self.assertEqual((player.grid_x, player.grid_y), (1, 0))
+        self.assertEqual(player.toughness_current, 5)
+        self.assertEqual(goblin.opportunity_attack_used_round, 0)
+
+    def test_disengage_prevents_opportunity_attacks_for_the_active_unit(self) -> None:
+        session = self.context.create_session("opportunity-disengage")
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0)
+        player_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        player = session.state.enemies[player_id]
+        goblin = session.state.enemies[goblin_id]
+        session.set_entity_position(player_id, 1, 1)
+        session.set_entity_position(goblin_id, 2, 1)
+        session.active_turn_id = player_id
+        session.selected_id = player_id
+        goblin.deck_state.draw_pile = ["basic_a3"]
+        goblin.deck_state.discard_pile = []
+
+        session.disengage_pc()
+        session.move_entity_with_movement(player_id, 0, 1)
+
+        self.assertEqual((player.grid_x, player.grid_y), (0, 1))
+        self.assertEqual(player.toughness_current, 5)
+        self.assertEqual(goblin.opportunity_attack_used_round, 0)
+
+    def test_pc_opportunity_precise_hit_stops_mover_and_deals_unpreventable_base_damage(self) -> None:
+        session = self.context.create_session("pc-opportunity-precise")
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0)
+        player_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        player = session.state.enemies[player_id]
+        goblin = session.state.enemies[goblin_id]
+        goblin.toughness_current = 10
+        goblin.toughness_max = 10
+        goblin.armor_current = 99
+        goblin.armor_max = 99
+        session.set_entity_position(player_id, 1, 1)
+        session.set_entity_position(goblin_id, 0, 1)
+        session.active_turn_id = goblin_id
+        player.deck_state.draw_pile = ["hf_martial_success_3", "hf_void_success_1", "hf_void_fail"]
+        player.deck_state.discard_pile = []
+        player.deck_state.hand = []
+
+        result = session.move_entity_with_movement(goblin_id, 0, 3)
+
+        self.assertIsNotNone(result.get("pendingOpportunity"))
+        self.assertEqual((goblin.grid_x, goblin.grid_y), (0, 2))
+        self.assertEqual(session.movement_state["movement_used"], 1)
+
+        waiting = session.resolve_opportunity_attack(action="attack")
+
+        self.assertEqual(waiting["pendingOpportunity"]["phase"], "confirm")
+        self.assertEqual(waiting["pendingOpportunity"]["successCount"], 2)
+        self.assertEqual(waiting["pendingOpportunity"]["fateCount"], 0)
+        self.assertEqual(goblin.toughness_current, 10)
+        self.assertEqual(player.opportunity_attack_used_round, 0)
+
+        session.resolve_opportunity_attack(action="attack", use_willpower=False)
+
+        self.assertIsNone(session.pending_opportunity)
+        self.assertEqual((goblin.grid_x, goblin.grid_y), (0, 2))
+        self.assertEqual(goblin.toughness_current, 8)
+        self.assertEqual(goblin.armor_current, 99)
+        self.assertEqual(player.opportunity_attack_used_round, session.round)
+        self.assertEqual(player.deck_state.hand, [])
+        self.assertEqual(
+            player.deck_state.discard_pile,
+            ["hf_martial_success_3", "hf_void_success_1", "hf_void_fail"],
+        )
+        self.assertTrue(session.movement_state["movement_stopped"])
+        self.assertEqual(session.snapshot()["movementState"]["remainingMovement"], 0)
+        with self.assertRaisesRegex(ValueError, "movement has been stopped"):
+            session.move_entity_with_movement(goblin_id, 0, 3)
+
+    def test_pc_opportunity_draws_extra_hit_card_against_prone_target(self) -> None:
+        session = self.context.create_session("pc-opportunity-prone-advantage")
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0)
+        player_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        player = session.state.enemies[player_id]
+        goblin = session.state.enemies[goblin_id]
+        goblin.statuses["prone"] = {"stacks": 1}
+        session.set_entity_position(player_id, 1, 1)
+        session.set_entity_position(goblin_id, 0, 1)
+        session.active_turn_id = goblin_id
+        player.deck_state.draw_pile = ["hf_void_success_1", "hf_void_fail", "hf_void_fail", "hf_void_fail"]
+        player.deck_state.discard_pile = []
+        player.deck_state.hand = []
+
+        result = session.move_entity_with_movement(goblin_id, 0, 3)
+        waiting = session.resolve_opportunity_attack(action="attack")
+
+        self.assertEqual(result["pendingOpportunity"]["hitDrawCount"], 4)
+        self.assertEqual(waiting["pendingOpportunity"]["hitDrawCount"], 4)
+        self.assertEqual(waiting["pendingOpportunity"]["successCount"], 1)
+        self.assertEqual(
+            player.deck_state.discard_pile,
+            ["hf_void_success_1", "hf_void_fail", "hf_void_fail", "hf_void_fail"],
+        )
+
+    def test_pc_opportunity_uses_fallback_damage_when_weapon_is_not_martial_melee(self) -> None:
+        session = self.context.create_session("pc-opportunity-fallback")
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0)
+        player_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        player = session.state.enemies[player_id]
+        goblin = session.state.enemies[goblin_id]
+        player.melee_weapon = {"name": "Longbow", "kind": "martial_ranged", "baseDamage": 5, "reach": 5}
+        goblin.toughness_current = 10
+        goblin.toughness_max = 10
+        session.set_entity_position(player_id, 1, 1)
+        session.set_entity_position(goblin_id, 0, 1)
+        session.active_turn_id = goblin_id
+        player.deck_state.draw_pile = ["hf_martial_success_3", "hf_void_success_1", "hf_void_fail"]
+        player.deck_state.discard_pile = []
+        player.deck_state.hand = []
+
+        session.move_entity_with_movement(goblin_id, 0, 3)
+        session.resolve_opportunity_attack(action="attack", use_willpower=False)
+
+        self.assertEqual(goblin.toughness_current, 9)
+
+    def test_legacy_player_without_weapon_loads_placeholder_sword(self) -> None:
+        session = self.context.create_session("legacy-player-weapon")
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0)
+        player_id = session.selected_id
+        payload = session.undo_payload()
+        for enemy in payload["enemies"]:
+            if enemy["instance_id"] == player_id:
+                enemy.pop("melee_weapon", None)
+
+        loaded = BattleSession(context=self.context, sid="legacy-player-weapon-loaded")
+        loaded.load_from_payload(payload, load_undo_stack=False)
+        player = loaded.state.enemies[player_id]
+
+        self.assertEqual(player.melee_weapon["name"], "Sword")
+        self.assertEqual(loaded._opportunity_base_damage(player), 2)
+        self.assertEqual(loaded._opportunity_reach(player), 1)
+
+    def test_pc_opportunity_skip_does_not_mark_used_and_continues_movement(self) -> None:
+        session = self.context.create_session("pc-opportunity-skip")
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0)
+        player_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        player = session.state.enemies[player_id]
+        goblin = session.state.enemies[goblin_id]
+        session.set_entity_position(player_id, 1, 1)
+        session.set_entity_position(goblin_id, 0, 1)
+        session.active_turn_id = goblin_id
+
+        session.move_entity_with_movement(goblin_id, 0, 3)
+        session.resolve_opportunity_attack(action="skip")
+
+        self.assertIsNone(session.pending_opportunity)
+        self.assertEqual((goblin.grid_x, goblin.grid_y), (0, 3))
+        self.assertEqual(player.opportunity_attack_used_round, 0)
+
+    def test_physical_pc_opportunity_fate_waits_for_willpower_choice(self) -> None:
+        session = self.context.create_session("pc-opportunity-physical-fate")
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0, physical_cards=True)
+        player_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        player = session.state.enemies[player_id]
+        goblin = session.state.enemies[goblin_id]
+        goblin.toughness_current = 10
+        goblin.toughness_max = 10
+        session.set_entity_position(player_id, 1, 1)
+        session.set_entity_position(goblin_id, 0, 1)
+        session.active_turn_id = goblin_id
+
+        session.move_entity_with_movement(goblin_id, 0, 3)
+        waiting = session.resolve_opportunity_attack(action="attack", manual_successes=1, manual_fate=1)
+
+        self.assertEqual(waiting["pendingOpportunity"]["phase"], "willpower")
+        self.assertEqual(player.opportunity_attack_used_round, 0)
+
+        session.resolve_opportunity_attack(action="attack", use_willpower=True)
+
+        self.assertIsNone(session.pending_opportunity)
+        self.assertEqual((goblin.grid_x, goblin.grid_y), (0, 2))
+        self.assertEqual(goblin.toughness_current, 8)
+        self.assertEqual(player.opportunity_attack_used_round, session.round)
+
+    def test_reach_two_opportunity_triggers_when_mover_steps_farther_away(self) -> None:
+        session = self.context.create_session("pc-opportunity-reach")
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0)
+        player_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        player = session.state.enemies[player_id]
+        player.melee_weapon = {"name": "Spear", "kind": "martial_melee", "baseDamage": 3, "reach": 2}
+        session.set_entity_position(player_id, 2, 1)
+        session.set_entity_position(goblin_id, 0, 1)
+        session.active_turn_id = goblin_id
+
+        session.move_entity_with_movement(goblin_id, 0, 4)
+
+        self.assertIsNotNone(session.pending_opportunity)
+        self.assertEqual(session.pending_opportunity["attacker_ids"], [player_id])
+        self.assertEqual((session.state.enemies[goblin_id].grid_x, session.state.enemies[goblin_id].grid_y), (0, 3))
+
+    def test_precise_opportunity_stops_at_last_route_cell_within_reach(self) -> None:
+        session = self.context.create_session("pc-opportunity-stop-cell")
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0)
+        player_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        player = session.state.enemies[player_id]
+        goblin = session.state.enemies[goblin_id]
+        player.melee_weapon = {"name": "Spear", "kind": "martial_melee", "baseDamage": 3, "reach": 2}
+        goblin.toughness_current = 10
+        goblin.toughness_max = 10
+        goblin.armor_current = 99
+        goblin.armor_max = 99
+        session.set_entity_position(player_id, 2, 1)
+        session.set_entity_position(goblin_id, 1, 1)
+        session.active_turn_id = goblin_id
+        player.deck_state.draw_pile = ["hf_martial_success_3", "hf_void_success_1", "hf_void_fail"]
+        player.deck_state.discard_pile = []
+        player.deck_state.hand = []
+
+        session.move_entity_with_movement(goblin_id, 0, 1)
+
+        self.assertIsNotNone(session.pending_opportunity)
+        self.assertEqual((goblin.grid_x, goblin.grid_y), (1, 1))
+
+        session.resolve_opportunity_attack(action="attack", use_willpower=False)
+
+        self.assertEqual((goblin.grid_x, goblin.grid_y), (0, 1))
+        self.assertEqual(session.movement_state["movement_used"], 1)
+        self.assertEqual(goblin.toughness_current, 7)
+        self.assertEqual(goblin.armor_current, 99)
 
     def test_movement_rejects_non_active_and_over_double_pool_moves(self) -> None:
         session = self.context.create_session("movement-limits")
@@ -744,6 +1079,126 @@ class BattleSessionTests(unittest.TestCase):
         self.assertIn("Attack 7", result["quickAttackNotice"])
         self.assertIn("conditional attack", session.combat_log[1])
 
+    def test_quick_attack_applies_prone_melee_and_ranged_damage_adjustments(self) -> None:
+        session = self.context.create_session("quick-prone-advantage")
+        session.add_enemy_from_template("C_WOLF")
+        attacker_id = session.selected_id
+        attacker = session.state.enemies[attacker_id]
+        session.add_enemy_from_template("C_GOBLIN")
+        target_id = session.selected_id
+        target = session.state.enemies[target_id]
+        target.toughness_current = 10
+        target.toughness_max = 10
+        target.guard_current = 0
+        target.armor_current = 0
+        target.armor_max = 0
+        target.statuses["prone"] = {"stacks": 1}
+        self.context.card_index["test_prone_melee"] = Card(
+            id="test_prone_melee",
+            title="Prone Melee",
+            effects=(Effect(type="attack", amount=4),),
+        )
+        attacker.deck_state.hand = ["test_prone_melee"]
+        session.active_turn_id = attacker_id
+        session.turn_in_progress = True
+        session.select(target_id)
+
+        result = session.apply_quick_attack_from_active_draw()
+
+        self.assertEqual(target.toughness_current, 4)
+        self.assertEqual(result["quickAttack"]["attacks"][0]["label"], "Attack 6")
+        self.assertTrue(any("melee attack damage increases from 4 to 6" in line for line in session.combat_log))
+
+        session = self.context.create_session("quick-prone-disadvantage")
+        session.add_enemy_from_template("C_WOLF")
+        attacker_id = session.selected_id
+        attacker = session.state.enemies[attacker_id]
+        session.add_enemy_from_template("C_GOBLIN")
+        target_id = session.selected_id
+        target = session.state.enemies[target_id]
+        target.toughness_current = 10
+        target.toughness_max = 10
+        target.guard_current = 0
+        target.armor_current = 0
+        target.armor_max = 0
+        target.statuses["prone"] = {"stacks": 1}
+        self.context.card_index["test_prone_ranged"] = Card(
+            id="test_prone_ranged",
+            title="Prone Ranged",
+            effects=(Effect(type="attack", amount=4, modifiers=("ranged",)),),
+        )
+        attacker.deck_state.hand = ["test_prone_ranged"]
+        session.active_turn_id = attacker_id
+        session.turn_in_progress = True
+        session.select(target_id)
+
+        result = session.apply_quick_attack_from_active_draw()
+
+        self.assertEqual(target.toughness_current, 8)
+        self.assertEqual(result["quickAttack"]["attacks"][0]["label"], "Attack 2")
+        self.assertTrue(any("ranged attack damage decreases from 4 to 2" in line for line in session.combat_log))
+
+    def test_quick_attack_charge_applies_grapple_and_prone(self) -> None:
+        session = self.context.create_session("quick-charge")
+        session.add_enemy_from_template("C_WOLF")
+        attacker_id = session.selected_id
+        attacker = session.state.enemies[attacker_id]
+        session.add_enemy_from_template("C_GOBLIN")
+        target_id = session.selected_id
+        target = session.state.enemies[target_id]
+        target.toughness_current = 10
+        target.toughness_max = 10
+        target.guard_current = 0
+        target.armor_current = 0
+        target.armor_max = 0
+        self.context.card_index["test_charge"] = Card(
+            id="test_charge",
+            title="Charge",
+            effects=(Effect(type="attack", amount=1), Effect(type="charge", amount=5)),
+        )
+        attacker.deck_state.hand = ["test_charge"]
+        session.active_turn_id = attacker_id
+        session.turn_in_progress = True
+        session.select(target_id)
+
+        result = session.apply_quick_attack_from_active_draw()
+
+        self.assertEqual(target.toughness_current, 9)
+        self.assertIn("prone", target.statuses)
+        self.assertEqual(len(session._grapples_for_target(target_id)), 1)
+        self.assertEqual(session._grapples_for_target(target_id)[0].toughness_current, 5)
+        self.assertEqual(result["quickAttack"]["manualItems"], [])
+
+    def test_quick_attack_prone_effect_sets_target_prone(self) -> None:
+        session = self.context.create_session("quick-prone-effect")
+        session.add_enemy_from_template("C_WOLF")
+        attacker_id = session.selected_id
+        attacker = session.state.enemies[attacker_id]
+        session.add_enemy_from_template("C_GOBLIN")
+        target_id = session.selected_id
+        target = session.state.enemies[target_id]
+        target.toughness_current = 10
+        target.toughness_max = 10
+        target.guard_current = 0
+        target.armor_current = 0
+        target.armor_max = 0
+        self.context.card_index["test_prone_effect"] = Card(
+            id="test_prone_effect",
+            title="Trip",
+            effects=(Effect(type="attack", amount=1), Effect(type="prone", amount=1)),
+        )
+        attacker.deck_state.hand = ["test_prone_effect"]
+        session.active_turn_id = attacker_id
+        session.turn_in_progress = True
+        session.select(target_id)
+
+        result = session.apply_quick_attack_from_active_draw()
+
+        self.assertEqual(target.toughness_current, 9)
+        self.assertIn("prone", target.statuses)
+        self.assertEqual(result["quickAttack"]["attacks"][0]["proneEffects"][0]["type"], "prone")
+        self.assertEqual(result["quickAttack"]["manualItems"], [])
+
     def test_grapple_apply_stacks_and_splits_by_grappler(self) -> None:
         session = self.context.create_session("grapple-stack")
         session.add_enemy_from_template("C_WOLF")
@@ -794,6 +1249,21 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(target.guard_current, 99)
         self.assertEqual(result["grappleEvents"][0]["toughnessAfter"], 2)
         self.assertEqual(session.state.grapples[grapple.id].toughness_current, 2)
+
+    def test_grappled_unit_cannot_use_normal_movement(self) -> None:
+        session = self.context.create_session("grapple-move-block")
+        session.add_enemy_from_template("C_WOLF")
+        grappler = session.state.enemies[session.selected_id]
+        session.add_enemy_from_template("C_GOBLIN")
+        target_id = session.selected_id
+        target = session.state.enemies[target_id]
+        session.set_entity_position(grappler.instance_id, 1, 1)
+        session.set_entity_position(target_id, 2, 1)
+        session._apply_grapple(grappler, target, 5)
+        session.active_turn_id = target_id
+
+        with self.assertRaisesRegex(ValueError, "Grappled and cannot move"):
+            session.move_entity_with_movement(target_id, 3, 1)
 
     def test_damage_to_grappler_reduces_grapples_they_hold(self) -> None:
         session = self.context.create_session("grapple-spill")
@@ -1294,6 +1764,60 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(player.toughness_current, 4)
         self.assertEqual(player.draw_bonus_pending, 0)  # consumed by draw
         self.assertEqual(len(player.deck_state.hand), 2)  # base 1 + 1 bonus
+
+    def test_guard_action_adds_guard_and_counts_as_action(self) -> None:
+        session = self.context.create_session("guard-action")
+        session.add_player(name="Mira")
+        player = session.state.enemies[session.selected_id]
+
+        session.guard_pc(3)
+
+        self.assertEqual(player.guard_current, 3)
+        self.assertEqual(player.actions_used, 1)
+        self.assertIn("Mira guards: +3 guard.", session.combat_log)
+
+    def test_player_hitdraw_after_draw_of_power_draws_to_discard(self) -> None:
+        session = self.context.create_session("player-hitdraw")
+        session.add_player(name="Mira", power=1)
+        player = session.state.enemies[session.selected_id]
+        player.deck_state.draw_pile = ["hf_martial_success_2"]
+        player.deck_state.discard_pile = []
+        player.deck_state.hand = []
+        session.active_turn_id = player.instance_id
+
+        with self.assertRaisesRegex(Exception, "Draw of Power"):
+            session.hitdraw_pc()
+
+        session.draw_turn()
+        player.deck_state.draw_pile = [WOUND_CARD_ID, "hf_martial_fate_1"]
+        player.deck_state.discard_pile = ["hf_void_fail"]
+
+        result = session.hitdraw_pc()
+
+        self.assertEqual(player.deck_state.hand, ["hf_martial_success_2"])
+        self.assertEqual(player.deck_state.discard_pile, [WOUND_CARD_ID, "hf_martial_fate_1", "hf_void_fail"])
+        self.assertEqual(result["hitDraw"]["drawnCardIds"], [WOUND_CARD_ID, "hf_martial_fate_1", "hf_void_fail"])
+        self.assertEqual(result["hitDraw"]["drawnText"], ["Fail", "Fate", "Fail"])
+        self.assertEqual(
+            result["hitDraw"]["drawnCards"],
+            [
+                {"label": "Fail", "detail": "Wound"},
+                {"label": "Fate", "detail": "Martial 1 energy"},
+                {"label": "Fail", "detail": "Void"},
+            ],
+        )
+        self.assertEqual(result["hitDraw"]["summary"]["outcomes"], {"success": 0, "fate": 1, "fail": 2})
+        self.assertTrue(result["hitDraw"]["reshuffled"])
+        self.assertEqual(player.actions_used, 1)
+        self.assertEqual(session.visible_draw_for(player), ["hf_martial_success_2"])
+        self.assertIn("Mira hits draw: Fail, Fate, Fail (success 0, fate 1, fail 2)", session.combat_log)
+
+    def test_physical_player_hitdraw_is_rejected(self) -> None:
+        session = self.context.create_session("physical-hitdraw")
+        session.add_player(name="Mira", physical_cards=True)
+
+        with self.assertRaisesRegex(Exception, "Physical-card players"):
+            session.hitdraw_pc()
 
     def test_prepare_bonus_applies_next_turn_and_expires_unused(self) -> None:
         session = self.context.create_session("prepare-expires")

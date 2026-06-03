@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import copy
 from dataclasses import dataclass, field
 from datetime import datetime
 import heapq
@@ -9,7 +10,7 @@ import random
 import re
 import threading
 import uuid
-from typing import Optional
+from typing import Iterable, Optional
 
 from engine.combat import WOUND_CARD_ID, AttackMod, apply_attack, apply_heal
 from engine.creature_workbook_save import (
@@ -48,7 +49,15 @@ HUMAN_FIGHTER_DEFAULTS = {
     "base_guard": 1,
     "initiative_modifier": 2,
 }
+PLACEHOLDER_PC_MELEE_WEAPON = {
+    "name": "Sword",
+    "kind": "martial_melee",
+    "baseDamage": 2,
+    "reach": 1,
+}
+UNPREVENTABLE_ATTACK_MODS: tuple[AttackMod, ...] = ("pierce", "magic_pierce")
 SUPPORTED_QUICK_ATTACK_MODIFIERS: dict[str, AttackMod] = {
+    "ranged": "ranged",
     "stab": "stab",
     "pierce": "pierce",
     "magic_pierce": "magic_pierce",
@@ -151,6 +160,7 @@ def spawn_player(
         deck_state=deck_state,
         physical_cards=bool(physical_cards),
         physical_wounds=0,
+        melee_weapon=dict(PLACEHOLDER_PC_MELEE_WEAPON),
         statuses={},
     )
 
@@ -177,6 +187,8 @@ class QuickAttackStep:
     unsupported_modifiers: tuple[str, ...] = ()
     manual_effects: tuple[str, ...] = ()
     grapple_effects: tuple[Effect, ...] = ()
+    charge_effects: tuple[Effect, ...] = ()
+    prone_effects: tuple[Effect, ...] = ()
     conditional_attack_effects: tuple[Effect, ...] = ()
 
 
@@ -194,6 +206,13 @@ class PlayerDrawResolution:
     extra_drawn: int = 0
     instructions: tuple[str, ...] = ()
     reshuffle_pending: bool = False
+
+
+@dataclass(frozen=True)
+class MovementRoute:
+    cost: int
+    diagonal_steps: int
+    steps: tuple[dict, ...]
 
 
 @dataclass
@@ -404,6 +423,7 @@ class BattleSession:
     initiative_rolled_round: Optional[int] = None
     dungeon: Optional[DungeonState] = None
     pending_search: Optional[dict] = None
+    pending_opportunity: Optional[dict] = None
     turn_skip_notice: list = field(default_factory=list)
     undo_stack: list[dict] = field(default_factory=list)
     redo_stack: list[dict] = field(default_factory=list)
@@ -421,11 +441,17 @@ class BattleSession:
         self.round = 1
         self.combat_log = []
         self.movement_state = None
+        self.pending_opportunity = None
         self.undo_stack = []
         self.redo_stack = []
         position_payload_present = any(
             "grid_x" in enemy_raw or "grid_y" in enemy_raw for enemy_raw in payload.get("enemies", []) or []
         )
+        legacy_player_weapon_missing = {
+            str(enemy_raw.get("instance_id") or "")
+            for enemy_raw in payload.get("enemies", []) or []
+            if enemy_raw.get("template_id") == "player" and "melee_weapon" not in enemy_raw
+        }
 
         (
             loaded_order,
@@ -445,6 +471,8 @@ class BattleSession:
 
         for enemy in enemies:
             if self.is_player(enemy):
+                if enemy.instance_id in legacy_player_weapon_missing:
+                    enemy.melee_weapon = dict(PLACEHOLDER_PC_MELEE_WEAPON)
                 self._migrate_player_deck_state(enemy)
             else:
                 self._migrate_template_deck_state(enemy)
@@ -473,6 +501,8 @@ class BattleSession:
         self.turn_skip_notice = []
         ps_raw = payload.get("pending_search")
         self.pending_search = dict(ps_raw) if isinstance(ps_raw, dict) else None
+        po_raw = payload.get("pending_opportunity")
+        self.pending_opportunity = copy.deepcopy(po_raw) if isinstance(po_raw, dict) else None
         if load_undo_stack:
             self.undo_stack = [dict(entry) for entry in payload.get("undo_stack", [])][-UNDO_LIMIT:]
             self.redo_stack = [dict(entry) for entry in payload.get("redo_stack", [])][-UNDO_LIMIT:]
@@ -512,6 +542,8 @@ class BattleSession:
         )
         if self.pending_search is not None:
             payload["pending_search"] = dict(self.pending_search)
+        if self.pending_opportunity is not None:
+            payload["pending_opportunity"] = copy.deepcopy(self.pending_opportunity)
         return payload
 
     def undo_payload(self) -> dict:
@@ -520,7 +552,7 @@ class BattleSession:
         return payload
 
     def remember_undo_state(self, payload: dict) -> None:
-        self.undo_stack.append(dict(payload))
+        self.undo_stack.append(copy.deepcopy(payload))
         if len(self.undo_stack) > UNDO_LIMIT:
             self.undo_stack = self.undo_stack[-UNDO_LIMIT:]
         self.redo_stack = []
@@ -549,6 +581,7 @@ class BattleSession:
             "activeTurnId": self.active_turn_id,
             "turnInProgress": self.turn_in_progress,
             "movementState": self._movement_state_snapshot(),
+            "pendingOpportunity": self._pending_opportunity_snapshot(),
             "room": {"columns": self.room_columns, "rows": self.room_rows},
             "order": list(self.order),
             "grapples": [self._grapple_payload(grapple) for grapple in sorted(self.state.grapples.values(), key=lambda g: g.created_order)],
@@ -694,6 +727,11 @@ class BattleSession:
             self.movement_state = None
         elif self.movement_state and self.movement_state.get("entity_id") == instance_id:
             self.movement_state = None
+        if self.pending_opportunity and (
+            self.pending_opportunity.get("mover_id") == instance_id
+            or instance_id in set(self.pending_opportunity.get("attacker_ids", []) or [])
+        ):
+            self.pending_opportunity = None
         self.state.remove_enemy(instance_id)
         if instance_id in self.order:
             self.order.remove(instance_id)
@@ -1581,7 +1619,9 @@ class BattleSession:
         self._add_log(f"Copied {source.name} to {instance.name}")
         self.autosave()
 
-    def move_entity_with_movement(self, instance_id: str, x: int, y: int, *, dash: bool = False) -> None:
+    def move_entity_with_movement(self, instance_id: str, x: int, y: int, *, dash: bool = False) -> Optional[dict]:
+        if self.pending_opportunity is not None:
+            raise BattleSessionError("Resolve the pending opportunity attack before moving again.")
         entity = self.state.enemies.get(instance_id)
         if not entity:
             raise BattleSessionError(f"Entity '{instance_id}' does not exist")
@@ -1589,6 +1629,8 @@ class BattleSession:
             raise BattleSessionError("Only the active unit can use Move.")
         if not self._has_position(entity) or not self._position_is_walkable(entity.grid_x, entity.grid_y):
             raise BattleSessionError(f"{entity.name} must be on the battle map to move")
+        if self._grapples_for_target(entity.instance_id):
+            raise BattleSessionError(f"{entity.name} is Grappled and cannot move.")
 
         x = int(x)
         y = int(y)
@@ -1601,11 +1643,13 @@ class BattleSession:
             raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is occupied by {occupying.name}")
 
         movement_state = self._movement_state_for_active()
+        if movement_state.get("movement_stopped", False):
+            raise BattleSessionError(f"{entity.name}'s movement has been stopped for this turn.")
         movement_used = int(movement_state["movement_used"])
         diagonal_steps_used = int(movement_state["diagonal_steps_used"])
         base_movement = self.effective_movement(entity)
         max_movement = base_movement * 2 if movement_state["dash_used"] else base_movement
-        route = self._movement_route_cost(
+        route = self._movement_route(
             entity,
             x,
             y,
@@ -1615,7 +1659,7 @@ class BattleSession:
         if route is None:
             raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is not reachable")
 
-        move_cost, diagonal_steps = route
+        move_cost, diagonal_steps = route.cost, route.diagonal_steps
         next_movement_used = movement_used + move_cost
         needs_dash = next_movement_used > base_movement and not movement_state["dash_used"]
         if needs_dash and not dash:
@@ -1625,31 +1669,688 @@ class BattleSession:
         if next_movement_used > max_movement:
             raise BattleSessionError(f"{entity.name} does not have enough movement remaining")
 
-        self._set_position(entity, x, y)
         self.selected_id = instance_id
-        movement_state["movement_used"] = next_movement_used
-        movement_state["diagonal_steps_used"] = diagonal_steps_used + diagonal_steps
-        movement_state["dash_used"] = bool(movement_state["dash_used"] or needs_dash)
-        dash_suffix = " using Dash" if needs_dash else ""
-        self._add_log(f"Moved {entity.name} to ({x + 1}, {y + 1}) for {move_cost} movement{dash_suffix}")
-
-        if self.is_player(entity) and self.dungeon and self.encounter_started:
-            _cell_to_room = {
-                f"{c[0]},{c[1]}": r.room_id
-                for r in self.dungeon.rooms for c in r.cells
-            }
-            new_rid = _cell_to_room.get(f"{x},{y}")
-            entity.room_id = new_rid
-            if new_rid and new_rid not in self.dungeon.revealed_room_ids:
-                self.dungeon.revealed_room_ids.append(new_rid)
-                enemies_there = [
-                    e for e in self.state.enemies.values()
-                    if e.room_id == new_rid and not self.is_player(e) and not self.is_down(e)
-                ]
-                if enemies_there and new_rid not in self.dungeon.pending_encounter_room_ids:
-                    self.dungeon.pending_encounter_room_ids.append(new_rid)
-
+        result = self._advance_movement_route(
+            entity,
+            list(route.steps),
+            base_movement=base_movement,
+            dash_requested=bool(dash),
+            full_move_cost=move_cost,
+        )
         self.autosave()
+        return result
+
+    def _advance_movement_route(
+        self,
+        entity: EnemyInstance,
+        steps: list[dict],
+        *,
+        base_movement: int,
+        dash_requested: bool,
+        full_move_cost: int,
+        ignored_attacker_ids: Optional[set[str]] = None,
+    ) -> dict:
+        movement_state = self._movement_state_for_active()
+        start_used = int(movement_state["movement_used"])
+        ignored = set(ignored_attacker_ids or set())
+        wound_events: list[dict] = []
+        opportunity_events: list[dict] = []
+        total_steps = len(steps)
+
+        for step_index, step in enumerate(steps):
+            from_x, from_y = int(entity.grid_x), int(entity.grid_y)
+            to_x, to_y = int(step["x"]), int(step["y"])
+            attackers = self._opportunity_attackers_for_step(
+                entity,
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                ignored,
+            )
+
+            npc_attackers = [attacker for attacker in attackers if not self.is_player(attacker)]
+            npc_step_events: list[dict] = []
+            npc_stopped = False
+            for attacker in npc_attackers:
+                result = self._resolve_npc_opportunity_attack(attacker, entity)
+                wound_events.extend(result.get("woundEvents", []))
+                if result.get("opportunityEvent"):
+                    npc_step_events.append(result["opportunityEvent"])
+                    opportunity_events.append(result["opportunityEvent"])
+                npc_stopped = bool(npc_stopped or result.get("stopped"))
+            if len(npc_step_events) > 1:
+                names = ", ".join(str(event.get("attackerName") or "Enemy") for event in npc_step_events)
+                self._add_log(f"{entity.name} provokes {len(npc_step_events)} enemy opportunity attacks: {names}.")
+            if npc_stopped:
+                self._stop_active_movement()
+                self._add_log(f"{entity.name}'s movement is stopped by an opportunity attack.")
+                return self._opportunity_result_payload(
+                    wound_events,
+                    notice=self._opportunity_events_notice(npc_step_events),
+                    opportunity_events=opportunity_events,
+                )
+
+            pc_attackers = [attacker for attacker in attackers if self.is_player(attacker)]
+            if pc_attackers:
+                self._set_pending_opportunity(
+                    mover=entity,
+                    attackers=pc_attackers,
+                    route_steps=steps[step_index:],
+                    ignored_attacker_ids=ignored,
+                    base_movement=base_movement,
+                    dash_requested=dash_requested,
+                )
+                attacker = pc_attackers[0]
+                self._add_log(f"{entity.name} provokes an opportunity attack from {attacker.name}.")
+                return self._opportunity_result_payload(
+                    wound_events,
+                    notice=f"{entity.name} provokes an opportunity attack from {attacker.name}.",
+                    opportunity_events=opportunity_events,
+                )
+
+            self._apply_movement_step(entity, step, base_movement=base_movement)
+
+        used_now = int(movement_state["movement_used"]) - start_used
+        dash_suffix = " using Dash" if used_now and int(movement_state["movement_used"]) > base_movement and dash_requested else ""
+        if steps:
+            self._add_log(
+                f"Moved {entity.name} to ({int(entity.grid_x) + 1}, {int(entity.grid_y) + 1}) "
+                f"for {used_now if used_now else full_move_cost} movement{dash_suffix}"
+            )
+            self._after_entity_position_changed(entity)
+        elif total_steps == 0:
+            self._after_entity_position_changed(entity)
+        return self._opportunity_result_payload(
+            wound_events,
+            notice=self._opportunity_events_notice(opportunity_events),
+            opportunity_events=opportunity_events,
+        )
+
+    def _apply_movement_step(self, entity: EnemyInstance, step: dict, *, base_movement: int) -> None:
+        movement_state = self._movement_state_for_active()
+        self._set_position(entity, int(step["x"]), int(step["y"]))
+        movement_state["movement_used"] = int(movement_state["movement_used"]) + int(step.get("cost", 0) or 0)
+        if bool(step.get("diagonal", False)):
+            movement_state["diagonal_steps_used"] = int(movement_state["diagonal_steps_used"]) + 1
+        movement_state["dash_used"] = bool(movement_state.get("dash_used", False) or int(movement_state["movement_used"]) > base_movement)
+        self._after_entity_position_changed(entity)
+
+    def _after_entity_position_changed(self, entity: EnemyInstance) -> None:
+        if not (self.is_player(entity) and self.dungeon and self.encounter_started):
+            return
+        _cell_to_room = {
+            f"{c[0]},{c[1]}": r.room_id
+            for r in self.dungeon.rooms for c in r.cells
+        }
+        new_rid = _cell_to_room.get(f"{entity.grid_x},{entity.grid_y}")
+        entity.room_id = new_rid
+        if new_rid and new_rid not in self.dungeon.revealed_room_ids:
+            self.dungeon.revealed_room_ids.append(new_rid)
+            enemies_there = [
+                e for e in self.state.enemies.values()
+                if e.room_id == new_rid and not self.is_player(e) and not self.is_down(e)
+            ]
+            if enemies_there and new_rid not in self.dungeon.pending_encounter_room_ids:
+                self.dungeon.pending_encounter_room_ids.append(new_rid)
+
+    def _opportunity_attackers_for_step(
+        self,
+        mover: EnemyInstance,
+        from_x: int,
+        from_y: int,
+        to_x: int,
+        to_y: int,
+        ignored_attacker_ids: set[str],
+    ) -> list[EnemyInstance]:
+        if self._movement_state_for_active().get("disengaged", False):
+            return []
+        attackers: list[EnemyInstance] = []
+        for instance_id in self._ordered_enemy_ids():
+            attacker = self.state.enemies.get(instance_id)
+            if not attacker or attacker.instance_id == mover.instance_id:
+                continue
+            if attacker.instance_id in ignored_attacker_ids:
+                continue
+            if self.is_player(attacker) == self.is_player(mover):
+                continue
+            if self.is_down(attacker) or self.is_down(mover):
+                continue
+            if not self._has_position(attacker):
+                continue
+            if int(getattr(attacker, "opportunity_attack_used_round", 0) or 0) == int(self.round):
+                continue
+            reach = self._opportunity_reach(attacker)
+            old_distance = self._grid_distance(int(attacker.grid_x), int(attacker.grid_y), from_x, from_y)
+            new_distance = self._grid_distance(int(attacker.grid_x), int(attacker.grid_y), to_x, to_y)
+            if old_distance <= reach and new_distance > old_distance:
+                attackers.append(attacker)
+        return attackers
+
+    @staticmethod
+    def _grid_distance(ax: int, ay: int, bx: int, by: int) -> int:
+        return max(abs(ax - bx), abs(ay - by))
+
+    def _opportunity_reach(self, entity: EnemyInstance) -> int:
+        if self.is_player(entity):
+            weapon = self._eligible_martial_melee_weapon(entity)
+            return max(1, int((weapon or {}).get("reach", 1) or 1))
+        return 1
+
+    def _opportunity_base_damage(self, entity: EnemyInstance) -> int:
+        if self.is_player(entity):
+            weapon = self._eligible_martial_melee_weapon(entity)
+            return max(1, int((weapon or {}).get("baseDamage", 1) or 1))
+        return 1
+
+    def _pc_opportunity_hit_draw_count(self, attacker: EnemyInstance, target: EnemyInstance) -> int:
+        count = 3
+        if self._status_present(getattr(target, "statuses", {}) or {}, "prone"):
+            count += 1
+        return max(1, count)
+
+    def _eligible_martial_melee_weapon(self, entity: EnemyInstance) -> Optional[dict]:
+        weapon = dict(getattr(entity, "melee_weapon", {}) or {})
+        kind = str(weapon.get("kind", "")).strip().lower()
+        if "martial" in kind and "melee" in kind:
+            return weapon
+        return None
+
+    def _set_pending_opportunity(
+        self,
+        *,
+        mover: EnemyInstance,
+        attackers: list[EnemyInstance],
+        route_steps: list[dict],
+        ignored_attacker_ids: set[str],
+        base_movement: int,
+        dash_requested: bool,
+    ) -> None:
+        self.pending_opportunity = {
+            "mover_id": mover.instance_id,
+            "attacker_ids": [attacker.instance_id for attacker in attackers],
+            "attacker_index": 0,
+            "route_steps": [dict(step) for step in route_steps],
+            "ignored_attacker_ids": list(ignored_attacker_ids),
+            "base_movement": max(0, int(base_movement)),
+            "dash_requested": bool(dash_requested),
+            "phase": "choose",
+            "drawn_card_ids": [],
+            "success_count": None,
+            "fate_count": None,
+            "use_willpower": None,
+        }
+
+    def _pending_current_attacker(self) -> Optional[EnemyInstance]:
+        if not self.pending_opportunity:
+            return None
+        attacker_ids = list(self.pending_opportunity.get("attacker_ids", []))
+        index = int(self.pending_opportunity.get("attacker_index", 0) or 0)
+        if index < 0 or index >= len(attacker_ids):
+            return None
+        return self.state.enemies.get(attacker_ids[index])
+
+    def _pending_mover(self) -> Optional[EnemyInstance]:
+        if not self.pending_opportunity:
+            return None
+        return self.state.enemies.get(str(self.pending_opportunity.get("mover_id") or ""))
+
+    def _opportunity_result_payload(
+        self,
+        wound_events: list[dict],
+        *,
+        notice: Optional[str] = None,
+        opportunity_events: Optional[list[dict]] = None,
+    ) -> dict:
+        payload: dict = {}
+        if wound_events:
+            payload["woundEvents"] = wound_events
+        if opportunity_events:
+            payload["opportunityEvents"] = [dict(event) for event in opportunity_events]
+        if self.pending_opportunity is not None:
+            payload["pendingOpportunity"] = self._pending_opportunity_snapshot()
+        if notice:
+            payload["opportunityNotice"] = notice
+        return payload
+
+    @staticmethod
+    def _opportunity_events_notice(events: list[dict]) -> Optional[str]:
+        count = len(events)
+        if count <= 0:
+            return None
+        stopped = any(bool(event.get("stopped")) for event in events)
+        suffix = " Movement is stopped." if stopped else ""
+        if count == 1:
+            event = events[0]
+            return f"Opportunity Attack: {event.get('attackerName', 'Enemy')} attacks {event.get('targetName', 'target')}.{suffix}"
+        return f"Opportunity Attacks: {count} enemies attack.{suffix}"
+
+    def _pending_opportunity_snapshot(self) -> Optional[dict]:
+        if not self.pending_opportunity:
+            return None
+        attacker = self._pending_current_attacker()
+        mover = self._pending_mover()
+        if attacker is None or mover is None:
+            return None
+        drawn = list(self.pending_opportunity.get("drawn_card_ids", []) or [])
+        success_count = self.pending_opportunity.get("success_count")
+        fate_count = self.pending_opportunity.get("fate_count")
+        return {
+            "phase": self.pending_opportunity.get("phase", "choose"),
+            "attackerId": attacker.instance_id,
+            "attackerName": attacker.name,
+            "targetId": mover.instance_id,
+            "targetName": mover.name,
+            "attackerIsPlayer": self.is_player(attacker),
+            "targetIsPlayer": self.is_player(mover),
+            "attackerPhysicalCards": self._uses_physical_cards(attacker),
+            "baseDamage": self._opportunity_base_damage(attacker),
+            "reach": self._opportunity_reach(attacker),
+            "hitDrawCount": self._pc_opportunity_hit_draw_count(attacker, mover),
+            "drawnCardIds": drawn,
+            "drawnText": [self.card_to_effect_text(card_id) for card_id in drawn],
+            "summary": self._player_draw_summary(drawn) if drawn else None,
+            "successCount": success_count,
+            "fateCount": fate_count,
+            "useWillpower": self.pending_opportunity.get("use_willpower"),
+        }
+
+    def _resolve_npc_opportunity_attack(self, attacker: EnemyInstance, target: EnemyInstance) -> dict:
+        attacker.opportunity_attack_used_round = int(self.round)
+        card_id, reshuffled = self._draw_enemy_opportunity_card(attacker)
+        if not card_id:
+            notice = f"Opportunity Attack: {attacker.name} has no card to draw."
+            self._add_log(notice)
+            return {
+                "stopped": False,
+                "notice": notice,
+                "opportunityEvent": {
+                    "attackerId": attacker.instance_id,
+                    "attackerName": attacker.name,
+                    "targetId": target.instance_id,
+                    "targetName": target.name,
+                    "cardId": None,
+                    "cardText": "No card drawn",
+                    "damage": 0,
+                    "damageToToughness": 0,
+                    "special": False,
+                    "unpreventable": False,
+                    "stopped": False,
+                    "reshuffled": bool(reshuffled),
+                },
+            }
+
+        card_text = self.card_to_effect_text(card_id)
+        base_damage, attack_modifiers = self._first_regular_attack_effect(card_id)
+        prone_adjustment = self._prone_npc_attack_damage_adjustment(target, attack_modifiers)
+        damage = max(0, base_damage + prone_adjustment)
+        is_special = self._is_enemy_special_card(attacker, card_id)
+        wound_events: list[dict] = []
+        damage_to_toughness = 0
+        if damage > 0:
+            log, events = self._apply_opportunity_damage(
+                attacker,
+                target,
+                damage,
+                unpreventable=is_special,
+                source="Opportunity Attack",
+            )
+            wound_events.extend(events)
+            damage_to_toughness = log.damage_to_hp
+
+        suffix = " (reshuffled first)" if reshuffled else ""
+        damage_text = f"{damage_to_toughness} to Toughness" if damage > 0 else "no regular attack damage"
+        prone_text = ""
+        if prone_adjustment > 0:
+            prone_text = f", prone melee advantage changes Attack {base_damage} to Attack {damage}"
+        elif prone_adjustment < 0:
+            prone_text = f", prone ranged disadvantage changes Attack {base_damage} to Attack {damage}"
+        special_text = ", special stops movement" if is_special else ""
+        self._add_log(
+            f"Opportunity Attack by {attacker.name} on {target.name}: {card_text}{suffix}; "
+            f"{damage_text}{prone_text}{special_text}."
+        )
+        notice = f"Opportunity Attack: {attacker.name} attacks {target.name} with {card_text}."
+        if is_special:
+            notice += " Movement is stopped."
+        return {
+            "stopped": is_special,
+            "woundEvents": wound_events,
+            "notice": notice,
+            "opportunityEvent": {
+                "attackerId": attacker.instance_id,
+                "attackerName": attacker.name,
+                "targetId": target.instance_id,
+                "targetName": target.name,
+                "cardId": card_id,
+                "cardText": card_text,
+                "baseDamage": base_damage,
+                "proneAdjustment": prone_adjustment,
+                "damage": damage,
+                "damageToToughness": damage_to_toughness,
+                "special": bool(is_special),
+                "unpreventable": bool(is_special),
+                "stopped": bool(is_special),
+                "reshuffled": bool(reshuffled),
+            },
+        }
+
+    def _draw_enemy_opportunity_card(self, entity: EnemyInstance) -> tuple[Optional[str], bool]:
+        deck_state = entity.deck_state
+        reshuffled = False
+        if not deck_state.draw_pile and deck_state.discard_pile:
+            deck_state.draw_pile = list(deck_state.discard_pile)
+            deck_state.discard_pile.clear()
+            self._rng.shuffle(deck_state.draw_pile)
+            reshuffled = True
+        if not deck_state.draw_pile:
+            return None, reshuffled
+        card_id = deck_state.draw_pile.pop(0)
+        deck_state.discard_pile.append(card_id)
+        return card_id, reshuffled
+
+    def _draw_player_opportunity_hit_cards(self, entity: EnemyInstance, count: int) -> tuple[list[str], bool]:
+        deck_state = entity.deck_state
+        drawn: list[str] = []
+        reshuffled = False
+        for _ in range(max(0, int(count))):
+            if not deck_state.draw_pile and deck_state.discard_pile:
+                deck_state.draw_pile = list(deck_state.discard_pile)
+                deck_state.discard_pile.clear()
+                self._rng.shuffle(deck_state.draw_pile)
+                reshuffled = True
+            if not deck_state.draw_pile:
+                break
+            drawn.append(deck_state.draw_pile.pop(0))
+        if drawn:
+            deck_state.discard_pile.extend(drawn)
+        return drawn, reshuffled
+
+    def _first_regular_attack_effect(self, card_id: str) -> tuple[int, tuple[str, ...]]:
+        card = self.context.card_index.get(card_id)
+        if not card:
+            return 0, tuple()
+        for effect in card.effects:
+            if effect.type == "attack":
+                return max(0, int(effect.amount)), tuple(str(modifier) for modifier in getattr(effect, "modifiers", ()) or ())
+        return 0, tuple()
+
+    def _first_regular_attack_damage(self, card_id: str) -> int:
+        damage, _ = self._first_regular_attack_effect(card_id)
+        return damage
+
+    def _is_enemy_special_card(self, entity: EnemyInstance, card_id: str) -> bool:
+        card = self.context.card_index.get(card_id)
+        if card and str(getattr(card, "action_result", "") or "").strip().upper() == "S":
+            return True
+        template = self.context.enemy_templates.get(getattr(entity, "template_id", ""))
+        if not template:
+            return False
+        return card_id in {special.id for special in getattr(template, "specials", ())}
+
+    def _apply_opportunity_damage(
+        self,
+        attacker: EnemyInstance,
+        target: EnemyInstance,
+        damage: int,
+        *,
+        unpreventable: bool,
+        source: str,
+    ) -> tuple["CombatLog", list[dict]]:
+        log = apply_attack(
+            target,
+            max(0, int(damage)),
+            mods=list(UNPREVENTABLE_ATTACK_MODS) if unpreventable else [],
+            reset_toughness_on_deplete=self.is_player(target),
+            add_wound_cards=not self._uses_physical_cards(target),
+        )
+        if log.wounds_added and self._uses_physical_cards(target):
+            self._add_physical_wounds(target, log.wounds_added)
+        for line in self._damage_grapples_held_by(target, log.damage_to_hp):
+            self._add_log(line)
+        for line in self._cleanup_grapples(add_log=False):
+            self._add_log(line)
+        wound_events: list[dict] = []
+        if log.wounds_added:
+            wound_events.append(
+                {
+                    "instanceId": target.instance_id,
+                    "name": target.name,
+                    "wounds": log.wounds_added,
+                    "toughnessAfter": target.toughness_current,
+                    "toughnessMax": target.toughness_max,
+                }
+            )
+        return log, wound_events
+
+    def resolve_opportunity_attack(
+        self,
+        *,
+        action: str,
+        use_willpower: Optional[bool] = None,
+        manual_successes: Optional[int] = None,
+        manual_fate: Optional[int] = None,
+    ) -> dict:
+        if not self.pending_opportunity:
+            raise BattleSessionError("No pending opportunity attack.")
+        action = str(action or "").strip().lower()
+        if action not in {"attack", "skip"}:
+            raise BattleSessionError("Opportunity action must be attack or skip.")
+
+        attacker = self._pending_current_attacker()
+        mover = self._pending_mover()
+        if attacker is None or mover is None:
+            self.pending_opportunity = None
+            raise BattleSessionError("Pending opportunity attack is no longer valid.")
+        if not self.is_player(attacker):
+            self.pending_opportunity = None
+            raise BattleSessionError("Pending opportunity attacker is not a player character.")
+
+        if action == "skip":
+            self._add_log(f"{attacker.name} skips the opportunity attack on {mover.name}.")
+            result = self._continue_pending_opportunity(
+                ignored_attacker_id=attacker.instance_id,
+                notice=f"{attacker.name} skips the opportunity attack.",
+            )
+            self.autosave()
+            return result
+
+        success_count, fate_count, drawn = self._resolve_pc_opportunity_hit_draw(
+            attacker,
+            mover,
+            manual_successes=manual_successes,
+            manual_fate=manual_fate,
+        )
+        self.pending_opportunity["success_count"] = success_count
+        self.pending_opportunity["fate_count"] = fate_count
+        if drawn:
+            self.pending_opportunity["drawn_card_ids"] = list(drawn)
+
+        if use_willpower is None:
+            if fate_count > 0:
+                self.pending_opportunity["phase"] = "willpower"
+                self._add_log(
+                    f"{attacker.name} draws fate on an opportunity attack against {mover.name}; waiting for willpower choice."
+                )
+                notice = f"{attacker.name} drew {fate_count} fate. Choose whether to spend willpower."
+            else:
+                self.pending_opportunity["phase"] = "confirm"
+                self._add_log(
+                    f"{attacker.name} resolves an opportunity hit draw against {mover.name}; waiting for confirmation."
+                )
+                notice = f"{attacker.name} drew no fate. Confirm the opportunity attack result."
+            self.autosave()
+            return {
+                "pendingOpportunity": self._pending_opportunity_snapshot(),
+                "opportunityNotice": notice,
+            }
+
+        score = success_count + (fate_count if use_willpower else 0)
+        self.pending_opportunity["use_willpower"] = bool(use_willpower)
+        self.pending_opportunity["phase"] = "resolved"
+        attacker.opportunity_attack_used_round = int(self.round)
+
+        base_damage = self._opportunity_base_damage(attacker)
+        wound_events: list[dict] = []
+        notice = ""
+        if score <= 0:
+            self._add_log(f"Opportunity Attack by {attacker.name} on {mover.name}: miss.")
+            notice = f"Opportunity Attack: {attacker.name} misses {mover.name}."
+            result = self._continue_pending_opportunity(notice=notice)
+            self.autosave()
+            return result
+
+        if score == 1:
+            log, wound_events = self._apply_opportunity_damage(
+                attacker,
+                mover,
+                base_damage,
+                unpreventable=False,
+                source="Opportunity Attack",
+            )
+            self._add_log(
+                f"Opportunity Attack by {attacker.name} on {mover.name}: hit for {base_damage}; "
+                f"{log.damage_to_hp} to Toughness."
+            )
+            notice = f"Opportunity Attack: {attacker.name} hits {mover.name} for {base_damage}."
+            result = self._continue_pending_opportunity(wound_events=wound_events, notice=notice)
+            self.autosave()
+            return result
+
+        damage = base_damage * 2 if score >= 3 else base_damage
+        self._apply_opportunity_stop_position(mover, attacker)
+        self._stop_active_movement()
+        log, wound_events = self._apply_opportunity_damage(
+            attacker,
+            mover,
+            damage,
+            unpreventable=True,
+            source="Opportunity Attack",
+        )
+        crit_text = " critical" if score >= 3 else ""
+        self._add_log(
+            f"Opportunity Attack by {attacker.name} on {mover.name}:{crit_text} precise hit; "
+            f"{damage} unpreventable, movement stops."
+        )
+        self.pending_opportunity = None
+        notice = (
+            f"Opportunity Attack: {attacker.name} stops {mover.name} and deals "
+            f"{damage} unpreventable damage."
+        )
+        self.autosave()
+        return self._opportunity_result_payload(wound_events, notice=notice)
+
+    def _apply_opportunity_stop_position(self, mover: EnemyInstance, attacker: EnemyInstance) -> None:
+        if not self.pending_opportunity:
+            return
+        route_steps = [dict(step) for step in self.pending_opportunity.get("route_steps", []) or []]
+        if not route_steps:
+            return
+        base_movement = int(self.pending_opportunity.get("base_movement", self.effective_movement(mover)) or 0)
+        reach = self._opportunity_reach(attacker)
+        for step in route_steps:
+            stop_x, stop_y = int(step["x"]), int(step["y"])
+            if self._grid_distance(int(attacker.grid_x), int(attacker.grid_y), stop_x, stop_y) > reach:
+                break
+            self._apply_movement_step(mover, step, base_movement=base_movement)
+
+    def _stop_active_movement(self) -> None:
+        movement_state = self._movement_state_for_active()
+        movement_state["movement_stopped"] = True
+
+    def _resolve_pc_opportunity_hit_draw(
+        self,
+        attacker: EnemyInstance,
+        mover: EnemyInstance,
+        *,
+        manual_successes: Optional[int],
+        manual_fate: Optional[int],
+    ) -> tuple[int, int, list[str]]:
+        if self._uses_physical_cards(attacker):
+            if self.pending_opportunity and self.pending_opportunity.get("success_count") is not None:
+                return (
+                    max(0, int(self.pending_opportunity.get("success_count") or 0)),
+                    max(0, int(self.pending_opportunity.get("fate_count") or 0)),
+                    [],
+                )
+            if manual_successes is None:
+                raise BattleSessionError("Physical-card opportunity attacks need manual successes.")
+            return max(0, int(manual_successes)), max(0, int(manual_fate or 0)), []
+
+        drawn = list(self.pending_opportunity.get("drawn_card_ids") or []) if self.pending_opportunity else []
+        if not drawn:
+            draw_count = self._pc_opportunity_hit_draw_count(attacker, mover)
+            drawn, reshuffled = self._draw_player_opportunity_hit_cards(attacker, draw_count)
+            drawn_text = ", ".join(self.card_to_effect_text(card_id) for card_id in drawn) or "no cards"
+            suffix = " (reshuffled first)" if reshuffled else ""
+            self._add_log(f"{attacker.name} draws {draw_count} opportunity hit cards: {drawn_text}{suffix}")
+        summary = self._player_draw_summary(drawn)
+        return (
+            max(0, int(summary["outcomes"].get("success", 0))),
+            max(0, int(summary["outcomes"].get("fate", 0))),
+            drawn,
+        )
+
+    def _continue_pending_opportunity(
+        self,
+        *,
+        ignored_attacker_id: Optional[str] = None,
+        wound_events: Optional[list[dict]] = None,
+        notice: Optional[str] = None,
+    ) -> dict:
+        if not self.pending_opportunity:
+            return self._opportunity_result_payload(wound_events or [], notice=notice)
+        mover = self._pending_mover()
+        if mover is None:
+            self.pending_opportunity = None
+            return self._opportunity_result_payload(wound_events or [], notice=notice)
+
+        ignored = set(self.pending_opportunity.get("ignored_attacker_ids", []) or [])
+        if ignored_attacker_id:
+            ignored.add(ignored_attacker_id)
+
+        attacker_ids = list(self.pending_opportunity.get("attacker_ids", []) or [])
+        next_index = int(self.pending_opportunity.get("attacker_index", 0) or 0) + 1
+        while next_index < len(attacker_ids):
+            next_attacker = self.state.enemies.get(attacker_ids[next_index])
+            if next_attacker and next_attacker.instance_id not in ignored and not self.is_down(next_attacker):
+                self.pending_opportunity.update(
+                    {
+                        "attacker_index": next_index,
+                        "ignored_attacker_ids": list(ignored),
+                        "phase": "choose",
+                        "drawn_card_ids": [],
+                        "success_count": None,
+                        "fate_count": None,
+                        "use_willpower": None,
+                    }
+                )
+                return self._opportunity_result_payload(
+                    wound_events or [],
+                    notice=notice or f"{mover.name} also provokes an opportunity attack from {next_attacker.name}.",
+                )
+            next_index += 1
+
+        route_steps = [dict(step) for step in self.pending_opportunity.get("route_steps", []) or []]
+        base_movement = int(self.pending_opportunity.get("base_movement", self.effective_movement(mover)) or 0)
+        dash_requested = bool(self.pending_opportunity.get("dash_requested", False))
+        full_move_cost = sum(int(step.get("cost", 0) or 0) for step in route_steps)
+        self.pending_opportunity = None
+        result = self._advance_movement_route(
+            mover,
+            route_steps,
+            base_movement=base_movement,
+            dash_requested=dash_requested,
+            full_move_cost=full_move_cost,
+            ignored_attacker_ids=ignored,
+        )
+        combined_events = list(wound_events or [])
+        combined_events.extend(result.get("woundEvents", []))
+        if combined_events:
+            result["woundEvents"] = combined_events
+        if notice and not result.get("opportunityNotice"):
+            result["opportunityNotice"] = notice
+        return result
 
     def draw_turn(self) -> None:
         entity = self._require_selected_entity()
@@ -1749,6 +2450,7 @@ class BattleSession:
         self.active_turn_id = None
         self.turn_in_progress = False
         self.movement_state = None
+        self.pending_opportunity = None
         self.autosave()
 
     def _consume_surprised_skip(self, entity: EnemyInstance) -> bool:
@@ -1819,6 +2521,7 @@ class BattleSession:
             self.active_turn_id = None
             self.turn_in_progress = False
             self.movement_state = None
+            self.pending_opportunity = None
 
         wrapped = self._select_next_in_order(current_turn_id)
         if wrapped:
@@ -1839,6 +2542,7 @@ class BattleSession:
 
     def start_new_round(self) -> None:
         self.turn_skip_notice = []
+        self.pending_opportunity = None
         self.pending_new_round = False
         self.round += 1
         self._add_log(f"Round {self.round} begins")
@@ -2032,6 +2736,40 @@ class BattleSession:
         self.state.grapples[grapple.id] = grapple
         return f"{target.name} is Grappled by {grappler.name} (T {amount}/{amount})."
 
+    def _apply_charge(self, grappler: EnemyInstance, target: EnemyInstance, amount: int) -> list[str]:
+        lines: list[str] = [f"{grappler.name} charges {target.name}."]
+        grapple_line = self._apply_grapple(grappler, target, amount)
+        if grapple_line:
+            lines.append(grapple_line)
+        prone_line = self._apply_prone(target)
+        if prone_line:
+            lines.append(prone_line)
+        return lines
+
+    @staticmethod
+    def _apply_prone(target: EnemyInstance) -> str:
+        if BattleSession._status_present(getattr(target, "statuses", {}) or {}, "prone"):
+            return f"{target.name} is already Prone."
+        target.statuses["prone"] = {"stacks": 1}
+        return f"{target.name} is Prone."
+
+    def _clear_prone_if_free(self, entity: EnemyInstance) -> None:
+        if not self._status_present(getattr(entity, "statuses", {}) or {}, "prone"):
+            return
+        if self._grapples_for_target(entity.instance_id):
+            return
+        entity.statuses.pop("prone", None)
+        self._add_log(f"{entity.name} stands up from Prone.")
+
+    @staticmethod
+    def _attack_is_ranged(modifiers: Iterable[str]) -> bool:
+        return any(str(modifier).strip().lower() == "ranged" for modifier in modifiers or ())
+
+    def _prone_npc_attack_damage_adjustment(self, target: EnemyInstance, modifiers: Iterable[str]) -> int:
+        if not self._status_present(getattr(target, "statuses", {}) or {}, "prone"):
+            return 0
+        return -2 if self._attack_is_ranged(modifiers) else 2
+
     def _damage_grapple(self, grapple: GrappleInstance, damage: int, *, source: str) -> tuple[int, list[str]]:
         damage = max(0, int(damage))
         before = grapple.toughness_current
@@ -2187,6 +2925,7 @@ class BattleSession:
         first_toughness_before = target.toughness_current if target is not None else active_grapple.toughness_current
         damage_to_toughness = 0
         labels: list[str] = []
+        resolved_attacks: list[dict] = []
         unsupported: list[str] = []
         manual_effects: list[str] = []
         target_name = target.name if target is not None else f"Grapple on {attacker.name}"
@@ -2195,8 +2934,12 @@ class BattleSession:
         for step in steps:
             grapple_target = self._preferred_grapple_for_target(attacker.instance_id)
             if grapple_target is not None:
-                labels.append(self._quick_attack_label(step))
-                dealt, lines = self._damage_grapple(grapple_target, int(step.damage), source=f"{attacker.name}'s {self._quick_attack_label(step)}")
+                label = self._quick_attack_label(step)
+                labels.append(label)
+                attack_payload = self._quick_attack_payload(step)
+                attack_payload["label"] = label
+                resolved_attacks.append(attack_payload)
+                dealt, lines = self._damage_grapple(grapple_target, int(step.damage), source=f"{attacker.name}'s {label}")
                 damage_to_toughness += dealt
                 for line in lines:
                     self._add_log(line)
@@ -2204,13 +2947,32 @@ class BattleSession:
                 target_id = grapple_target.id
             elif target is not None:
                 selected_damage = self._conditional_attack_amount_for_target(target, step.damage, step.conditional_attack_effects)
-                labels.append(self._quick_attack_label(step, damage=selected_damage))
                 if selected_damage != step.damage:
                     self._add_log(
                         f"{target.name} meets a conditional attack clause; {attacker.name}'s attack damage changes "
                         f"from {step.damage} to {selected_damage}."
                     )
-                effective_damage = self._effective_attack_damage(attacker, selected_damage, target_is_grapple=False)
+                prone_adjustment = self._prone_npc_attack_damage_adjustment(target, step.modifiers)
+                adjusted_damage = max(0, selected_damage + prone_adjustment)
+                if prone_adjustment > 0:
+                    self._add_log(
+                        f"{target.name} is Prone; {attacker.name}'s melee attack damage increases "
+                        f"from {selected_damage} to {adjusted_damage}."
+                    )
+                elif prone_adjustment < 0:
+                    self._add_log(
+                        f"{target.name} is Prone; {attacker.name}'s ranged attack damage decreases "
+                        f"from {selected_damage} to {adjusted_damage}."
+                    )
+                label = self._quick_attack_label(step, damage=adjusted_damage)
+                labels.append(label)
+                attack_payload = self._quick_attack_payload(step)
+                attack_payload["damage"] = adjusted_damage
+                attack_payload["selectedDamage"] = selected_damage
+                attack_payload["proneAdjustment"] = prone_adjustment
+                attack_payload["label"] = label
+                resolved_attacks.append(attack_payload)
+                effective_damage = self._effective_attack_damage(attacker, adjusted_damage, target_is_grapple=False)
                 log = apply_attack(
                     target,
                     effective_damage,
@@ -2230,6 +2992,15 @@ class BattleSession:
                     grapple_line = self._apply_grapple(attacker, target, grapple_effect.amount)
                     if grapple_line:
                         self._add_log(grapple_line)
+                for charge_effect in step.charge_effects:
+                    if "on_damage" in charge_effect.modifiers and log.damage_to_hp <= 0:
+                        continue
+                    for line in self._apply_charge(attacker, target, charge_effect.amount):
+                        self._add_log(line)
+                for prone_effect in step.prone_effects:
+                    if "on_damage" in prone_effect.modifiers and log.damage_to_hp <= 0:
+                        continue
+                    self._add_log(self._apply_prone(target))
                 for line in self._cleanup_grapples(add_log=False):
                     self._add_log(line)
             unsupported.extend(step.unsupported_modifiers)
@@ -2262,7 +3033,7 @@ class BattleSession:
                 "targetId": target_id,
                 "targetType": "unit" if target is not None else "grapple",
                 "targetName": target_name,
-                "attacks": [self._quick_attack_payload(step) for step in steps],
+                "attacks": resolved_attacks,
                 "manualItems": manual_items,
             },
             "quickAttackNotice": notice,
@@ -2430,6 +3201,52 @@ class BattleSession:
         )
         self.autosave()
 
+    def guard_pc(self, x: int) -> None:
+        entity = self._require_selected_entity()
+        if not self.is_player(entity):
+            raise BattleSessionError("Guard is only available for player characters.")
+        x = max(1, int(x))
+        entity.guard_current = max(0, int(getattr(entity, "guard_current", 0) or 0)) + x
+        self._charge_action(entity)
+        self._add_log(f"{entity.name} guards: +{x} guard.")
+        self.autosave()
+
+    def hitdraw_pc(self) -> dict:
+        entity = self._require_selected_entity()
+        if not self._can_take_turn(entity):
+            raise BattleSessionError("Down units cannot take a turn.")
+        if not self.is_player(entity):
+            raise BattleSessionError("Hitdraw is only available for player characters.")
+        if self._uses_physical_cards(entity):
+            raise BattleSessionError("Physical-card players draw their hit cards outside the app.")
+        if self.active_turn_id != entity.instance_id:
+            raise BattleSessionError("Hitdraw applies only to the active player.")
+        if not getattr(entity, "power_draw_used", False):
+            raise BattleSessionError("Use Draw of Power before Hitdraw.")
+
+        drawn, reshuffled = self._draw_player_opportunity_hit_cards(entity, 3)
+        summary = self._player_draw_summary(drawn)
+        drawn_text = [self._player_hit_draw_label(card_id) for card_id in drawn]
+        drawn_cards = [self._player_hit_draw_card_payload(card_id) for card_id in drawn]
+        outcomes = summary["outcomes"]
+        self._charge_action(entity)
+        self._add_log(
+            f"{entity.name} hits draw: {', '.join(drawn_text) or 'no cards'} "
+            f"(success {outcomes['success']}, fate {outcomes['fate']}, fail {outcomes['fail']})"
+        )
+        self.autosave()
+        return {
+            "hitDraw": {
+                "entityId": entity.instance_id,
+                "entityName": entity.name,
+                "drawnCardIds": drawn,
+                "drawnText": drawn_text,
+                "drawnCards": drawn_cards,
+                "summary": summary,
+                "reshuffled": bool(reshuffled),
+            }
+        }
+
     def shed_wound(self) -> None:
         entity = self._require_selected_entity()
         if not self.is_player(entity):
@@ -2447,9 +3264,14 @@ class BattleSession:
 
     def disengage_pc(self) -> None:
         entity = self._require_selected_entity()
-        if not self.is_player(entity):
-            raise BattleSessionError("Disengage is only available for player characters.")
-        self._charge_action(entity)
+        if self.active_turn_id != entity.instance_id:
+            raise BattleSessionError("Disengage is only available for the active unit.")
+        if self.is_down(entity):
+            raise BattleSessionError("Down units cannot disengage.")
+        if self.is_player(entity):
+            self._charge_action(entity)
+        movement_state = self._movement_state_for_active()
+        movement_state["disengaged"] = True
         self._add_log(f"{entity.name} disengages (no opportunity attacks this turn).")
         self.autosave()
 
@@ -2589,6 +3411,8 @@ class BattleSession:
                 "movement_used": 0,
                 "diagonal_steps_used": 0,
                 "dash_used": False,
+                "disengaged": False,
+                "movement_stopped": False,
             }
             if entity_id
             else None
@@ -2606,6 +3430,8 @@ class BattleSession:
             "movement_used": max(0, int(movement_state.get("movement_used", 0) or 0)),
             "diagonal_steps_used": max(0, int(movement_state.get("diagonal_steps_used", 0) or 0)),
             "dash_used": bool(movement_state.get("dash_used", False)),
+            "disengaged": bool(movement_state.get("disengaged", False)),
+            "movement_stopped": bool(movement_state.get("movement_stopped", False)),
         }
 
     def _movement_state_for_active(self) -> dict:
@@ -2622,14 +3448,17 @@ class BattleSession:
         entity = self.state.enemies[self.active_turn_id]
         base_movement = self.effective_movement(entity)
         max_movement = base_movement * 2 if movement_state["dash_used"] else base_movement
+        movement_stopped = bool(movement_state.get("movement_stopped", False))
         return {
             "entityId": movement_state["entity_id"],
             "movementUsed": movement_state["movement_used"],
             "diagonalStepsUsed": movement_state["diagonal_steps_used"],
             "dashUsed": movement_state["dash_used"],
+            "disengaged": bool(movement_state.get("disengaged", False)),
+            "movementStopped": movement_stopped,
             "baseMovement": base_movement,
             "maxMovement": max_movement,
-            "remainingMovement": max(0, max_movement - movement_state["movement_used"]),
+            "remainingMovement": 0 if movement_stopped else max(0, max_movement - movement_state["movement_used"]),
         }
 
     def _movement_route_cost(
@@ -2641,14 +3470,35 @@ class BattleSession:
         diagonal_steps_used: int,
         max_cost: Optional[int] = None,
     ) -> Optional[tuple[int, int]]:
+        route = self._movement_route(
+            entity,
+            target_x,
+            target_y,
+            diagonal_steps_used=diagonal_steps_used,
+            max_cost=max_cost,
+        )
+        return (route.cost, route.diagonal_steps) if route is not None else None
+
+    def _movement_route(
+        self,
+        entity: EnemyInstance,
+        target_x: int,
+        target_y: int,
+        *,
+        diagonal_steps_used: int,
+        max_cost: Optional[int] = None,
+    ) -> Optional[MovementRoute]:
         start = (int(entity.grid_x), int(entity.grid_y))
         target = (int(target_x), int(target_y))
         if start == target:
-            return (0, 0)
+            return MovementRoute(cost=0, diagonal_steps=0, steps=())
 
         occupied = self._occupied_positions(exclude_id=entity.instance_id, passthrough_entity=entity)
         start_parity = int(diagonal_steps_used) % 2
-        queue: list[tuple[int, int, int, int, int, int]] = [(0, 0, 0, start[0], start[1], start_parity)]
+        counter = 0
+        queue: list[tuple[int, int, int, int, int, int, int, tuple[dict, ...]]] = [
+            (0, 0, counter, 0, start[0], start[1], start_parity, ())
+        ]
         best: dict[tuple[int, int, int], tuple[int, int]] = {(start[0], start[1], start_parity): (0, 0)}
         directions = [
             (-1, -1),
@@ -2662,11 +3512,11 @@ class BattleSession:
         ]
 
         while queue:
-            cost, _neg_diagonal_steps, diagonal_steps, x, y, parity = heapq.heappop(queue)
+            cost, _neg_diagonal_steps, _counter, diagonal_steps, x, y, parity, path = heapq.heappop(queue)
             if best.get((x, y, parity)) != (cost, diagonal_steps):
                 continue
             if (x, y) == target:
-                return (cost, diagonal_steps)
+                return MovementRoute(cost=cost, diagonal_steps=diagonal_steps, steps=path)
 
             for dx, dy in directions:
                 next_x = x + dx
@@ -2706,9 +3556,19 @@ class BattleSession:
                 ):
                     continue
                 best[key] = next_value
+                counter += 1
+                next_path = (
+                    *path,
+                    {
+                        "x": next_x,
+                        "y": next_y,
+                        "cost": step_cost,
+                        "diagonal": bool(is_diagonal),
+                    },
+                )
                 heapq.heappush(
                     queue,
-                    (next_cost, -next_diagonal_steps, next_diagonal_steps, next_x, next_y, next_parity),
+                    (next_cost, -next_diagonal_steps, counter, next_diagonal_steps, next_x, next_y, next_parity, next_path),
                 )
 
         return None
@@ -2745,6 +3605,12 @@ class BattleSession:
             elif effect.type == "grapple":
                 suffix = " (on damage)" if "on_damage" in getattr(effect, "modifiers", ()) else ""
                 parts.append(f"Grapple {effect.amount}{suffix}")
+            elif effect.type == "charge":
+                suffix = " (on damage)" if "on_damage" in getattr(effect, "modifiers", ()) else ""
+                parts.append(f"Charge {effect.amount}{suffix}")
+            elif effect.type == "prone":
+                suffix = " (on damage)" if "on_damage" in getattr(effect, "modifiers", ()) else ""
+                parts.append(f"Prone{suffix}")
             elif effect.type == "conditional_attack":
                 conditions = ", ".join(
                     self._format_condition_modifier(modifier)
@@ -2827,6 +3693,38 @@ class BattleSession:
             "energies": dict(sorted(energies.items(), key=lambda item: item[0].lower())),
         }
 
+    def _player_hit_draw_label(self, card_id: str) -> str:
+        if card_id == WOUND_CARD_ID:
+            return "Fail"
+        card = self.context.card_index.get(card_id)
+        outcome = (card.outcome if card else "").strip().lower()
+        if outcome == "success":
+            return "Success"
+        if outcome == "fate":
+            return "Fate"
+        return "Fail"
+
+    def _player_hit_draw_detail(self, card_id: str) -> str:
+        if card_id == WOUND_CARD_ID:
+            return "Wound"
+        card = self.context.card_index.get(card_id)
+        if not card:
+            return card_id
+        energy_type = (card.energy_type or "").strip()
+        energy_amount = max(0, int(card.energy_amount or 0))
+        if energy_type.lower() in {"class", "ancestry"}:
+            title = (card.title or energy_type).split(" - ", 1)[0].strip()
+            return f"{energy_type}: {title}" if title and title.lower() != energy_type.lower() else energy_type
+        if energy_type:
+            return f"{energy_type} {energy_amount} energy" if energy_amount > 0 else energy_type
+        return card.title or card.id
+
+    def _player_hit_draw_card_payload(self, card_id: str) -> dict:
+        return {
+            "label": self._player_hit_draw_label(card_id),
+            "detail": self._player_hit_draw_detail(card_id),
+        }
+
     def _quick_attack_steps_for(self, entity: EnemyInstance) -> list[QuickAttackStep]:
         steps: list[QuickAttackStep] = []
         for card_id in list(entity.deck_state.hand):
@@ -2836,9 +3734,11 @@ class BattleSession:
             manual_effects = tuple(
                 self._effect_label(effect)
                 for effect in card.effects
-                if effect.type not in {"attack", "guard", "draw", "grapple", "conditional_attack"}
+                if effect.type not in {"attack", "guard", "draw", "grapple", "charge", "prone", "conditional_attack"}
             )
             grapple_effects = tuple(effect for effect in card.effects if effect.type == "grapple")
+            charge_effects = tuple(effect for effect in card.effects if effect.type == "charge")
+            prone_effects = tuple(effect for effect in card.effects if effect.type == "prone")
             conditional_attack_effects = tuple(effect for effect in card.effects if effect.type == "conditional_attack")
             for effect in card.effects:
                 if effect.type != "attack":
@@ -2861,6 +3761,8 @@ class BattleSession:
                         unsupported_modifiers=tuple(unsupported),
                         manual_effects=tuple([*manual_effects, *getattr(card, "manual_notes", ())]),
                         grapple_effects=grapple_effects,
+                        charge_effects=charge_effects,
+                        prone_effects=prone_effects,
                         conditional_attack_effects=conditional_attack_effects,
                     )
                 )
@@ -2936,6 +3838,22 @@ class BattleSession:
                 }
                 for effect in step.grapple_effects
             ],
+            "chargeEffects": [
+                {
+                    "type": effect.type,
+                    "amount": int(effect.amount),
+                    "modifiers": list(effect.modifiers),
+                }
+                for effect in step.charge_effects
+            ],
+            "proneEffects": [
+                {
+                    "type": effect.type,
+                    "amount": int(effect.amount),
+                    "modifiers": list(effect.modifiers),
+                }
+                for effect in step.prone_effects
+            ],
             "conditionalAttacks": [
                 {
                     "type": effect.type,
@@ -2949,8 +3867,9 @@ class BattleSession:
 
     def _quick_attack_label(self, step: QuickAttackStep, *, damage: Optional[int] = None) -> str:
         amount = step.damage if damage is None else int(damage)
-        if step.modifiers:
-            return f"Attack {amount} ({', '.join(self._format_attack_modifier(modifier) for modifier in step.modifiers)})"
+        visible_modifiers = tuple(modifier for modifier in step.modifiers if str(modifier).strip().lower() != "ranged")
+        if visible_modifiers:
+            return f"Attack {amount} ({', '.join(self._format_attack_modifier(modifier) for modifier in visible_modifiers)})"
         return f"Attack {amount}"
 
     @staticmethod
@@ -2968,6 +3887,12 @@ class BattleSession:
         if getattr(effect, "type", "") == "grapple":
             suffix = " (on damage)" if "on_damage" in getattr(effect, "modifiers", ()) else ""
             return f"Grapple {amount}{suffix}" if amount > 0 else "Grapple"
+        if getattr(effect, "type", "") == "charge":
+            suffix = " (on damage)" if "on_damage" in getattr(effect, "modifiers", ()) else ""
+            return f"Charge {amount}{suffix}" if amount > 0 else "Charge"
+        if getattr(effect, "type", "") == "prone":
+            suffix = " (on damage)" if "on_damage" in getattr(effect, "modifiers", ()) else ""
+            return f"Prone{suffix}"
         if getattr(effect, "type", "") == "conditional_attack":
             conditions = ", ".join(BattleSession._format_condition_modifier(modifier) for modifier in getattr(effect, "modifiers", ()) if modifier.startswith("if_target_"))
             return f"If target {conditions}: Attack {amount} instead" if conditions else f"Conditional Attack {amount}"
@@ -3282,6 +4207,9 @@ class BattleSession:
                         resolved.extend(result.drawn)
                         pending.extend(result.drawn)
                         extra_drawn += len(result.drawn)
+                elif effect.type == "disengage":
+                    if self.active_turn_id == entity.instance_id:
+                        self._movement_state_for_active()["disengaged"] = True
         return DrawResolution(
             card_ids=tuple(resolved),
             guard_added=guard_added,
@@ -3337,6 +4265,7 @@ class BattleSession:
         entity.quick_attack_used = False
         entity.power_draw_used = False
         entity.actions_used = 0
+        self._clear_prone_if_free(entity)
         if self.is_player(entity):
             self._start_player_draw_bonus_window(entity)
             if self._uses_physical_cards(entity):
@@ -3610,6 +4539,10 @@ class BattleSession:
                 "actions_used": int(getattr(entity, "actions_used", 0)),
                 "physical_cards": bool(getattr(entity, "physical_cards", False)) if self.is_player(entity) else False,
                 "physical_wounds": max(0, int(getattr(entity, "physical_wounds", 0) or 0)) if self.is_player(entity) else 0,
+                "opportunity_attack_used_round": int(getattr(entity, "opportunity_attack_used_round", 0) or 0),
+                "melee_weapon": dict(getattr(entity, "melee_weapon", {}) or {}) if self.is_player(entity) else None,
+                "opportunity_base_damage": self._opportunity_base_damage(entity) if self.is_player(entity) else 1,
+                "opportunity_reach": self._opportunity_reach(entity),
                 "wounds_in_hand": 0 if self._uses_physical_cards(entity) else entity.deck_state.hand.count(WOUND_CARD_ID) if self.is_player(entity) else 0,
                 "power_draw_used": bool(getattr(entity, "power_draw_used", False)),
                 "wound_counts": self._player_wound_counts(entity) if self.is_player(entity) else None,
