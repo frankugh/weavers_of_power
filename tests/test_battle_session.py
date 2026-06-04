@@ -760,6 +760,28 @@ class BattleSessionTests(unittest.TestCase):
         self.assertIsNone(all_down.active_turn_id)
         self.assertFalse(all_down.turn_in_progress)
 
+    def test_end_combat_resets_turn_state_and_round(self) -> None:
+        session = self.context.create_session("end-combat")
+        session.add_enemy_from_template("C_GOBLIN")
+        session.add_player(name="Mira")
+
+        session.start_encounter()
+        session.round = 3
+        session.turn_in_progress = True
+        self.assertTrue(session.encounter_started)
+        self.assertIsNotNone(session.active_turn_id)
+
+        session.end_combat()
+
+        self.assertFalse(session.encounter_started)
+        self.assertIsNone(session.active_turn_id)
+        self.assertFalse(session.turn_in_progress)
+        self.assertFalse(session.pending_new_round)
+        self.assertIsNone(session.initiative_rolled_round)
+        self.assertIsNone(session.movement_state)
+        self.assertEqual(session.round, 1)
+        self.assertIn("Combat ended.", session.combat_log)
+
     def test_movement_pathing_blocks_living_units_but_not_down_units(self) -> None:
         session = self.context.create_session("movement-blockers")
         session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
@@ -1768,6 +1790,22 @@ class BattleSessionTests(unittest.TestCase):
 
         self.assertEqual(enemy.toughness_current, 3)
 
+    def test_manual_heal_allows_temporary_armor_until_next_turn_start(self) -> None:
+        session = self.context.create_session("temporary-armor")
+        session.add_enemy_from_template("C_GOBLIN")
+        enemy = session.state.enemies[session.selected_id]
+        enemy.armor_max = 1
+        enemy.armor_current = 1
+
+        session.apply_heal_to_selected(toughness=0, armor=1, magic_armor=0, guard=0)
+
+        self.assertEqual(enemy.armor_current, 2)
+
+        session.start_encounter()
+
+        self.assertEqual(enemy.armor_current, 1)
+        self.assertTrue(any("temporary armor expires" in line for line in session.combat_log))
+
     def test_player_damage_adds_wounds_and_resets_toughness_for_overflow(self) -> None:
         session = self.context.create_session("player-wounds")
         session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0, power=1, movement=5)
@@ -1995,6 +2033,22 @@ class BattleSessionTests(unittest.TestCase):
 
         self.assertEqual(player.draw_bonus_pending, 0)
         self.assertIn("unused draw bonus expires", " ".join(session.combat_log))
+
+    def test_loot_requires_down_enemy_and_cannot_roll_twice(self) -> None:
+        session = self.context.create_session("loot-down-only")
+        session.add_enemy_from_template("C_GOBLIN")
+        enemy = session.state.enemies[session.selected_id]
+
+        with self.assertRaisesRegex(ValueError, "Only down enemies"):
+            session.roll_loot_for_selected()
+
+        enemy.toughness_current = 0
+        session.roll_loot_for_selected()
+
+        self.assertTrue(enemy.loot_rolled)
+        self.assertIsInstance(enemy.rolled_loot, dict)
+        with self.assertRaisesRegex(ValueError, "already been rolled"):
+            session.roll_loot_for_selected()
 
     def test_prepare_bonus_is_consumed_by_digital_draw_of_power(self) -> None:
         session = self.context.create_session("prepare-consumed")

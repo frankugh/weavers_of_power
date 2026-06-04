@@ -1274,21 +1274,23 @@ describe("App", () => {
 
     await findMapToken("Goblin 1");
 
-    expect(screen.getByRole("button", { name: "Draw" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Draw" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start encounter" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Move" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Move" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Attack enemy" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "More" })).toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "Heal enemy" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "More" }));
 
-    expect(screen.getByRole("menuitem", { name: "Redraw" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Redraw" })).not.toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Reposition unit" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Heal enemy" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Disengage" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Help" })).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "Enemy turn (no draw)" })).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "End turn" })).not.toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "Roll loot" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Roll loot" })).not.toBeInTheDocument();
   });
 
   it("allows the active NPC to disengage from the More menu", async () => {
@@ -1386,6 +1388,54 @@ describe("App", () => {
     });
   });
 
+  it("turn button ends combat when no living enemies remain", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 1,
+      grid_y: 1,
+    });
+    const endedSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: null,
+      encounterStarted: false,
+      order: ["player-1"],
+      enemies: [player],
+      combatLog: ["Combat ended."],
+    });
+
+    renderWithSnapshot(buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "player-1",
+      encounterStarted: true,
+      order: ["player-1"],
+      enemies: [player],
+    }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/encounter/end" && requestOptions?.method === "POST") {
+          return jsonResponse(endedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Player 1");
+    await user.click(screen.getByRole("button", { name: "End Combat" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/encounter/end",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(await screen.findByText("Combat ended.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start encounter" })).toBeInTheDocument();
+  });
+
   it("disables Start encounter when every unit is down", async () => {
     renderWithSnapshot(
       buildSnapshot({
@@ -1470,6 +1520,66 @@ describe("App", () => {
 
     await findMapToken("Player 1");
     expect(screen.queryByRole("button", { name: "Investigate Suspect" })).not.toBeInTheDocument();
+  });
+
+  it("keeps Search Room available for exploration outside combat", async () => {
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 0,
+      grid_y: 0,
+    });
+    const dungeon = buildDungeon({
+      currentPcRoomIds: ["room-1"],
+    });
+
+    renderWithSnapshot(buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1"],
+      enemies: [player],
+      dungeon,
+    }));
+
+    await findMapToken("Player 1");
+    expect(screen.getByRole("button", { name: "Search Room" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Draw" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Strengthen" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Guard" })).not.toBeInTheDocument();
+  });
+
+  it("hides Search Room during combat but keeps active-player suspect investigation", async () => {
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 0,
+      grid_y: 0,
+    });
+    const dungeon = buildDungeon({
+      currentPcRoomIds: ["room-1"],
+      secretSuspects: [
+        { room_id: "room-1", edge_key: "0,0,e", kind: "secret", exhausted: false },
+      ],
+    });
+
+    renderWithSnapshot(buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "player-1",
+      encounterStarted: true,
+      order: ["player-1"],
+      enemies: [player],
+      dungeon,
+    }));
+
+    await findMapToken("Player 1");
+    expect(screen.queryByRole("button", { name: "Search Room" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Party Walk" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Investigate Suspect" })).toBeEnabled();
   });
 
   it("asks for willpower when suspect investigation draws fate", async () => {
@@ -3638,7 +3748,9 @@ describe("App", () => {
       );
     });
     expect(await screen.findByText("Selected: Down Goblin")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Draw" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Draw" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("menuitem", { name: "Roll loot" })).toBeEnabled();
   });
 
   it("selects a standing enemy before showing context actions on right-click", async () => {

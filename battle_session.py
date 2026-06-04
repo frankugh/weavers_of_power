@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections import Counter
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 import heapq
+import json
 from pathlib import Path
 import random
 import re
@@ -23,7 +24,7 @@ from engine.dungeon import canonical_edge_key, migrate_to_dungeon, normalize_sid
 from engine.excel_creatures import load_creatures_from_workbook, serialize_creature_action_card
 from engine.loader import load_decks
 from engine.loot import roll_loot
-from engine.models import Card, Deck, Effect, EnemyTemplate
+from engine.models import Card, Deck, Effect, EnemyTemplate, LootEntry
 from engine.runtime import BattleState, draw_additional_cards, draw_cards, end_turn, spawn_enemy, start_turn
 from engine.runtime_models import DeckState, DungeonState, DungeonWall, EnemyInstance, GrappleInstance, Tile
 from persistence import (
@@ -277,7 +278,45 @@ class BattleSessionContext:
 
     def reload_creature_templates(self) -> None:
         self.enemy_templates = load_creatures_from_workbook(self.creatures_workbook, images_dir=self.images_dir)
+        if self.enemies_dir.exists():
+            legacy_loot = self._load_legacy_loot_tables()
+            for template_id, template in list(self.enemy_templates.items()):
+                loot = legacy_loot.get(template_id)
+                if loot and not getattr(template, "loot", ()):
+                    self.enemy_templates[template_id] = replace(template, loot=loot)
         self.card_index = self._build_card_index()
+
+    def _load_legacy_loot_tables(self) -> dict[str, tuple[LootEntry, ...]]:
+        loot_by_id: dict[str, tuple[LootEntry, ...]] = {}
+        for path in sorted(self.enemies_dir.rglob("*.json")):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            template_id = str(raw.get("id") or "").strip()
+            raw_loot = raw.get("loot") or []
+            if not template_id or not isinstance(raw_loot, list):
+                continue
+            loot: list[LootEntry] = []
+            for entry in raw_loot:
+                if not isinstance(entry, dict) or not entry.get("type"):
+                    continue
+                loot.append(
+                    LootEntry(
+                        type=str(entry["type"]),
+                        kind=entry.get("kind"),
+                        min=entry.get("min"),
+                        max=entry.get("max"),
+                        text=entry.get("text"),
+                    )
+                )
+            if loot:
+                loot_table = tuple(loot)
+                loot_by_id[template_id] = loot_table
+                loot_by_id[template_id.upper()] = loot_table
+                if not template_id.upper().startswith("C_"):
+                    loot_by_id[f"C_{template_id.upper()}"] = loot_table
+        return loot_by_id
 
     def save_creature_template_overrides(self, template_id: str, overrides: dict) -> dict:
         if template_id not in self.enemy_templates:
@@ -563,6 +602,10 @@ class BattleSession:
     def snapshot(self) -> dict:
         self._ensure_selected()
         self._cleanup_grapples(add_log=False)
+        has_live_ordered_enemy = any(
+            entity and not self.is_player(entity) and not self.is_down(entity)
+            for entity in (self.state.enemies.get(instance_id) for instance_id in self.order)
+        )
         initiative_target_round = (
             self.round + 1 if self.pending_new_round
             else 1 if not self.encounter_started
@@ -573,6 +616,7 @@ class BattleSession:
             "round": self.round,
             "pendingNewRound": self.pending_new_round,
             "encounterStarted": self.encounter_started,
+            "hasLiveOrderedEnemy": has_live_ordered_enemy,
             "initiativeRolledRound": self.initiative_rolled_round,
             "initiativeTargetRound": initiative_target_round,
             "canRollInitiative": not self.encounter_started or self.pending_new_round,
@@ -2888,6 +2932,21 @@ class BattleSession:
             break
         self.autosave()
 
+    def end_combat(self) -> None:
+        if not self.encounter_started and self.active_turn_id is None and not self.pending_new_round:
+            raise BattleSessionError("No active combat to end.")
+        self.encounter_started = False
+        self.active_turn_id = None
+        self.turn_in_progress = False
+        self.pending_new_round = False
+        self.initiative_rolled_round = None
+        self.movement_state = None
+        self.pending_opportunity = None
+        self.turn_skip_notice = []
+        self.round = 1
+        self._add_log("Combat ended.")
+        self.autosave()
+
     def roll_initiative(self, modes: dict) -> None:
         target_round = (
             self.round + 1 if self.pending_new_round
@@ -3362,6 +3421,7 @@ class BattleSession:
             magic_armor=max(0, int(magic_armor)),
             guard=max(0, int(guard)),
             toughness_cap=entity.toughness_max,
+            allow_temporary_armor=True,
         )
         self._add_log(
             f"Heal on {entity.name}: Toughness {log.toughness_before}->{log.toughness_after}, "
@@ -3601,6 +3661,10 @@ class BattleSession:
 
     def roll_loot_for_selected(self) -> None:
         entity = self._require_selected_enemy()
+        if not self.is_down(entity):
+            raise BattleSessionError("Only down enemies can be looted.")
+        if getattr(entity, "loot_rolled", False):
+            raise BattleSessionError(f"Loot has already been rolled for {entity.name}.")
         if entity.template_id == "custom":
             raise BattleSessionError("Custom enemies have no template loot.")
         template = self.context.enemy_templates.get(entity.template_id)
@@ -4620,6 +4684,10 @@ class BattleSession:
                 entity.is_ko = False
         if start_log.dot_damage:
             self._add_log(f"{entity.name} takes {start_log.dot_damage} DOT")
+        if entity.armor_current > entity.armor_max:
+            previous = entity.armor_current
+            entity.armor_current = entity.armor_max
+            self._add_log(f"{entity.name} temporary armor expires: {previous}->{entity.armor_current}.")
 
     def _finish_turn(self, entity: EnemyInstance) -> None:
         if self.is_player(entity):

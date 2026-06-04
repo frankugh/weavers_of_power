@@ -13,6 +13,7 @@ from battle_session import BattleSessionContext
 ROOT = Path(__file__).parent
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 FRONTEND_ASSETS = FRONTEND_DIST / "assets"
+NO_CACHE_HEADERS = {"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
 
 context = BattleSessionContext(root=ROOT)
 
@@ -40,7 +41,7 @@ register_battle_api(app, context)
 def react_root():
     index_path = FRONTEND_DIST / "index.html"
     if index_path.exists():
-        return FileResponse(index_path)
+        return FileResponse(index_path, headers=NO_CACHE_HEADERS)
     return HTMLResponse(
         """
         <html>
@@ -50,7 +51,8 @@ def react_root():
             <p>Run <code>npm install</code> and <code>npm run build</code> in <code>frontend/</code>, then refresh.</p>
           </body>
         </html>
-        """
+        """,
+        headers=NO_CACHE_HEADERS,
     )
 
 

@@ -1077,8 +1077,16 @@ function App() {
   const hasActiveTurn = Boolean(snapshot?.activeTurnId);
   const pendingNewRound = Boolean(snapshot?.pendingNewRound);
   const hasStartableUnit = orderedEnemies.some((entity) => !entity.is_down);
-  const turnAdvanceLabel = hasActiveTurn ? "Next" : pendingNewRound ? "Start Round" : "Start encounter";
-  const canAdvanceTurn = Boolean(hasActiveTurn || hasStartableUnit || pendingNewRound);
+  const hasLiveOrderedEnemy = orderIds.some((instanceId) => {
+    const entity = orderedEnemies.find((candidate) => candidate.instance_id === instanceId);
+    return entity && !entity.is_player && !entity.is_down;
+  });
+  const combatIsRunning = Boolean(snapshot?.encounterStarted || hasActiveTurn || pendingNewRound);
+  const canEndCombat = Boolean(snapshot?.encounterStarted && !hasLiveOrderedEnemy);
+  const canManualEndCombat = Boolean(snapshot?.encounterStarted);
+  const turnAdvanceLabel = canEndCombat ? "End Combat" : hasActiveTurn ? "Next" : pendingNewRound ? "Start Round" : "Start encounter";
+  const canAdvanceTurn = Boolean(canEndCombat || hasActiveTurn || hasStartableUnit || pendingNewRound);
+  const canUseTurnAction = Boolean(combatIsRunning && selectedIsActive && !selectedIsDown);
   const selectedMovementBase =
     selectedIsActive && movementState?.entityId === selectedEntity?.instance_id
       ? Number(movementState.baseMovement)
@@ -1094,10 +1102,6 @@ function App() {
   const pendingOpportunity = snapshot?.pendingOpportunity ?? null;
   const pendingSearch = snapshot?.pendingSearch ?? null;
   const pendingEncounterRoomIds = dungeon?.pendingEncounterRoomIds || [];
-  const hasLiveOrderedEnemy = orderIds.some((instanceId) => {
-    const entity = orderedEnemies.find((candidate) => candidate.instance_id === instanceId);
-    return entity && !entity.is_player && !entity.is_down;
-  });
   const partyWalkBlockedByCombat = Boolean(
     (snapshot?.encounterStarted || pendingNewRound) && hasLiveOrderedEnemy,
   );
@@ -1118,12 +1122,14 @@ function App() {
       isPlayerSelected &&
       !selectedIsDown &&
       hasGridPosition(selectedEntity, room, dungeon) &&
+      !snapshot?.encounterStarted &&
       !snapshot?.activeTurnId &&
       !snapshot?.turnInProgress &&
       !partyWalkBlockedByCombat &&
       !pendingOpportunity &&
       pendingEncounterRoomIds.length === 0,
   );
+  const showPartyWalkButton = Boolean(isPlayerSelected && !combatIsRunning);
   const fogOfWarEnabled = dungeon?.fogOfWarEnabled ?? true;
   const visibleRoomIds = new Set(dungeon?.visibleRoomIds || []);
   const revealedRoomIdSet = new Set(dungeon?.revealedRoomIds || []);
@@ -1185,7 +1191,7 @@ function App() {
   const canDraw = Boolean(
     selectedEntity &&
       !selectedIsDown &&
-      selectedIsActive &&
+      canUseTurnAction &&
       !selectedUsesPhysicalCards &&
       (isPlayerSelected ? !selectedPowerDrawUsed : !snapshot.turnInProgress),
   );
@@ -1193,11 +1199,11 @@ function App() {
     selectedEntity &&
       isPlayerSelected &&
       !selectedIsDown &&
-      selectedIsActive &&
+      canUseTurnAction &&
       !selectedUsesPhysicalCards &&
       selectedPowerDrawUsed,
   );
-  const canDrawExact = Boolean(selectedEntity && isPlayerSelected && !selectedUsesPhysicalCards && !selectedIsDown && selectedIsActive);
+  const canDrawExact = Boolean(selectedEntity && isPlayerSelected && !selectedUsesPhysicalCards && canUseTurnAction);
   const playerActionsUsed = (selectedEntity?.actions_used ?? 0) + (snapshot?.movementState?.dashUsed ? 1 : 0);
   const pcEntitiesInRange = isPlayerSelected && selectedEntity?.grid_x != null
     ? orderedEnemies.filter(
@@ -1213,22 +1219,33 @@ function App() {
           ) <= 1,
       )
     : [];
-  const canHelp = isPlayerSelected && !selectedIsDown && pcEntitiesInRange.length > 0;
+  const canHelp = isPlayerSelected && canUseTurnAction && pcEntitiesInRange.length > 0;
 
   const currentPcRoomId = selectedEntity?.room_id ?? null;
   const roomAlreadySearched = Boolean(currentPcRoomId && (dungeon?.searchedRoomIds || []).includes(currentPcRoomId));
-  const canSearch = Boolean(
+  const canUseSearchAction = Boolean(
     isPlayerSelected &&
       !selectedIsDown &&
+      !combatIsRunning &&
+      !pendingOpportunity &&
+      pendingEncounterRoomIds.length === 0,
+  );
+  const canUseInvestigateAction = Boolean(
+    isPlayerSelected &&
+      !selectedIsDown &&
+      (canUseTurnAction || !combatIsRunning) &&
+      !pendingOpportunity &&
+      pendingEncounterRoomIds.length === 0,
+  );
+  const canSearch = Boolean(
+    canUseSearchAction &&
       dungeon &&
       !roomAlreadySearched &&
-      !pendingSearch &&
-      (snapshot?.activeTurnId == null || snapshot?.activeTurnId === selectedEntity?.instance_id),
+      !pendingSearch
   );
 
   const adjacentSuspects = useMemo(() => {
-    if (!isPlayerSelected || selectedIsDown) return [];
-    if (snapshot?.activeTurnId != null && snapshot.activeTurnId !== selectedEntity?.instance_id) return [];
+    if (!canUseInvestigateAction) return [];
     if (!dungeon?.secretSuspects?.length || !selectedEntity || selectedEntity.grid_x == null) return [];
     // Build room → cell set map to mirror the backend room-side cell logic
     const roomCellSet = {};
@@ -1252,8 +1269,8 @@ function App() {
       const dist = Math.max(Math.abs(selectedEntity.grid_x - rx), Math.abs(selectedEntity.grid_y - ry));
       return dist <= 1;
     });
-  }, [dungeon?.secretSuspects, dungeon?.rooms, isPlayerSelected, selectedIsDown, selectedEntity?.grid_x, selectedEntity?.grid_y, selectedEntity?.instance_id, snapshot?.activeTurnId]);
-  const canShed = isPlayerSelected && !selectedUsesPhysicalCards && !selectedIsDown && (selectedEntity?.wounds_in_hand ?? 0) > 0;
+  }, [dungeon?.secretSuspects, dungeon?.rooms, canUseInvestigateAction, selectedEntity?.grid_x, selectedEntity?.grid_y, selectedEntity?.instance_id]);
+  const canShed = isPlayerSelected && !selectedUsesPhysicalCards && canUseTurnAction && (selectedEntity?.wounds_in_hand ?? 0) > 0;
   const canRedraw = Boolean(
     selectedEntity &&
       !selectedIsDown &&
@@ -1272,8 +1289,12 @@ function App() {
   );
   const canAttackOrHeal = Boolean(visibleSelectedEntity && !selectedIsDown);
   const selectedTargetNoun = isPlayerSelected ? "player" : "enemy";
-  const canRollLoot = isTemplateLootable(visibleSelectedEntity);
-  const canDisengage = Boolean(selectedEntity && selectedIsActive && !selectedIsDown);
+  const canRollLoot = Boolean(
+    visibleSelectedEntity?.is_down &&
+      !visibleSelectedEntity?.loot_rolled &&
+      isTemplateLootable(visibleSelectedEntity),
+  );
+  const canDisengage = Boolean(selectedEntity && canUseTurnAction);
   const canContextRollLoot = Boolean(contextMenuEntity?.is_down && !contextMenuEntity?.loot_rolled && isTemplateLootable(contextMenuEntity));
   const canContextQuickAttack = Boolean(
     contextMenuEntity &&
@@ -2180,7 +2201,7 @@ function App() {
   }
 
   function withActionCheck(fn) {
-    if (isPlayerSelected && playerActionsUsed >= 2 && !actionWarningAcknowledged) {
+    if (isPlayerSelected && canUseTurnAction && playerActionsUsed >= 2 && !actionWarningAcknowledged) {
       setPendingActionFn(() => fn);
       setModal("action-warning");
     } else {
@@ -2198,6 +2219,11 @@ function App() {
   }
 
   async function handleTurnAdvance() {
+    if (canEndCombat) {
+      await handleEndCombat();
+      return;
+    }
+
     if (!hasActiveTurn && !pendingNewRound && hasStartableUnit && !initiativeRolledForTarget) {
       setInitiativeOpenReason("start");
       setInitiativeModes({});
@@ -2231,6 +2257,14 @@ function App() {
         method: "POST",
       },
       "Encounter started",
+    );
+  }
+
+  async function handleEndCombat() {
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/encounter/end`,
+      { method: "POST" },
+      "Combat ended",
     );
   }
 
@@ -2946,7 +2980,7 @@ function App() {
 
                 <div className="action-controls">
                   <div className="action-buttons">
-                {!selectedUsesPhysicalCards ? (
+                {!selectedUsesPhysicalCards && combatIsRunning ? (
                   <button
                     className="primary-button"
                     onClick={() => {
@@ -2974,7 +3008,7 @@ function App() {
                     Draw X
                   </button>
                 )}
-                {isPlayerSelected && !selectedIsDown && (
+                {isPlayerSelected && canUseTurnAction && (
                   <button
                     className="secondary-button"
                     onClick={() => {
@@ -2992,7 +3026,7 @@ function App() {
                         : ""}
                   </button>
                 )}
-                {isPlayerSelected && !selectedIsDown && (
+                {isPlayerSelected && canUseTurnAction && (
                   <button
                     className="secondary-button"
                     onClick={() => {
@@ -3004,7 +3038,7 @@ function App() {
                     Strengthen
                   </button>
                 )}
-                {isPlayerSelected && !selectedIsDown && (
+                {isPlayerSelected && canUseTurnAction && (
                   <button
                     className="secondary-button"
                     onClick={() => {
@@ -3044,17 +3078,32 @@ function App() {
                 >
                   {turnAdvanceLabel}
                 </button>
-                <button
-                  className={`secondary-button ${mapMode === MAP_MODES.MOVE ? "move-button-active" : ""}`.trim()}
-                  onClick={() => {
-                    setActionMenuOpen(false);
-                    setMapMode((current) => (current === MAP_MODES.MOVE ? MAP_MODES.IDLE : MAP_MODES.MOVE));
-                  }}
-                  disabled={!canUseMove || busy}
-                >
-                  {mapMode === MAP_MODES.MOVE ? "Cancel Move" : "Move"}
-                </button>
-                {isPlayerSelected ? (
+                {canManualEndCombat && !canEndCombat ? (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      handleEndCombat();
+                    }}
+                    disabled={busy}
+                  >
+                    End Combat
+                  </button>
+                ) : null}
+                {combatIsRunning ? (
+                  <button
+                    className={`secondary-button ${mapMode === MAP_MODES.MOVE ? "move-button-active" : ""}`.trim()}
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      setMapMode((current) => (current === MAP_MODES.MOVE ? MAP_MODES.IDLE : MAP_MODES.MOVE));
+                    }}
+                    disabled={!canUseMove || busy}
+                  >
+                    {mapMode === MAP_MODES.MOVE ? "Cancel Move" : "Move"}
+                  </button>
+                ) : null}
+                {showPartyWalkButton ? (
                   <button
                     className={`secondary-button ${isPartyWalkMode ? "move-button-active" : ""}`.trim()}
                     onClick={() => {
@@ -3098,7 +3147,7 @@ function App() {
                     Search Room
                   </button>
                 )}
-                {!canSearch && roomAlreadySearched && isPlayerSelected && !selectedIsDown && dungeon && (
+                {!canSearch && roomAlreadySearched && isPlayerSelected && canUseTurnAction && dungeon && (
                   <button
                     className="secondary-button"
                     type="button"
@@ -3159,7 +3208,7 @@ function App() {
                     >
                       Reposition unit
                     </button>
-                    {!selectedUsesPhysicalCards ? (
+                    {!selectedUsesPhysicalCards && combatIsRunning ? (
                       <button
                         className="secondary-button action-more-item"
                         type="button"
@@ -3173,34 +3222,38 @@ function App() {
                         Redraw
                       </button>
                     ) : null}
-                    <button
-                      className="secondary-button action-more-item"
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setActionMenuOpen(false);
-                        withActionCheck(handleDisengage);
-                      }}
-                      disabled={!canDisengage || busy}
-                    >
-                      Disengage
-                    </button>
-                    <button
-                      className="secondary-button action-more-item"
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setActionMenuOpen(false);
-                        if (pcEntitiesInRange.length === 1) {
-                          withActionCheck(() => handleHelp(pcEntitiesInRange[0].instance_id));
-                        } else {
-                          withActionCheck(() => { setHelpTargets(pcEntitiesInRange); setModal("help-select"); });
-                        }
-                      }}
-                      disabled={!canHelp || busy}
-                    >
-                      Help
-                    </button>
+                    {combatIsRunning ? (
+                      <button
+                        className="secondary-button action-more-item"
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setActionMenuOpen(false);
+                          withActionCheck(handleDisengage);
+                        }}
+                        disabled={!canDisengage || busy}
+                      >
+                        Disengage
+                      </button>
+                    ) : null}
+                    {combatIsRunning ? (
+                      <button
+                        className="secondary-button action-more-item"
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setActionMenuOpen(false);
+                          if (pcEntitiesInRange.length === 1) {
+                            withActionCheck(() => handleHelp(pcEntitiesInRange[0].instance_id));
+                          } else {
+                            withActionCheck(() => { setHelpTargets(pcEntitiesInRange); setModal("help-select"); });
+                          }
+                        }}
+                        disabled={!canHelp || busy}
+                      >
+                        Help
+                      </button>
+                    ) : null}
                     <button
                       className="secondary-button action-more-item"
                       type="button"
@@ -3214,18 +3267,20 @@ function App() {
                     >
                       {`Heal ${selectedTargetNoun}`}
                     </button>
-                    <button
-                      className="secondary-button action-more-item"
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setActionMenuOpen(false);
-                        handleRollLoot();
-                      }}
-                      disabled={!canRollLoot || busy}
-                    >
-                      Roll loot
-                    </button>
+                    {canRollLoot ? (
+                      <button
+                        className="secondary-button action-more-item"
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setActionMenuOpen(false);
+                          handleRollLoot();
+                        }}
+                        disabled={busy}
+                      >
+                        Roll loot
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
               </div>

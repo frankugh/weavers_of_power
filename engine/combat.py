@@ -228,6 +228,7 @@ def apply_heal(
     magic_armor: int = 0,
     guard: int = 0,
     toughness_cap: int | None = None,
+    allow_temporary_armor: bool = False,
 ) -> CombatLog:
     """
     Restore toughness/armor/magic_armor/guard.
@@ -242,7 +243,10 @@ def apply_heal(
 
     effective_toughness_cap = enemy.toughness_max if toughness_cap is None else max(0, int(toughness_cap))
     enemy.toughness_current = min(effective_toughness_cap, enemy.toughness_current + toughness)
-    enemy.armor_current = min(enemy.armor_max, enemy.armor_current + armor)
+    if allow_temporary_armor:
+        enemy.armor_current = min(9999, enemy.armor_current + armor)
+    else:
+        enemy.armor_current = min(enemy.armor_max, enemy.armor_current + armor)
     enemy.magic_armor_current = min(enemy.magic_armor_max, enemy.magic_armor_current + magic_armor)
     enemy.guard_current = min(9999, enemy.guard_current + guard)  # no max defined yet; UI can show it
 

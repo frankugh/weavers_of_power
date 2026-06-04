@@ -919,6 +919,25 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(start["round"], 2)
         self.assertIsNotNone(start["activeTurnId"])
 
+    def test_end_combat_endpoint_resets_combat_state(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"})
+        self.client.post(f"/api/battle/sessions/{sid}/encounter/start")
+        second_round = self.client.post(f"/api/battle/sessions/{sid}/turn/next").json()
+        if second_round["pendingNewRound"]:
+            self.client.post(f"/api/battle/sessions/{sid}/round/start")
+
+        response = self.client.post(f"/api/battle/sessions/{sid}/encounter/end")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["encounterStarted"])
+        self.assertIsNone(payload["activeTurnId"])
+        self.assertFalse(payload["turnInProgress"])
+        self.assertFalse(payload["pendingNewRound"])
+        self.assertEqual(payload["round"], 1)
+        self.assertIn("Combat ended.", payload["combatLog"])
+
     def test_add_player_with_stats_endpoint(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
 

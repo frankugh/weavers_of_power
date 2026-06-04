@@ -529,6 +529,10 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def start_round(sid: str):
         return run_mutation(sid, lambda session: session.start_new_round())
 
+    @api_app.post("/api/battle/sessions/{sid}/encounter/end")
+    def end_combat(sid: str):
+        return run_mutation(sid, lambda session: session.end_combat())
+
     @api_app.post("/api/battle/sessions/{sid}/initiative/roll")
     def roll_initiative(sid: str, request: RollInitiativeRequest):
         return run_mutation(sid, lambda session: session.roll_initiative(request.modes))
