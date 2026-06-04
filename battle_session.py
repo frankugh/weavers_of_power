@@ -1574,6 +1574,309 @@ class BattleSession:
         self._add_log(f"Repositioned {len(normalized)} unit{'s' if len(normalized) != 1 else ''}")
         self.autosave()
 
+    def party_walk(self, leader_id: str, x: int, y: int) -> dict:
+        has_live_ordered_enemy = any(
+            (entity := self.state.enemies.get(instance_id)) is not None
+            and not self.is_player(entity)
+            and not self.is_down(entity)
+            for instance_id in self.order
+        )
+        if (
+            self.active_turn_id is not None
+            or self.turn_in_progress
+            or (self.encounter_started and has_live_ordered_enemy)
+            or (self.pending_new_round and has_live_ordered_enemy)
+        ):
+            raise BattleSessionError("Party Walk is only available outside active combat turns.")
+        if self.pending_opportunity is not None:
+            raise BattleSessionError("Resolve the pending opportunity attack before using Party Walk.")
+        if self.dungeon and self.dungeon.pending_encounter_room_ids:
+            raise BattleSessionError("Resolve the pending encounter before using Party Walk.")
+
+        leader = self.state.enemies.get(str(leader_id or ""))
+        if not leader:
+            raise BattleSessionError(f"Entity '{leader_id}' does not exist")
+        if not self.is_player(leader):
+            raise BattleSessionError("Party Walk needs a player character as leader.")
+        if self.is_down(leader):
+            raise BattleSessionError("Down player characters cannot lead Party Walk.")
+        if not self._has_position(leader) or not self._position_is_walkable(leader.grid_x, leader.grid_y):
+            raise BattleSessionError(f"{leader.name} must be on the battle map to lead Party Walk.")
+
+        x = int(x)
+        y = int(y)
+        if not self._position_in_bounds(x, y):
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is outside the battle map")
+        if not self._position_is_walkable(x, y):
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is not walkable")
+
+        party = self._party_walk_party(leader)
+        party_ids = {entity.instance_id for entity in party}
+        for entity in party:
+            if self._grapples_for_target(entity.instance_id):
+                raise BattleSessionError(f"{entity.name} is Grappled and cannot use Party Walk.")
+
+        occupying = self._entity_at_position(x, y, exclude_ids=party_ids, blocking_only=True)
+        if occupying:
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is occupied by {occupying.name}")
+
+        route = self._movement_route(leader, x, y, diagonal_steps_used=0, max_cost=None)
+        if route is None:
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is not reachable")
+
+        route_steps, stopped_for_encounter, revealed_rooms, pending_rooms = self._party_walk_route_plan(
+            leader,
+            list(route.steps),
+        )
+        route_positions = [(int(leader.grid_x), int(leader.grid_y))]
+        route_positions.extend((int(step["x"]), int(step["y"])) for step in route_steps)
+        actual_x, actual_y = route_positions[-1]
+        allowed_revealed = set(getattr(self.dungeon, "revealed_room_ids", []) if self.dungeon else [])
+        allowed_revealed.update(revealed_rooms)
+        placements = self._party_walk_placements(
+            leader,
+            party,
+            actual_x,
+            actual_y,
+            route_positions,
+            allowed_revealed,
+        )
+
+        if self.dungeon:
+            for room_id in revealed_rooms:
+                if room_id not in self.dungeon.revealed_room_ids:
+                    self.dungeon.revealed_room_ids.append(room_id)
+            for room_id in pending_rooms:
+                if room_id not in self.dungeon.pending_encounter_room_ids:
+                    self.dungeon.pending_encounter_room_ids.append(room_id)
+            if revealed_rooms or pending_rooms:
+                self.dungeon.render_version += 1
+
+        for entity, target_x, target_y in placements:
+            self._set_position(entity, target_x, target_y)
+
+        self.selected_id = leader.instance_id
+        moved_ids = [entity.instance_id for entity, _target_x, _target_y in placements]
+        if stopped_for_encounter:
+            self._add_log(
+                f"Party walk stopped: encounter discovered after {leader.name} led "
+                f"{len(moved_ids)} PC{'s' if len(moved_ids) != 1 else ''} to ({actual_x + 1}, {actual_y + 1})."
+            )
+        else:
+            self._add_log(
+                f"Party walk: {leader.name} led {len(moved_ids)} PC{'s' if len(moved_ids) != 1 else ''} "
+                f"to ({actual_x + 1}, {actual_y + 1})."
+            )
+        self.autosave()
+        return {
+            "partyWalk": {
+                "leaderId": leader.instance_id,
+                "movedEntityIds": moved_ids,
+                "destination": {"x": x, "y": y},
+                "actualDestination": {"x": actual_x, "y": actual_y},
+                "stoppedForEncounter": stopped_for_encounter,
+                "revealedRoomIds": list(revealed_rooms),
+                "pendingEncounterRoomIds": list(pending_rooms),
+            }
+        }
+
+    def _party_walk_party(self, leader: EnemyInstance) -> list[EnemyInstance]:
+        members: list[EnemyInstance] = [leader]
+        for instance_id in self._ordered_enemy_ids():
+            entity = self.state.enemies.get(instance_id)
+            if (
+                entity
+                and entity.instance_id != leader.instance_id
+                and self.is_player(entity)
+                and not self.is_down(entity)
+                and self._has_position(entity)
+                and self._position_is_walkable(entity.grid_x, entity.grid_y)
+            ):
+                members.append(entity)
+        return members
+
+    def _party_walk_route_plan(
+        self,
+        leader: EnemyInstance,
+        route_steps: list[dict],
+    ) -> tuple[list[dict], bool, list[str], list[str]]:
+        if not self.dungeon:
+            return route_steps, False, [], []
+
+        revealed_seen = set(getattr(self.dungeon, "revealed_room_ids", []))
+        pending_seen = set(getattr(self.dungeon, "pending_encounter_room_ids", []))
+        revealed_rooms: list[str] = []
+        pending_rooms: list[str] = []
+
+        def reveal_room(room_id: Optional[str]) -> bool:
+            if not room_id:
+                return False
+            if room_id not in revealed_seen:
+                revealed_seen.add(room_id)
+                revealed_rooms.append(room_id)
+            if self._party_walk_room_has_enemies(room_id):
+                if room_id not in pending_seen:
+                    pending_seen.add(room_id)
+                    pending_rooms.append(room_id)
+                return True
+            return False
+
+        start_room_id = self._room_id_for_position(leader.grid_x, leader.grid_y)
+        if reveal_room(start_room_id):
+            return [], True, revealed_rooms, pending_rooms
+
+        accepted_steps: list[dict] = []
+        for step in route_steps:
+            accepted_steps.append(step)
+            room_id = self._room_id_for_position(step["x"], step["y"])
+            if room_id and room_id != start_room_id and reveal_room(room_id):
+                return accepted_steps, True, revealed_rooms, pending_rooms
+            if room_id and room_id not in revealed_seen:
+                reveal_room(room_id)
+
+        return accepted_steps, False, revealed_rooms, pending_rooms
+
+    def _party_walk_room_has_enemies(self, room_id: str) -> bool:
+        for entity in self.state.enemies.values():
+            if self.is_player(entity) or self.is_down(entity) or not self._has_position(entity):
+                continue
+            if self._room_id_for_position(entity.grid_x, entity.grid_y) == room_id:
+                return True
+        return False
+
+    def _party_walk_placements(
+        self,
+        leader: EnemyInstance,
+        party: list[EnemyInstance],
+        leader_x: int,
+        leader_y: int,
+        route_positions: list[tuple[int, int]],
+        allowed_revealed_room_ids: set[str],
+    ) -> list[tuple[EnemyInstance, int, int]]:
+        party_ids = {entity.instance_id for entity in party}
+        blocked_positions = {
+            (int(entity.grid_x), int(entity.grid_y))
+            for entity in self.state.enemies.values()
+            if entity.instance_id not in party_ids
+            and self._blocks_position(entity)
+            and self._has_position(entity)
+        }
+        placements: list[tuple[EnemyInstance, int, int]] = [(leader, leader_x, leader_y)]
+        assigned_positions: set[tuple[int, int]] = {(leader_x, leader_y)}
+        facing = self._party_walk_facing(route_positions)
+        preferred_cells = self._party_walk_preferred_cells(leader_x, leader_y, facing)
+        breadcrumb_cells = list(reversed(route_positions[:-1]))
+        fallback_cells = self._party_walk_fallback_cells(leader_x, leader_y, facing)
+
+        for follower in party[1:]:
+            chosen: Optional[tuple[int, int]] = None
+            seen: set[tuple[int, int]] = set()
+            for candidate in [*preferred_cells, *breadcrumb_cells, *fallback_cells]:
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                if not self._party_walk_cell_is_valid(
+                    candidate,
+                    assigned_positions,
+                    blocked_positions,
+                    allowed_revealed_room_ids,
+                ):
+                    continue
+                if self._movement_route(follower, candidate[0], candidate[1], diagonal_steps_used=0, max_cost=None) is None:
+                    continue
+                chosen = candidate
+                break
+            if chosen is None:
+                raise BattleSessionError(f"No valid Party Walk formation cell found for {follower.name}.")
+            assigned_positions.add(chosen)
+            placements.append((follower, chosen[0], chosen[1]))
+
+        return placements
+
+    @staticmethod
+    def _party_walk_facing(route_positions: list[tuple[int, int]]) -> tuple[int, int]:
+        if len(route_positions) < 2:
+            return (0, 1)
+        previous_x, previous_y = route_positions[-2]
+        current_x, current_y = route_positions[-1]
+        dx = (current_x > previous_x) - (current_x < previous_x)
+        dy = (current_y > previous_y) - (current_y < previous_y)
+        return (dx, dy) if dx or dy else (0, 1)
+
+    def _party_walk_preferred_cells(self, leader_x: int, leader_y: int, facing: tuple[int, int]) -> list[tuple[int, int]]:
+        dx, dy = facing
+        behind = (-dx, -dy) if dx or dy else (0, 1)
+        left = (-dy, dx)
+        right = (dy, -dx)
+        offsets = [
+            behind,
+            (behind[0] + left[0], behind[1] + left[1]),
+            (behind[0] + right[0], behind[1] + right[1]),
+            left,
+            right,
+            (behind[0] * 2, behind[1] * 2),
+            (behind[0] * 2 + left[0], behind[1] * 2 + left[1]),
+            (behind[0] * 2 + right[0], behind[1] * 2 + right[1]),
+        ]
+        result: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
+        for ox, oy in offsets:
+            if ox == 0 and oy == 0:
+                continue
+            cell = (leader_x + ox, leader_y + oy)
+            if cell not in seen:
+                seen.add(cell)
+                result.append(cell)
+        return result
+
+    def _party_walk_fallback_cells(self, leader_x: int, leader_y: int, facing: tuple[int, int]) -> list[tuple[int, int]]:
+        dx, dy = facing
+        behind = (-dx, -dy) if dx or dy else (0, 1)
+        side = (-dy, dx)
+        candidates: list[tuple[int, int]] = []
+        if self._uses_sparse_dungeon_grid() and self.dungeon:
+            for key in self.dungeon.tiles.keys():
+                try:
+                    x_raw, y_raw = key.split(",", 1)
+                    candidates.append((int(x_raw), int(y_raw)))
+                except (TypeError, ValueError):
+                    continue
+        else:
+            candidates = [
+                (x, y)
+                for y in range(self.room_rows)
+                for x in range(self.room_columns)
+            ]
+
+        def sort_key(cell: tuple[int, int]) -> tuple[int, int, int, int]:
+            rel_x = cell[0] - leader_x
+            rel_y = cell[1] - leader_y
+            chebyshev = max(abs(rel_x), abs(rel_y))
+            manhattan = abs(rel_x) + abs(rel_y)
+            behind_score = rel_x * behind[0] + rel_y * behind[1]
+            side_score = abs(rel_x * side[0] + rel_y * side[1])
+            return (chebyshev, -behind_score, side_score, manhattan)
+
+        return sorted(candidates, key=sort_key)
+
+    def _party_walk_cell_is_valid(
+        self,
+        cell: tuple[int, int],
+        assigned_positions: set[tuple[int, int]],
+        blocked_positions: set[tuple[int, int]],
+        allowed_revealed_room_ids: set[str],
+    ) -> bool:
+        x, y = cell
+        if cell in assigned_positions or cell in blocked_positions:
+            return False
+        if not self._position_in_bounds(x, y) or not self._position_is_walkable(x, y):
+            return False
+        if self.dungeon and self.dungeon.fog_of_war_enabled:
+            room_id = self._room_id_for_position(x, y)
+            if room_id and room_id not in allowed_revealed_room_ids:
+                return False
+        return True
+
     def copy_entity(self, instance_id: str) -> None:
         source = self.state.enemies.get(instance_id)
         if not source:
@@ -3587,7 +3890,7 @@ class BattleSession:
     def card_to_effect_text(self, card_id: str) -> str:
         if card_id == WOUND_CARD_ID:
             return "Wound"
-        card = self.context.card_index.get(card_id)
+        card = self._card_for_id(card_id)
         if not card:
             return card_id
         if card.action_text:
@@ -3631,6 +3934,51 @@ class BattleSession:
             else:
                 parts.append(effect.type)
         return " + ".join(parts) if parts else (card.title or card_id)
+
+    def _card_for_id(self, card_id: str) -> Optional[Card]:
+        return self.context.card_index.get(card_id) or self._legacy_player_card(card_id)
+
+    @staticmethod
+    def _legacy_player_card(card_id: str) -> Optional[Card]:
+        raw = str(card_id or "").strip()
+        match = re.match(
+            r"^(?P<prefix>h[fwd])_(?P<energy>master|martial|elemental|light|void)_(?P<amount>\d+)_(?P<outcome>success|fate|fail)(?P<reshuffle>_reshuffle)?$",
+            raw,
+        )
+        if not match:
+            match = re.match(
+                r"^(?P<prefix>h[fwd])_(?P<energy>master|martial|elemental|light|void)_(?P<outcome>success|fate|fail)(?P<reshuffle>_reshuffle)?$",
+                raw,
+            )
+        if not match:
+            return None
+        energy_key = match.group("energy")
+        outcome = match.group("outcome")
+        amount = int(match.groupdict().get("amount") or (0 if energy_key == "void" else 1))
+        energy_type = {
+            "master": "Master",
+            "martial": "Martial",
+            "elemental": "Elemental",
+            "light": "Light",
+            "void": "Void",
+        }[energy_key]
+        title = (
+            f"{energy_type} - {outcome}"
+            if energy_type == "Void" and amount == 0
+            else f"{energy_type} energy {amount} - {outcome}"
+        )
+        reshuffle = bool(match.group("reshuffle"))
+        if reshuffle:
+            title = f"{title} (reshuffle)"
+        return Card(
+            id=raw,
+            title=title,
+            effects=(),
+            energy_type=energy_type,
+            energy_amount=amount,
+            outcome=outcome,
+            reshuffle=reshuffle,
+        )
 
     @staticmethod
     def _has_player_card_metadata(card: Card) -> bool:
@@ -3678,7 +4026,7 @@ class BattleSession:
             if card_id == WOUND_CARD_ID:
                 outcomes["fail"] += 1
                 continue
-            card = self.context.card_index.get(card_id)
+            card = self._card_for_id(card_id)
             if not card:
                 continue
             outcome = (card.outcome or "").strip().lower()
@@ -3696,7 +4044,7 @@ class BattleSession:
     def _player_hit_draw_label(self, card_id: str) -> str:
         if card_id == WOUND_CARD_ID:
             return "Fail"
-        card = self.context.card_index.get(card_id)
+        card = self._card_for_id(card_id)
         outcome = (card.outcome if card else "").strip().lower()
         if outcome == "success":
             return "Success"
@@ -3707,7 +4055,7 @@ class BattleSession:
     def _player_hit_draw_detail(self, card_id: str) -> str:
         if card_id == WOUND_CARD_ID:
             return "Wound"
-        card = self.context.card_index.get(card_id)
+        card = self._card_for_id(card_id)
         if not card:
             return card_id
         energy_type = (card.energy_type or "").strip()
@@ -3728,7 +4076,7 @@ class BattleSession:
     def _quick_attack_steps_for(self, entity: EnemyInstance) -> list[QuickAttackStep]:
         steps: list[QuickAttackStep] = []
         for card_id in list(entity.deck_state.hand):
-            card = self.context.card_index.get(card_id)
+            card = self._card_for_id(card_id)
             if not card:
                 continue
             manual_effects = tuple(
@@ -4111,7 +4459,7 @@ class BattleSession:
         resolved = list(result.drawn)
         instructions: list[str] = []
         for card_id in resolved:
-            card = self.context.card_index.get(card_id)
+            card = self._card_for_id(card_id)
             if not card:
                 continue
             if card.reshuffle:
@@ -4161,7 +4509,7 @@ class BattleSession:
         reshuffle_pending = False
         while pending:
             card_id = pending.pop(0)
-            card = self.context.card_index.get(card_id)
+            card = self._card_for_id(card_id)
             if not card:
                 continue
             if card.reshuffle:
@@ -4593,7 +4941,7 @@ class BattleSession:
             if card_id == WOUND_CARD_ID:
                 result.append({"energy_type": "", "energy_amount": 0, "outcome": "fail", "title": "Wound"})
             else:
-                card = self.context.card_index.get(card_id)
+                card = self._card_for_id(card_id)
                 if card:
                     result.append({
                         "energy_type": card.energy_type or "",

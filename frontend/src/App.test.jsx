@@ -2164,6 +2164,60 @@ describe("App", () => {
     expect(screen.getAllByText("4").length).toBeGreaterThan(0);
   });
 
+  it("shows resolved Draw of Power energy instead of raw legacy card IDs", async () => {
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      power_draw_used: true,
+      power_draw_cards: [
+        { energy_type: "Martial", energy_amount: 1, outcome: "fail", title: "Martial energy fail" },
+        { energy_type: "Master", energy_amount: 1, outcome: "fate", title: "Master energy fate (reshuffle at end turn)" },
+        { energy_type: "Void", energy_amount: 0, outcome: "fate", title: "Void fate" },
+        { energy_type: "Martial", energy_amount: 1, outcome: "fail", title: "Martial energy fail" },
+      ],
+      current_draw_text: [
+        "Martial energy fail",
+        "Master energy fate (reshuffle at end turn)",
+        "Void fate",
+        "Martial energy fail",
+      ],
+      current_draw_groups: [
+        {
+          label: "Draw 1",
+          items: [
+            "Martial energy fail",
+            "Master energy fate (reshuffle at end turn)",
+            "Void fate",
+            "Martial energy fail",
+          ],
+          summary: { outcomes: { success: 0, fate: 2, fail: 2 }, energies: { Martial: 2, Master: 1 } },
+        },
+      ],
+      current_draw_summary: { outcomes: { success: 0, fate: 2, fail: 2 }, energies: { Martial: 2, Master: 1 } },
+      wound_counts: { hand: 0, discard: 0, draw_pile: 0, total: 0 },
+    });
+
+    renderWithSnapshot(buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "player-1",
+      turnInProgress: true,
+      order: ["player-1"],
+      enemies: [player],
+    }));
+
+    const energyBar = await screen.findByRole("region", { name: "Draw of Power energy pool for Mira" });
+    expect(within(energyBar).getByText("Martial")).toBeInTheDocument();
+    expect(within(energyBar).getByText("Master")).toBeInTheDocument();
+    expect(within(energyBar).getByText("2")).toBeInTheDocument();
+    expect(within(energyBar).getByText("1")).toBeInTheDocument();
+    expect(within(energyBar).queryByText("No spendable energy drawn")).not.toBeInTheDocument();
+    expect(screen.queryByText("hf_martial_1_fail")).not.toBeInTheDocument();
+    expect(screen.queryByText("hf_master_fate_reshuffle")).not.toBeInTheDocument();
+  });
+
   it("opens Guard X from the action bar and posts the chosen guard amount", async () => {
     const user = userEvent.setup();
     const player = buildEnemy({
@@ -2946,6 +3000,117 @@ describe("App", () => {
       );
     });
     expect(await screen.findByText("Moved Goblin 1 to (1, 1)")).toBeInTheDocument();
+  });
+
+  it("party walks the selected player party and keeps Party Walk mode active", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 0,
+      grid_y: 1,
+    });
+    const follower = buildEnemy({
+      instance_id: "player-2",
+      template_id: "player",
+      name: "Player 2",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 0,
+      grid_y: 2,
+    });
+    const movedSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1", "player-2"],
+      enemies: [
+        buildEnemy({ ...player, grid_x: 4, grid_y: 1 }),
+        buildEnemy({ ...follower, grid_x: 3, grid_y: 1 }),
+      ],
+      combatLog: ["Party walk: Player 1 led 2 PCs to (5, 2)."],
+      partyWalk: {
+        leaderId: "player-1",
+        movedEntityIds: ["player-1", "player-2"],
+        destination: { x: 4, y: 1 },
+        actualDestination: { x: 4, y: 1 },
+        stoppedForEncounter: false,
+        revealedRoomIds: [],
+        pendingEncounterRoomIds: [],
+      },
+    });
+
+    renderWithSnapshot(buildSnapshot({ selectedId: "player-1", order: ["player-1", "player-2"], enemies: [player, follower] }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/action/party-walk" && requestOptions?.method === "POST") {
+          return jsonResponse(movedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Player 1");
+    await user.click(screen.getByRole("button", { name: "Party Walk" }));
+    expect(getMapViewport().dataset.mapMode).toBe("party-walk");
+    pointerClickMapCell(4, 1);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/action/party-walk",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ leaderId: "player-1", x: 4, y: 1 }),
+        }),
+      );
+    });
+    await screen.findByText("Party walk: Player 1 led 2 PCs to (5, 2).");
+    expect(getMapViewport().dataset.mapMode).toBe("party-walk");
+  });
+
+  it("leaves Party Walk mode when the response discovers an encounter", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 0,
+      grid_y: 1,
+    });
+    const stoppedSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1"],
+      enemies: [buildEnemy({ ...player, grid_x: 2, grid_y: 1 })],
+      dungeon: buildDungeon({ pendingEncounterRoomIds: ["room-2"] }),
+      combatLog: ["Party walk stopped: encounter discovered after Player 1 led 1 PC to (3, 2)."],
+      partyWalk: {
+        leaderId: "player-1",
+        movedEntityIds: ["player-1"],
+        destination: { x: 4, y: 1 },
+        actualDestination: { x: 2, y: 1 },
+        stoppedForEncounter: true,
+        revealedRoomIds: ["room-2"],
+        pendingEncounterRoomIds: ["room-2"],
+      },
+    });
+
+    renderWithSnapshot(buildSnapshot({ selectedId: "player-1", order: ["player-1"], enemies: [player] }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/action/party-walk" && requestOptions?.method === "POST") {
+          return jsonResponse(stoppedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Player 1");
+    await user.click(screen.getByRole("button", { name: "Party Walk" }));
+    pointerClickMapCell(4, 1);
+
+    await screen.findByText("Party walk stopped: encounter discovered after Player 1 led 1 PC to (3, 2).");
+    expect(getMapViewport().dataset.mapMode).toBe("idle");
   });
 
   it("opens and resolves the opportunity attack popup from a move response", async () => {

@@ -151,6 +151,120 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(session.selected_id, first_id)
         self.assertIn("Repositioned 2 units", session.combat_log[0])
 
+    def test_party_walk_places_four_players_in_open_formation(self) -> None:
+        session = self.context.create_session("party-walk-open")
+        ids = []
+        for index, position in enumerate([(0, 1), (0, 2), (0, 3), (0, 4)]):
+            session.add_player(name=f"Player {index + 1}")
+            ids.append(session.selected_id)
+            entity = session.state.enemies[session.selected_id]
+            session._set_position(entity, position[0], position[1])
+
+        result = session.party_walk(ids[0], 4, 1)
+
+        self.assertEqual(result["partyWalk"]["leaderId"], ids[0])
+        self.assertFalse(result["partyWalk"]["stoppedForEncounter"])
+        self.assertEqual((session.state.enemies[ids[0]].grid_x, session.state.enemies[ids[0]].grid_y), (4, 1))
+        self.assertEqual((session.state.enemies[ids[1]].grid_x, session.state.enemies[ids[1]].grid_y), (3, 1))
+        self.assertEqual((session.state.enemies[ids[2]].grid_x, session.state.enemies[ids[2]].grid_y), (3, 2))
+        self.assertEqual((session.state.enemies[ids[3]].grid_x, session.state.enemies[ids[3]].grid_y), (3, 0))
+        self.assertIsNone(session.movement_state)
+        self.assertIn("Party walk:", session.combat_log[0])
+
+    def test_party_walk_uses_breadcrumbs_in_corridor(self) -> None:
+        session = self.context.create_session("party-walk-corridor")
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[x, 0] for x in range(6)])
+        session.analyze_dungeon()
+        session.dungeon.fog_of_war_enabled = False
+        ids = []
+        for index, x in enumerate([0, 1, 2]):
+            session.add_player(name=f"Player {index + 1}")
+            ids.append(session.selected_id)
+            session._set_position(session.state.enemies[session.selected_id], x, 0)
+
+        session.party_walk(ids[0], 5, 0)
+
+        self.assertEqual((session.state.enemies[ids[0]].grid_x, session.state.enemies[ids[0]].grid_y), (5, 0))
+        self.assertEqual((session.state.enemies[ids[1]].grid_x, session.state.enemies[ids[1]].grid_y), (4, 0))
+        self.assertEqual((session.state.enemies[ids[2]].grid_x, session.state.enemies[ids[2]].grid_y), (3, 0))
+
+    def test_party_walk_stops_after_revealing_enemy_room(self) -> None:
+        session = self.context.create_session("party-walk-encounter")
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[0, 0], [1, 0], [2, 0], [3, 0]])
+        session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
+        session.edit_dungeon_walls("door", [{"x": 1, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.dungeon.walls["0,0,e"].door_open = True
+        session.dungeon.walls["1,0,e"].door_open = True
+        session.dungeon.fog_of_war_enabled = True
+        session.add_player()
+        player_id = session.selected_id
+        session._set_position(session.state.enemies[player_id], 0, 0)
+        start_room = session.state.enemies[player_id].room_id
+        session.dungeon.revealed_room_ids = [start_room]
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        session._set_position(session.state.enemies[goblin_id], 3, 0)
+
+        result = session.party_walk(player_id, 2, 0)
+
+        self.assertTrue(result["partyWalk"]["stoppedForEncounter"])
+        self.assertEqual(result["partyWalk"]["actualDestination"], {"x": 2, "y": 0})
+        enemy_room = session.state.enemies[goblin_id].room_id
+        self.assertIn(enemy_room, session.dungeon.revealed_room_ids)
+        self.assertIn(enemy_room, session.dungeon.pending_encounter_room_ids)
+        self.assertEqual((session.state.enemies[player_id].grid_x, session.state.enemies[player_id].grid_y), (2, 0))
+
+    def test_party_walk_failure_does_not_partially_move_or_reveal(self) -> None:
+        session = self.context.create_session("party-walk-atomic")
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[0, 0]])
+        session.analyze_dungeon()
+        session.add_player(name="Leader")
+        leader_id = session.selected_id
+        session._set_position(session.state.enemies[leader_id], 0, 0)
+        session.add_player(name="Follower")
+        follower_id = session.selected_id
+        session._set_position(session.state.enemies[follower_id], 0, 0)
+        session.dungeon.revealed_room_ids = []
+
+        with self.assertRaisesRegex(ValueError, "No valid Party Walk formation cell"):
+            session.party_walk(leader_id, 0, 0)
+
+        self.assertEqual((session.state.enemies[leader_id].grid_x, session.state.enemies[leader_id].grid_y), (0, 0))
+        self.assertEqual((session.state.enemies[follower_id].grid_x, session.state.enemies[follower_id].grid_y), (0, 0))
+        self.assertEqual(session.dungeon.revealed_room_ids, [])
+
+    def test_party_walk_rejects_active_turn_pending_encounter_and_grappled_party(self) -> None:
+        session = self.context.create_session("party-walk-reject")
+        session.add_player(name="Leader")
+        leader_id = session.selected_id
+        session.add_player(name="Follower")
+        follower_id = session.selected_id
+        session.active_turn_id = leader_id
+        with self.assertRaisesRegex(ValueError, "outside active combat"):
+            session.party_walk(leader_id, 0, 0)
+
+        session.active_turn_id = None
+        session.dungeon = None
+        session.pending_opportunity = {"kind": "test"}
+        with self.assertRaisesRegex(ValueError, "pending opportunity"):
+            session.party_walk(leader_id, 0, 0)
+
+        session.pending_opportunity = None
+        session._apply_grapple(session.state.enemies[leader_id], session.state.enemies[follower_id], 2)
+        with self.assertRaisesRegex(ValueError, "Grappled"):
+            session.party_walk(leader_id, 0, 0)
+
+        session.state.grapples.clear()
+        session.add_enemy_from_template("C_GOBLIN")
+        session.encounter_started = True
+        session.active_turn_id = None
+        with self.assertRaisesRegex(ValueError, "outside active combat"):
+            session.party_walk(leader_id, 0, 0)
+
     def test_copy_entity_creates_fresh_premade_enemy_next_to_source(self) -> None:
         session = self.context.create_session("copy-premade")
         session.add_enemy_from_template("C_GOBLIN")
@@ -1700,6 +1814,49 @@ class BattleSessionTests(unittest.TestCase):
         self.assertTrue(player.power_draw_used)
         payload = session.snapshot()["enemies"][0]
         self.assertEqual(payload["wound_counts"], {"hand": 1, "discard": 0, "draw_pile": 0, "total": 1})
+
+    def test_player_draw_of_power_resolves_legacy_player_card_ids(self) -> None:
+        session = self.context.create_session("player-legacy-dop")
+        session.add_player(name="Mira", power=4)
+        player = session.state.enemies[session.selected_id]
+        player.deck_state.hand = []
+        player.deck_state.discard_pile = []
+        player.deck_state.draw_pile = [
+            "hf_martial_1_fail",
+            "hf_master_fate_reshuffle",
+            "hf_void_fate",
+            "hf_martial_1_fail",
+        ]
+
+        session.draw_turn()
+
+        payload = session.snapshot()["enemies"][0]
+        self.assertEqual(
+            payload["current_draw_text"],
+            [
+                "Martial energy fail",
+                "Master energy fate (reshuffle at end turn)",
+                "Void fate",
+                "Martial energy fail",
+            ],
+        )
+        self.assertEqual(payload["current_draw_summary"]["energies"], {"Martial": 2, "Master": 1})
+        self.assertEqual(payload["current_draw_summary"]["outcomes"], {"success": 0, "fate": 2, "fail": 2})
+        self.assertEqual(
+            payload["power_draw_cards"],
+            [
+                {"energy_type": "Martial", "energy_amount": 1, "outcome": "fail", "title": "Martial energy fail"},
+                {
+                    "energy_type": "Master",
+                    "energy_amount": 1,
+                    "outcome": "fate",
+                    "title": "Master energy fate (reshuffle at end turn)",
+                },
+                {"energy_type": "Void", "energy_amount": 0, "outcome": "fate", "title": "Void fate"},
+                {"energy_type": "Martial", "energy_amount": 1, "outcome": "fail", "title": "Martial energy fail"},
+            ],
+        )
+        self.assertTrue(player.pending_reshuffle)
 
     def test_player_draw_exact_ignores_hand_wounds_and_drawn_wounds_count_as_fails(self) -> None:
         session = self.context.create_session("player-draw-x-wound")

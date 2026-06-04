@@ -71,6 +71,7 @@ const DEFAULT_ROOM = { columns: 10, rows: 7 };
 const MAP_MODES = {
   IDLE: "idle",
   MOVE: "move",
+  PARTY_WALK: "party-walk",
   REPOSITION: "reposition",
   GM_REPOSITION: "gm-reposition",
   GM_DUNGEON: "gm-dungeon",
@@ -1090,6 +1091,16 @@ function App() {
     selectedIsActive && movementState?.entityId === selectedEntity?.instance_id && movementState?.movementStopped
       ? 0
       : Math.max(0, selectedMovementBase * 2 - selectedMovementUsed);
+  const pendingOpportunity = snapshot?.pendingOpportunity ?? null;
+  const pendingSearch = snapshot?.pendingSearch ?? null;
+  const pendingEncounterRoomIds = dungeon?.pendingEncounterRoomIds || [];
+  const hasLiveOrderedEnemy = orderIds.some((instanceId) => {
+    const entity = orderedEnemies.find((candidate) => candidate.instance_id === instanceId);
+    return entity && !entity.is_player && !entity.is_down;
+  });
+  const partyWalkBlockedByCombat = Boolean(
+    (snapshot?.encounterStarted || pendingNewRound) && hasLiveOrderedEnemy,
+  );
   const canUseMove = Boolean(
     selectedEntity &&
       selectedIsActive &&
@@ -1100,10 +1111,28 @@ function App() {
   const canReposition = Boolean(selectedEntity);
   const isGmRepositionMode = mapMode === MAP_MODES.GM_REPOSITION;
   const isGmDungeonMode = mapMode === MAP_MODES.GM_DUNGEON;
+  const isPartyWalkMode = mapMode === MAP_MODES.PARTY_WALK;
   const canUseGmReposition = orderedEnemies.length > 0;
+  const canUsePartyWalk = Boolean(
+    selectedEntity &&
+      isPlayerSelected &&
+      !selectedIsDown &&
+      hasGridPosition(selectedEntity, room, dungeon) &&
+      !snapshot?.activeTurnId &&
+      !snapshot?.turnInProgress &&
+      !partyWalkBlockedByCombat &&
+      !pendingOpportunity &&
+      pendingEncounterRoomIds.length === 0,
+  );
   const fogOfWarEnabled = dungeon?.fogOfWarEnabled ?? true;
   const visibleRoomIds = new Set(dungeon?.visibleRoomIds || []);
   const revealedRoomIdSet = new Set(dungeon?.revealedRoomIds || []);
+
+  useEffect(() => {
+    if (mapMode === MAP_MODES.PARTY_WALK && !canUsePartyWalk) {
+      setMapMode(MAP_MODES.IDLE);
+    }
+  }, [mapMode, canUsePartyWalk]);
 
   useEffect(() => {
     if (!RECTANGLE_PALETTES.has(gmDungeonPalette) && gmDungeonTool === GM_DUNGEON_TOOLS.RECTANGLE) {
@@ -1186,8 +1215,6 @@ function App() {
     : [];
   const canHelp = isPlayerSelected && !selectedIsDown && pcEntitiesInRange.length > 0;
 
-  const pendingOpportunity = snapshot?.pendingOpportunity ?? null;
-  const pendingSearch = snapshot?.pendingSearch ?? null;
   const currentPcRoomId = selectedEntity?.room_id ?? null;
   const roomAlreadySearched = Boolean(currentPcRoomId && (dungeon?.searchedRoomIds || []).includes(currentPcRoomId));
   const canSearch = Boolean(
@@ -1940,9 +1967,33 @@ function App() {
     }
   }
 
+  async function submitPartyWalk(x, y) {
+    if (!selectedEntity || !snapshot?.sid || busy) {
+      return;
+    }
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/action/party-walk`,
+      {
+        method: "POST",
+        body: JSON.stringify({ leaderId: selectedEntity.instance_id, x, y }),
+      },
+      "",
+    );
+    if (payload) {
+      const stopped = Boolean(payload.partyWalk?.stoppedForEncounter || payload.dungeon?.pendingEncounterRoomIds?.length);
+      setSelectedUnitIds(payload.partyWalk?.movedEntityIds || [selectedEntity.instance_id]);
+      setMapMode(stopped ? MAP_MODES.IDLE : MAP_MODES.PARTY_WALK);
+      setNotice(stopped ? "Party walk stopped: encounter discovered" : "Party walk");
+    }
+  }
+
   async function handleMoveSelectedToCell(x, y, target = {}) {
     if (mapMode === MAP_MODES.REPOSITION || mapMode === MAP_MODES.GM_REPOSITION) {
       await submitReposition(x, y);
+      return;
+    }
+    if (mapMode === MAP_MODES.PARTY_WALK) {
+      await submitPartyWalk(x, y);
       return;
     }
     if (mapMode !== MAP_MODES.MOVE) {
@@ -3003,6 +3054,18 @@ function App() {
                 >
                   {mapMode === MAP_MODES.MOVE ? "Cancel Move" : "Move"}
                 </button>
+                {isPlayerSelected ? (
+                  <button
+                    className={`secondary-button ${isPartyWalkMode ? "move-button-active" : ""}`.trim()}
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      setMapMode((current) => (current === MAP_MODES.PARTY_WALK ? MAP_MODES.IDLE : MAP_MODES.PARTY_WALK));
+                    }}
+                    disabled={!canUsePartyWalk || busy}
+                  >
+                    {isPartyWalkMode ? "Cancel Party Walk" : "Party Walk"}
+                  </button>
+                ) : null}
                 {hasQuickAttackTarget ? (
                   <button
                     className="primary-button"

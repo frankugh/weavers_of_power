@@ -48,6 +48,10 @@ class MoveRequest(PositionRequest):
     dash: bool = False
 
 
+class PartyWalkRequest(PositionRequest):
+    leaderId: str
+
+
 class CustomEnemyRequest(BaseModel):
     name: str = "Custom"
     toughness: int = Field(default=10, ge=1)
@@ -416,6 +420,13 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
         return run_mutation(
             sid,
             lambda session: session.move_entity_with_movement(instance_id, request.x, request.y, dash=request.dash),
+        )
+
+    @api_app.post("/api/battle/sessions/{sid}/action/party-walk")
+    def party_walk(sid: str, request: PartyWalkRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.party_walk(request.leaderId, request.x, request.y),
         )
 
     @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/wounds/discard")

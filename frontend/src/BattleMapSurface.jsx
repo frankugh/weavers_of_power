@@ -947,7 +947,7 @@ function drawMoveHighlights(
     return;
   }
 
-  const isRepositionMode = mapMode === "reposition" || mapMode === "gm-reposition";
+  const isRepositionMode = mapMode === "reposition" || mapMode === "gm-reposition" || mapMode === "party-walk";
   const usesDungeonGrid = Boolean(dungeon?.tiles);
   if (isRepositionMode) {
     if (usesDungeonGrid) {
@@ -2421,6 +2421,17 @@ function BattleMapSurface({
       isVisibleWalkableRepositionCell(clickCell)
     ) {
       onMoveToCell(clickCell.x, clickCell.y, { mode: "reposition" });
+      return;
+    }
+
+    if (
+      mapMode === "party-walk" &&
+      selectedEntity &&
+      !busy &&
+      !blockingOccupant &&
+      isVisibleWalkableRepositionCell(clickCell)
+    ) {
+      onMoveToCell(clickCell.x, clickCell.y, { mode: "party-walk" });
       return;
     }
 
