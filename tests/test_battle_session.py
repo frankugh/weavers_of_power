@@ -8,7 +8,7 @@ from battle_session import BattleSession, BattleSessionContext
 from engine.combat import WOUND_CARD_ID, apply_attack
 from engine.loader import load_decks, load_enemies
 from engine.models import Card, Effect
-from persistence import save_current
+from persistence import load_save_payload, save_current
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -1641,16 +1641,55 @@ class BattleSessionTests(unittest.TestCase):
         )
 
         save_info = session.save_manual("manual-load")
+        self.assertEqual(session.active_save_filename, save_info["save"]["filename"])
         session.delete_entity(selected_id)
         self.assertEqual(session.order, [])
 
-        session.load_manual(save_info["filename"])
+        session.load_manual(save_info["save"]["filename"])
         reloaded = self.context.load_session("manual-load")
 
         self.assertEqual(len(reloaded.order), 1)
         restored = reloaded.state.enemies[reloaded.selected_id]
         self.assertIn("burn", restored.statuses)
-        self.assertIn(f"Loaded save: {save_info['filename']}", reloaded.combat_log)
+        self.assertEqual(reloaded.active_save_filename, save_info["save"]["filename"])
+        self.assertIn("Loaded session save: manual-load", reloaded.combat_log)
+
+    def test_session_save_slot_metadata_and_overwrite(self) -> None:
+        session = self.context.create_session("slot-overwrite")
+        session.add_enemy_from_template("C_GOBLIN")
+        save_info = session.save_manual("Campaign Night")
+        filename = save_info["save"]["filename"]
+        path = self.context.manual_dir / filename
+        created_at = save_info["save"]["createdAt"]
+
+        self.assertEqual(save_info["save"]["name"], "Campaign Night")
+        self.assertEqual(session.snapshot()["activeSave"]["filename"], filename)
+
+        session.add_enemy_from_template("C_WOLF")
+        overwrite_info = session.overwrite_manual(filename)
+        payload = load_save_payload(path)
+
+        self.assertEqual(overwrite_info["save"]["filename"], filename)
+        self.assertEqual(overwrite_info["save"]["createdAt"], created_at)
+        self.assertEqual(overwrite_info["save"]["name"], "Campaign Night")
+        self.assertEqual(payload["save_slot"]["filename"], filename)
+        self.assertEqual(payload["save_slot"]["name"], "Campaign Night")
+        self.assertEqual(len(payload["order"]), 2)
+
+    def test_legacy_manual_save_lists_as_session_save_slot(self) -> None:
+        session = self.context.create_session("legacy-slot")
+        payload = session.undo_payload()
+        payload["saved_at"] = "2026-01-01T00:00:00+00:00"
+        path = self.context.manual_dir / "legacy_save_20260101_000000.json"
+        save_current(path, payload)
+
+        saves = session.list_manual_saves()
+
+        self.assertEqual(len(saves), 1)
+        self.assertEqual(saves[0]["filename"], path.name)
+        self.assertEqual(saves[0]["name"], path.stem)
+        self.assertEqual(saves[0]["createdAt"], "2026-01-01T00:00:00+00:00")
+        self.assertFalse(saves[0]["active"])
 
     def test_stab_ignores_one_armor_before_guard_absorbs_damage(self) -> None:
         session = self.context.create_session("stab-armor-before-guard")
@@ -2211,14 +2250,16 @@ class BattleSessionTests(unittest.TestCase):
     def test_delete_manual_save_removes_file_and_backup(self) -> None:
         session = self.context.create_session("manual-delete")
         save_info = session.save_manual("delete-me")
-        path = self.context.manual_dir / save_info["filename"]
+        path = self.context.manual_dir / save_info["save"]["filename"]
         backup = path.with_suffix(path.suffix + ".bak")
         backup.write_text("{}", encoding="utf-8")
+        self.assertEqual(session.active_save_filename, save_info["save"]["filename"])
 
-        session.delete_manual(save_info["filename"])
+        session.delete_manual(save_info["save"]["filename"])
 
         self.assertFalse(path.exists())
         self.assertFalse(backup.exists())
+        self.assertIsNone(session.active_save_filename)
         self.assertEqual(session.list_manual_saves(), [])
 
     def test_loaded_template_enemy_deck_migrates_to_current_template_core_deck(self) -> None:

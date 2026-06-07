@@ -1049,6 +1049,7 @@ function App() {
   const orderIds = snapshot?.order || [];
   const enemies = snapshot?.enemies || [];
   const room = snapshot?.room || DEFAULT_ROOM;
+  const activeSave = snapshot?.activeSave || null;
   const orderedEnemies = orderEntities(orderIds, enemies);
   const selectedEntity =
     orderedEnemies.find((entity) => entity.instance_id === snapshot?.selectedId) || orderedEnemies[0] || null;
@@ -1500,12 +1501,21 @@ function App() {
     setError("");
     try {
       const payload = await requestJson(`/api/battle/sessions/${snapshot.sid}/saves`);
-      setSaves(payload.saves || []);
+      const nextSaves = payload.saves || [];
+      setSaves(nextSaves);
+      return nextSaves;
     } catch (requestError) {
       setError(requestError.message);
+      return [];
     } finally {
       setBusy(false);
     }
+  }
+
+  async function openSaveAsModal() {
+    await refreshSaveList();
+    setSaveName(activeSave?.name || "session");
+    setModal("save-as");
   }
 
   async function openLoadModal() {
@@ -2503,6 +2513,20 @@ function App() {
     }
   }
 
+  async function handleSaveClick() {
+    if (!activeSave?.filename) {
+      await openSaveAsModal();
+      return;
+    }
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/saves/${encodeURIComponent(activeSave.filename)}`,
+      {
+        method: "PUT",
+      },
+      "Session saved",
+    );
+  }
+
   async function handleSaveSubmit(event) {
     event.preventDefault();
     const payload = await applySnapshotRequest(
@@ -2511,7 +2535,20 @@ function App() {
         method: "POST",
         body: JSON.stringify({ name: saveName }),
       },
-      "Manual save created",
+      "Session save created",
+    );
+    if (payload) {
+      closeModal();
+    }
+  }
+
+  async function handleOverwriteSave(filename) {
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/saves/${encodeURIComponent(filename)}`,
+      {
+        method: "PUT",
+      },
+      "Session save updated",
     );
     if (payload) {
       closeModal();
@@ -2525,7 +2562,7 @@ function App() {
         method: "POST",
         body: JSON.stringify({ filename }),
       },
-      "Manual save loaded",
+      "Session save loaded",
     );
     if (payload) {
       closeModal();
@@ -2543,7 +2580,10 @@ function App() {
         method: "DELETE",
       });
       setSaves(payload.saves || []);
-      setNotice("Manual save deleted");
+      if (Object.prototype.hasOwnProperty.call(payload, "activeSave")) {
+        setSnapshot((current) => (current ? { ...current, activeSave: payload.activeSave } : current));
+      }
+      setNotice("Session save deleted");
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -2657,13 +2697,13 @@ function App() {
               </button>
               <button
                 className="menu-button"
-                onClick={() => {
-                  setSaveName("session");
-                  setModal("save");
-                }}
+                onClick={handleSaveClick}
                 disabled={busy}
               >
                 Save
+              </button>
+              <button className="menu-button" onClick={openSaveAsModal} disabled={busy}>
+                Save As
               </button>
               <button className="menu-button" onClick={openLoadModal} disabled={busy}>
                 Load
@@ -4589,40 +4629,69 @@ function App() {
       </ModalShell>
 
       <ModalShell
-        open={modal === "save"}
-        title="Manual save"
-        subtitle="Stores the current autosaved session as a named manual snapshot."
+        open={modal === "save-as"}
+        title="Save session"
+        subtitle="Create a new session save or overwrite an existing one."
         onClose={closeModal}
       >
         <form className="modal-form" onSubmit={handleSaveSubmit}>
           <label className="field">
-            <span>Save name</span>
+            <span>New save name</span>
             <input type="text" value={saveName} onChange={(event) => setSaveName(event.target.value)} />
           </label>
           <div className="modal-actions">
             <button className="primary-button" type="submit" disabled={busy}>
-              Save snapshot
+              Create new save
             </button>
             <button className="secondary-button" type="button" onClick={closeModal}>
               Cancel
             </button>
           </div>
         </form>
+        <div className="form-section">
+          <div className="form-section-title">Overwrite existing save</div>
+          <div className="save-list">
+            {saves.length ? (
+              saves.map((save) => (
+                <div className={`save-row ${save.active ? "save-row-active" : ""}`.trim()} key={save.filename}>
+                  <div className="save-slot-info">
+                    <span className="save-slot-title">
+                      <span>{save.label}</span>
+                      {save.active ? <span className="save-active-badge">Active</span> : null}
+                    </span>
+                    <span className="save-slot-meta">{save.updatedAt || save.savedAt || save.filename}</span>
+                  </div>
+                  <button className="small-button" type="button" onClick={() => handleOverwriteSave(save.filename)} disabled={busy}>
+                    Overwrite
+                  </button>
+                </div>
+              ))
+            ) : (
+              <div className="subtle-copy">No session saves to overwrite.</div>
+            )}
+          </div>
+        </div>
       </ModalShell>
 
       <ModalShell
         open={modal === "load"}
-        title="Load manual save"
-        subtitle="Loads a saved snapshot into the current session id."
+        title="Load session save"
+        subtitle="Loads a saved session into the current session id."
         onClose={closeModal}
       >
         <div className="save-list">
           {saves.length ? (
             saves.map((save) => (
-              <div className="save-row" key={save.filename}>
-                <button className="save-load-button" onClick={() => handleLoadSubmit(save.filename)} disabled={busy}>
-                  <span>{save.label}</span>
-                  <span>{save.savedAt || save.filename}</span>
+              <div className={`save-row ${save.active ? "save-row-active" : ""}`.trim()} key={save.filename}>
+                <div className="save-slot-info">
+                  <span className="save-slot-title">
+                    <span>{save.label}</span>
+                    {save.active ? <span className="save-active-badge">Active</span> : null}
+                  </span>
+                  <span className="save-slot-meta">{save.updatedAt || save.savedAt || save.filename}</span>
+                </div>
+                <button className="small-button" type="button" onClick={() => handleLoadSubmit(save.filename)} disabled={busy}>
+                  Load
                 </button>
                 <button
                   className="save-delete-button"
@@ -4636,7 +4705,7 @@ function App() {
               </div>
             ))
           ) : (
-            <div className="subtle-copy">No manual saves found for this workspace.</div>
+            <div className="subtle-copy">No session saves found for this workspace.</div>
           )}
         </div>
       </ModalShell>

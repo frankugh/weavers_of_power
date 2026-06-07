@@ -1089,12 +1089,122 @@ describe("App", () => {
     expect(saveBody.infoOverrides.playtestStatus).toBe("Retest_Needed");
   });
 
-  it("deletes manual saves from the load modal", async () => {
+  it("opens save as when saving without an active slot and creates a new session save", async () => {
+    const user = userEvent.setup();
+    let saveBody = null;
+    const activeSave = {
+      filename: "night_20260607_110000.json",
+      name: "Night",
+      label: "Night",
+      updatedAt: "2026-06-07T11:00:00+00:00",
+      active: true,
+    };
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/saves" && !requestOptions?.method) {
+          return jsonResponse({ saves: [] });
+        }
+        if (url === "/api/battle/sessions/sid-123/saves" && requestOptions?.method === "POST") {
+          saveBody = JSON.parse(requestOptions.body);
+          return jsonResponse({
+            ...buildSnapshot({ activeSave, combatLog: ["Session save created: Night"] }),
+            save: activeSave,
+          });
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Save session")).toBeInTheDocument();
+
+    const nameInput = screen.getByLabelText("New save name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Night");
+    await user.click(screen.getByRole("button", { name: "Create new save" }));
+
+    await waitFor(() => expect(saveBody).toEqual({ name: "Night" }));
+    expect(await screen.findByText("Session save created")).toBeInTheDocument();
+  });
+
+  it("saves an active slot directly from the top bar", async () => {
+    const user = userEvent.setup();
+    const activeSave = {
+      filename: "night_20260607_110000.json",
+      name: "Night",
+      label: "Night",
+      updatedAt: "2026-06-07T11:00:00+00:00",
+      active: true,
+    };
+    let putCalled = false;
+
+    renderWithSnapshot(buildSnapshot({ activeSave }), {
+      extraFetch: (url, requestOptions) => {
+        if (
+          url === `/api/battle/sessions/sid-123/saves/${encodeURIComponent(activeSave.filename)}`
+          && requestOptions?.method === "PUT"
+        ) {
+          putCalled = true;
+          return jsonResponse({ ...buildSnapshot({ activeSave }), save: activeSave });
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(putCalled).toBe(true));
+    expect(screen.queryByText("Save session")).not.toBeInTheDocument();
+    expect(await screen.findByText("Session saved")).toBeInTheDocument();
+  });
+
+  it("overwrites an existing session save from save as", async () => {
     const user = userEvent.setup();
     const save = {
       filename: "old_load_20260101_162506.json",
-      label: "old_load_20260101_162506",
-      savedAt: "2026-01-01T16:25:06+00:00",
+      name: "Old Load",
+      label: "Old Load",
+      updatedAt: "2026-01-01T16:25:06+00:00",
+      active: false,
+    };
+    let putCalled = false;
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/saves" && !requestOptions?.method) {
+          return jsonResponse({ saves: [save] });
+        }
+        if (
+          url === `/api/battle/sessions/sid-123/saves/${encodeURIComponent(save.filename)}`
+          && requestOptions?.method === "PUT"
+        ) {
+          putCalled = true;
+          return jsonResponse({ ...buildSnapshot({ activeSave: { ...save, active: true } }), save: { ...save, active: true } });
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Save As" }));
+    expect(await screen.findByText("Old Load")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Overwrite" }));
+
+    await waitFor(() => expect(putCalled).toBe(true));
+    expect(await screen.findByText("Session save updated")).toBeInTheDocument();
+  });
+
+  it("deletes session saves from the load modal", async () => {
+    const user = userEvent.setup();
+    const save = {
+      filename: "old_load_20260101_162506.json",
+      name: "Old Load",
+      label: "Old Load",
+      updatedAt: "2026-01-01T16:25:06+00:00",
+      active: true,
     };
 
     renderWithSnapshot(buildSnapshot(), {
@@ -1106,7 +1216,7 @@ describe("App", () => {
           url === `/api/battle/sessions/sid-123/saves/${encodeURIComponent(save.filename)}`
           && requestOptions?.method === "DELETE"
         ) {
-          return jsonResponse({ saves: [] });
+          return jsonResponse({ saves: [], activeSave: null });
         }
         return undefined;
       },
@@ -1115,13 +1225,14 @@ describe("App", () => {
     await findMapToken("Goblin 1");
     await user.click(screen.getByRole("button", { name: "Load" }));
     expect(await screen.findByText(save.label)).toBeInTheDocument();
+    expect(await screen.findByText("Active")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: `Delete save ${save.label}` }));
 
     await waitFor(() => {
-      expect(screen.getByText("No manual saves found for this workspace.")).toBeInTheDocument();
+      expect(screen.getByText("No session saves found for this workspace.")).toBeInTheDocument();
     });
-    expect(await screen.findByText("Manual save deleted")).toBeInTheDocument();
+    expect(await screen.findByText("Session save deleted")).toBeInTheDocument();
     expect(global.fetch).toHaveBeenCalledWith(
       `/api/battle/sessions/sid-123/saves/${encodeURIComponent(save.filename)}`,
       expect.objectContaining({ method: "DELETE" }),

@@ -463,6 +463,7 @@ class BattleSession:
     dungeon: Optional[DungeonState] = None
     pending_search: Optional[dict] = None
     pending_opportunity: Optional[dict] = None
+    active_save_filename: Optional[str] = None
     turn_skip_notice: list = field(default_factory=list)
     undo_stack: list[dict] = field(default_factory=list)
     redo_stack: list[dict] = field(default_factory=list)
@@ -542,6 +543,8 @@ class BattleSession:
         self.pending_search = dict(ps_raw) if isinstance(ps_raw, dict) else None
         po_raw = payload.get("pending_opportunity")
         self.pending_opportunity = copy.deepcopy(po_raw) if isinstance(po_raw, dict) else None
+        active_save = payload.get("active_save_filename")
+        self.active_save_filename = str(active_save) if active_save else None
         if load_undo_stack:
             self.undo_stack = [dict(entry) for entry in payload.get("undo_stack", [])][-UNDO_LIMIT:]
             self.redo_stack = [dict(entry) for entry in payload.get("redo_stack", [])][-UNDO_LIMIT:]
@@ -583,6 +586,7 @@ class BattleSession:
             payload["pending_search"] = dict(self.pending_search)
         if self.pending_opportunity is not None:
             payload["pending_opportunity"] = copy.deepcopy(self.pending_opportunity)
+        payload["active_save_filename"] = self.active_save_filename
         return payload
 
     def undo_payload(self) -> dict:
@@ -636,6 +640,7 @@ class BattleSession:
             "canRedo": bool(self.redo_stack),
             "redoDepth": len(self.redo_stack),
             "dungeon": self._dungeon_snapshot(),
+            "activeSave": self.active_save_snapshot(),
             "pendingSearch": {
                 "entityId": self.pending_search["entity_id"],
                 "roomId": self.pending_search["room_id"],
@@ -650,16 +655,38 @@ class BattleSession:
     def list_manual_saves(self) -> list[dict]:
         entries: list[dict] = []
         for path in sorted(self.context.manual_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-            payload = load_save_payload(path)
-            saved_at = (payload or {}).get("saved_at")
-            entries.append(
-                {
-                    "filename": path.name,
-                    "savedAt": saved_at,
-                    "label": path.stem,
-                }
-            )
+            entries.append(self._manual_save_entry(path))
         return entries
+
+    def active_save_snapshot(self) -> Optional[dict]:
+        if not self.active_save_filename:
+            return None
+        try:
+            path = self._manual_save_path(self.active_save_filename)
+        except BattleSessionError:
+            return None
+        if not path.exists() or not path.is_file():
+            return None
+        return self._manual_save_entry(path)
+
+    def _manual_save_entry(self, path: Path, payload: Optional[dict] = None) -> dict:
+        payload = payload if payload is not None else (load_save_payload(path) or {})
+        metadata = payload.get("save_slot", {}) if isinstance(payload, dict) else {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        saved_at = payload.get("saved_at") if isinstance(payload, dict) else None
+        created_at = metadata.get("createdAt") or metadata.get("created_at") or saved_at
+        updated_at = metadata.get("updatedAt") or metadata.get("updated_at") or saved_at
+        name = str(metadata.get("name") or path.stem)
+        return {
+            "filename": path.name,
+            "name": name,
+            "label": name,
+            "createdAt": created_at,
+            "updatedAt": updated_at,
+            "savedAt": updated_at,
+            "active": path.name == self.active_save_filename,
+        }
 
     def delete_manual(self, filename: str) -> None:
         path = self._manual_save_path(filename)
@@ -669,6 +696,9 @@ class BattleSession:
         backup = path.with_suffix(path.suffix + ".bak")
         if backup.exists() and backup.is_file():
             backup.unlink()
+        if self.active_save_filename == filename:
+            self.active_save_filename = None
+            self.autosave()
 
     def select(self, instance_id: str) -> None:
         if instance_id not in self.state.enemies:
@@ -3718,13 +3748,42 @@ class BattleSession:
         self.autosave()
 
     def save_manual(self, name: str) -> dict:
-        filename = f"{safe_filename(name)}_{now_stamp()}.json"
-        self._add_log(f"Manual save created: {filename}")
-        payload = self._build_payload(include_undo_stack=False)
+        display_name = str(name or "").strip() or "Session save"
+        filename = self._new_manual_save_filename(display_name)
         path = self.context.manual_dir / filename
+        self.active_save_filename = filename
+        payload = self._build_payload(include_undo_stack=False)
+        saved_at = payload.get("saved_at")
+        payload["save_slot"] = {
+            "filename": filename,
+            "name": display_name,
+            "createdAt": saved_at,
+            "updatedAt": saved_at,
+        }
         save_current(path, payload)
+        self._add_log(f"Session save created: {display_name}")
         self.autosave()
-        return {"filename": filename}
+        return {"save": self._manual_save_entry(path, payload)}
+
+    def overwrite_manual(self, filename: str) -> dict:
+        path = self._manual_save_path(filename)
+        if not path.exists() or not path.is_file():
+            raise BattleSessionError("Save not found")
+        previous_payload = load_save_payload(path) or {}
+        previous_entry = self._manual_save_entry(path, previous_payload)
+        self.active_save_filename = filename
+        payload = self._build_payload(include_undo_stack=False)
+        saved_at = payload.get("saved_at")
+        payload["save_slot"] = {
+            "filename": filename,
+            "name": previous_entry["name"],
+            "createdAt": previous_entry.get("createdAt") or saved_at,
+            "updatedAt": saved_at,
+        }
+        save_current(path, payload)
+        self._add_log(f"Session save updated: {previous_entry['name']}")
+        self.autosave()
+        return {"save": self._manual_save_entry(path, payload)}
 
     def load_manual(self, filename: str) -> None:
         path = self._manual_save_path(filename)
@@ -3732,8 +3791,22 @@ class BattleSession:
         if not payload:
             raise BattleSessionError("Could not load save")
         self.load_from_payload(payload, load_undo_stack=False)
-        self._add_log(f"Loaded save: {path.name}")
+        self.active_save_filename = filename
+        entry = self._manual_save_entry(path, payload)
+        self._add_log(f"Loaded session save: {entry['name']}")
         self.autosave()
+
+    def _new_manual_save_filename(self, name: str) -> str:
+        base = safe_filename(name)
+        stamp = now_stamp()
+        filename = f"{base}_{stamp}.json"
+        if not (self.context.manual_dir / filename).exists():
+            return filename
+        for suffix in range(2, 1000):
+            candidate = f"{base}_{stamp}_{suffix}.json"
+            if not (self.context.manual_dir / candidate).exists():
+                return candidate
+        raise BattleSessionError("Could not create a unique save filename")
 
     def _manual_save_path(self, filename: str) -> Path:
         path = (self.context.manual_dir / filename).resolve()

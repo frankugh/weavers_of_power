@@ -332,23 +332,35 @@ class BattleApiTests(unittest.TestCase):
 
         save_response = self.client.post(f"/api/battle/sessions/{sid}/saves", json={"name": "api-save"})
         self.assertEqual(save_response.status_code, 200)
-        self.assertIn("Manual save created", save_response.json()["combatLog"][0])
+        save_payload = save_response.json()
+        self.assertIn("Session save created", save_payload["combatLog"][0])
+        self.assertEqual(save_payload["save"]["name"], "api-save")
+        self.assertEqual(save_payload["activeSave"]["filename"], save_payload["save"]["filename"])
 
         saves_response = self.client.get(f"/api/battle/sessions/{sid}/saves")
         self.assertEqual(saves_response.status_code, 200)
         saves = saves_response.json()["saves"]
         self.assertEqual(len(saves), 1)
+        self.assertTrue(saves[0]["active"])
+        self.assertEqual(saves[0]["name"], "api-save")
+
+        self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"})
+        overwrite_response = self.client.put(f"/api/battle/sessions/{sid}/saves/{saves[0]['filename']}")
+        self.assertEqual(overwrite_response.status_code, 200)
+        self.assertEqual(overwrite_response.json()["save"]["filename"], saves[0]["filename"])
+        self.assertEqual(overwrite_response.json()["activeSave"]["filename"], saves[0]["filename"])
 
         delete_response = self.client.delete(f"/api/battle/sessions/{sid}/entities/{entity_id}")
         self.assertEqual(delete_response.status_code, 200)
-        self.assertEqual(delete_response.json()["order"], [])
+        self.assertEqual(len(delete_response.json()["order"]), 1)
 
         load_response = self.client.post(
             f"/api/battle/sessions/{sid}/load",
             json={"filename": saves[0]["filename"]},
         )
         self.assertEqual(load_response.status_code, 200)
-        self.assertEqual(len(load_response.json()["order"]), 1)
+        self.assertEqual(len(load_response.json()["order"]), 2)
+        self.assertEqual(load_response.json()["activeSave"]["filename"], saves[0]["filename"])
 
     def test_manual_save_delete_endpoint(self) -> None:
         snapshot = self.client.post("/api/battle/sessions").json()
@@ -363,6 +375,7 @@ class BattleApiTests(unittest.TestCase):
 
         self.assertEqual(delete_response.status_code, 200)
         self.assertEqual(delete_response.json()["saves"], [])
+        self.assertIsNone(delete_response.json()["activeSave"])
         self.assertEqual(self.client.get(f"/api/battle/sessions/{sid}/saves").json()["saves"], [])
 
     def test_new_taxonomy_templates_can_be_added(self) -> None:

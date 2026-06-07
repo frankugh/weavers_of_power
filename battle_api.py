@@ -586,6 +586,10 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def create_manual_save(sid: str, request: SaveRequest):
         return run_mutation(sid, lambda session: session.save_manual(request.name), undoable=False)
 
+    @api_app.put("/api/battle/sessions/{sid}/saves/{filename}")
+    def overwrite_manual_save(sid: str, filename: str):
+        return run_mutation(sid, lambda session: session.overwrite_manual(filename), undoable=False)
+
     @api_app.delete("/api/battle/sessions/{sid}/saves/{filename}")
     def delete_manual_save(sid: str, filename: str):
         session = load_session_or_400(sid)
@@ -593,7 +597,7 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
             session.delete_manual(filename)
         except BattleSessionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"saves": session.list_manual_saves()}
+        return {"saves": session.list_manual_saves(), "activeSave": session.active_save_snapshot()}
 
     @api_app.post("/api/battle/sessions/{sid}/load")
     def load_manual_save(sid: str, request: LoadRequest):
