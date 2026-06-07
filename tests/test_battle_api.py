@@ -257,7 +257,7 @@ class BattleApiTests(unittest.TestCase):
         undone = self.client.post(f"/api/battle/sessions/{sid}/undo").json()
         self.assertEqual([enemy["instance_id"] for enemy in undone["enemies"]], [source_id])
 
-    def test_entity_loot_endpoint_targets_path_entity(self) -> None:
+    def test_entity_loot_inspect_endpoint_targets_path_entity(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         goblin_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()["selectedId"]
         wolf_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"}).json()["selectedId"]
@@ -266,7 +266,7 @@ class BattleApiTests(unittest.TestCase):
         session.selected_id = wolf_id
         session.autosave()
 
-        response = self.client.post(f"/api/battle/sessions/{sid}/entities/{goblin_id}/loot")
+        response = self.client.post(f"/api/battle/sessions/{sid}/entities/{goblin_id}/loot/inspect")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -274,7 +274,106 @@ class BattleApiTests(unittest.TestCase):
         goblin = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == goblin_id)
         wolf = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == wolf_id)
         self.assertTrue(goblin["loot_rolled"])
+        self.assertEqual(goblin["loot_state"], "inspected")
         self.assertFalse(wolf["loot_rolled"])
+
+    def test_take_loot_endpoint_adds_inventory_and_rejects_double_take(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        player_id = self.client.post(f"/api/battle/sessions/{sid}/players", json={"name": "Mira"}).json()["selectedId"]
+        enemy_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()["selectedId"]
+        session = self.context.load_session(sid)
+        player = session.state.enemies[player_id]
+        enemy = session.state.enemies[enemy_id]
+        player.grid_x, player.grid_y = 5, 3
+        enemy.grid_x, enemy.grid_y = 4, 3
+        enemy.toughness_current = 0
+        enemy.loot_rolled = True
+        enemy.rolled_loot = {"currency": {"cp": 4}, "resources": {}, "other": ["note"]}
+        session.autosave()
+
+        response = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{enemy_id}/loot/take",
+            json={"playerId": player_id},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["selectedId"], player_id)
+        player_payload = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == player_id)
+        enemy_payload = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == enemy_id)
+        self.assertEqual(player_payload["inventory"]["currency"]["cp"], 4)
+        self.assertEqual(player_payload["inventory"]["other"], ["note"])
+        self.assertEqual(enemy_payload["loot_state"], "taken")
+        self.assertEqual(enemy_payload["loot_taken_by_name"], "Mira")
+
+        rejected = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{enemy_id}/loot/take",
+            json={"playerId": player_id},
+        )
+        self.assertEqual(rejected.status_code, 400)
+        self.assertIn("already been taken", rejected.json()["detail"])
+
+    def test_take_loot_endpoint_charges_action_in_combat(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        player_id = self.client.post(f"/api/battle/sessions/{sid}/players", json={"name": "Mira"}).json()["selectedId"]
+        enemy_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()["selectedId"]
+        session = self.context.load_session(sid)
+        player = session.state.enemies[player_id]
+        enemy = session.state.enemies[enemy_id]
+        player.grid_x, player.grid_y = 5, 3
+        enemy.grid_x, enemy.grid_y = 4, 3
+        enemy.toughness_current = 0
+        enemy.loot_rolled = True
+        enemy.rolled_loot = {"currency": {"cp": 2}, "resources": {}, "other": []}
+        session.encounter_started = True
+        session.active_turn_id = player_id
+        session.autosave()
+
+        response = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{enemy_id}/loot/take",
+            json={"playerId": player_id},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        player_payload = next(enemy for enemy in response.json()["enemies"] if enemy["instance_id"] == player_id)
+        self.assertEqual(player_payload["actions_used"], 1)
+
+    def test_inspect_all_loot_endpoint_skips_hidden_fog_rooms(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        session = self.context.load_session(sid)
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[0, 0], [1, 0], [4, 0]])
+        session.analyze_dungeon()
+        visible_room = next(room.room_id for room in session.dungeon.rooms if any(tuple(cell) == (0, 0) for cell in room.cells))
+        hidden_room = next(room.room_id for room in session.dungeon.rooms if any(tuple(cell) == (4, 0) for cell in room.cells))
+        session.add_player(name="Mira")
+        player = session.state.enemies[session.selected_id]
+        player.grid_x, player.grid_y = 0, 0
+        player.room_id = visible_room
+        session.add_enemy_from_template("C_GOBLIN")
+        visible_enemy_id = session.selected_id
+        visible_enemy = session.state.enemies[visible_enemy_id]
+        visible_enemy.grid_x, visible_enemy.grid_y = 1, 0
+        visible_enemy.room_id = visible_room
+        visible_enemy.toughness_current = 0
+        session.add_enemy_from_template("C_GOBLIN")
+        hidden_enemy_id = session.selected_id
+        hidden_enemy = session.state.enemies[hidden_enemy_id]
+        hidden_enemy.grid_x, hidden_enemy.grid_y = 4, 0
+        hidden_enemy.room_id = hidden_room
+        hidden_enemy.toughness_current = 0
+        session.dungeon.fog_of_war_enabled = True
+        session.dungeon.revealed_room_ids = [visible_room]
+        session.autosave()
+
+        response = self.client.post(f"/api/battle/sessions/{sid}/loot/inspect-all")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        visible_payload = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == visible_enemy_id)
+        hidden_payload = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == hidden_enemy_id)
+        self.assertTrue(visible_payload["loot_rolled"])
+        self.assertFalse(hidden_payload["loot_rolled"])
 
     def test_suspect_interaction_resolves_willpower_and_undoes_as_one_check(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]

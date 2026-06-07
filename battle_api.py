@@ -134,6 +134,10 @@ class HealRequest(BaseModel):
     guard: int = Field(default=0, ge=0)
 
 
+class TakeLootRequest(BaseModel):
+    playerId: str
+
+
 class SaveRequest(BaseModel):
     name: str = "session"
 
@@ -419,6 +423,14 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def roll_entity_loot(sid: str, instance_id: str):
         return run_mutation(sid, lambda session: session.roll_loot_for_entity(instance_id))
 
+    @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/loot/inspect")
+    def inspect_entity_loot(sid: str, instance_id: str):
+        return run_mutation(sid, lambda session: session.inspect_loot_for_entity(instance_id))
+
+    @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/loot/take")
+    def take_entity_loot(sid: str, instance_id: str, request: TakeLootRequest):
+        return run_mutation(sid, lambda session: session.take_loot_for_player(instance_id, request.playerId))
+
     @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/move")
     def move_entity_with_movement(sid: str, instance_id: str, request: MoveRequest):
         return run_mutation(
@@ -580,6 +592,10 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.post("/api/battle/sessions/{sid}/loot")
     def roll_loot(sid: str):
         return run_mutation(sid, lambda session: session.roll_loot_for_selected())
+
+    @api_app.post("/api/battle/sessions/{sid}/loot/inspect-all")
+    def inspect_all_visible_loot(sid: str):
+        return run_mutation(sid, lambda session: session.inspect_all_visible_loot())
 
     @api_app.get("/api/battle/sessions/{sid}/saves")
     def list_manual_saves(sid: str):

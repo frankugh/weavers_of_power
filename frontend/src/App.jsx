@@ -410,6 +410,27 @@ function isTemplateLootable(entity) {
   );
 }
 
+function normalizeLootPayload(raw) {
+  const payload = raw && typeof raw === "object" ? raw : {};
+  return {
+    currency: payload.currency && typeof payload.currency === "object" ? payload.currency : {},
+    resources: payload.resources && typeof payload.resources === "object" ? payload.resources : {},
+    other: Array.isArray(payload.other) ? payload.other : [],
+  };
+}
+
+function hasAnyLoot(raw) {
+  const loot = normalizeLootPayload(raw);
+  return Object.keys(loot.currency).length > 0 || Object.keys(loot.resources).length > 0 || loot.other.length > 0;
+}
+
+function lootPairsText(values) {
+  return Object.entries(values || {})
+    .filter(([, amount]) => Number(amount) !== 0)
+    .map(([key, amount]) => `${key}: ${amount}`)
+    .join(", ");
+}
+
 const ENERGY_TYPE_LABELS = {
   master: "Master",
   martial: "Martial",
@@ -787,6 +808,7 @@ function App() {
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [unitContextMenu, setUnitContextMenu] = useState(null);
   const [previewEntityId, setPreviewEntityId] = useState(null);
+  const [lootPopoverOpen, setLootPopoverOpen] = useState(false);
   const [drawReveal, setDrawReveal] = useState(null);
   const [drawDetail, setDrawDetail] = useState(null);
   const [woundNotice, setWoundNotice] = useState(null);
@@ -870,6 +892,10 @@ function App() {
 
   useEffect(() => {
     setActionMenuOpen(false);
+  }, [snapshot?.selectedId, snapshot?.sid, modal]);
+
+  useEffect(() => {
+    setLootPopoverOpen(false);
   }, [snapshot?.selectedId, snapshot?.sid, modal]);
 
   useEffect(() => {
@@ -1056,6 +1082,9 @@ function App() {
   const activeEntity = orderedEnemies.find((entity) => entity.instance_id === snapshot?.activeTurnId) || null;
   const contextMenuEntity = unitContextMenu
     ? orderedEnemies.find((entity) => entity.instance_id === unitContextMenu.entityId) || null
+    : null;
+  const contextMenuActor = unitContextMenu?.actorId
+    ? orderedEnemies.find((entity) => entity.instance_id === unitContextMenu.actorId) || null
     : null;
   const previewEntity = previewEntityId
     ? orderedEnemies.find((entity) => entity.instance_id === previewEntityId) || null
@@ -1297,13 +1326,37 @@ function App() {
   );
   const canAttackOrHeal = Boolean(visibleSelectedEntity && !selectedIsDown);
   const selectedTargetNoun = isPlayerSelected ? "player" : "enemy";
-  const canRollLoot = Boolean(
+  const canInspectSelectedLoot = Boolean(
     visibleSelectedEntity?.is_down &&
       !visibleSelectedEntity?.loot_rolled &&
       isTemplateLootable(visibleSelectedEntity),
   );
+  const visibleUninspectedLootEnemies = orderedEnemies.filter(
+    (entity) => entity.is_down && !entity.is_player && !entity.loot_rolled && isTemplateLootable(entity) && isEntityVisible(entity),
+  );
+  const canInspectAllLoot = Boolean(!combatIsRunning && visibleUninspectedLootEnemies.length > 0);
   const canDisengage = Boolean(selectedEntity && canUseTurnAction);
-  const canContextRollLoot = Boolean(contextMenuEntity?.is_down && !contextMenuEntity?.loot_rolled && isTemplateLootable(contextMenuEntity));
+  const canContextInspectLoot = Boolean(contextMenuEntity?.is_down && !contextMenuEntity?.loot_rolled && isTemplateLootable(contextMenuEntity));
+  const contextActorAdjacentToLoot = Boolean(
+    contextMenuActor &&
+      contextMenuEntity &&
+      contextMenuActor.grid_x != null &&
+      contextMenuActor.grid_y != null &&
+      contextMenuEntity.grid_x != null &&
+      contextMenuEntity.grid_y != null &&
+      Math.max(
+        Math.abs(contextMenuActor.grid_x - contextMenuEntity.grid_x),
+        Math.abs(contextMenuActor.grid_y - contextMenuEntity.grid_y),
+      ) <= 1,
+  );
+  const canContextTakeLoot = Boolean(
+    contextMenuEntity?.is_down &&
+      contextMenuEntity?.loot_rolled &&
+      !contextMenuEntity?.loot_taken_by &&
+      contextMenuActor?.is_player &&
+      !contextMenuActor?.is_down &&
+      contextActorAdjacentToLoot,
+  );
   const canContextQuickAttack = Boolean(
     contextMenuEntity &&
       activeEntity &&
@@ -1318,7 +1371,9 @@ function App() {
   const selectedDrawGroups = [...drawGroupsForEntity(selectedEntity)].reverse();
   const selectedHasDraw = !selectedUsesPhysicalCards && selectedDrawGroups.length > 0;
   const selectedHasLoot = Boolean(selectedEntity?.loot_rolled);
-  const canOpenActionMore = Boolean(canRedraw || canAttackOrHeal || canRollLoot || canReposition || canDisengage || canHelp);
+  const selectedInventory = normalizeLootPayload(selectedEntity?.inventory);
+  const selectedHasInventory = Boolean(selectedEntity?.is_player && hasAnyLoot(selectedInventory));
+  const canOpenActionMore = Boolean(canRedraw || canAttackOrHeal || canInspectSelectedLoot || canReposition || canDisengage || canHelp);
   const sessionHasHistory = Boolean(snapshot?.canUndo || snapshot?.canRedo || snapshot?.undoDepth || snapshot?.redoDepth);
   const canRollInitiative = Boolean(snapshot?.canRollInitiative) && orderIds.length > 0;
   const initiativeTargetRound = snapshot?.initiativeTargetRound ?? null;
@@ -1872,13 +1927,18 @@ function App() {
     if (busy || !orderedEnemies.some((entity) => entity.instance_id === instanceId)) {
       return;
     }
+    const actorId = activeEntity?.is_player
+      ? activeEntity.instance_id
+      : selectedEntity?.is_player
+        ? selectedEntity.instance_id
+        : null;
     setActionMenuOpen(false);
     setUnitContextMenu(null);
     const payload = await selectEntityForAction(instanceId);
     if (!payload?.enemies?.some((entity) => entity.instance_id === instanceId)) {
       return;
     }
-    setUnitContextMenu({ entityId: instanceId, x: clientX, y: clientY });
+    setUnitContextMenu({ entityId: instanceId, actorId, x: clientX, y: clientY });
   }
 
   async function openAttackForEntity(instanceId, options = {}) {
@@ -1918,16 +1978,46 @@ function App() {
     });
   }
 
-  async function rollLootForEntity(instanceId) {
+  async function inspectLootForEntity(instanceId) {
     setUnitContextMenu(null);
     setActionMenuOpen(false);
     setMapMode((m) => (m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
     await applySnapshotRequest(
-      `/api/battle/sessions/${snapshot.sid}/entities/${instanceId}/loot`,
+      `/api/battle/sessions/${snapshot.sid}/entities/${instanceId}/loot/inspect`,
       {
         method: "POST",
       },
-      "Loot rolled",
+      "Loot inspected",
+    );
+  }
+
+  async function inspectAllLoot() {
+    setUnitContextMenu(null);
+    setActionMenuOpen(false);
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/loot/inspect-all`,
+      {
+        method: "POST",
+      },
+      "Loot inspected",
+    );
+  }
+
+  async function takeLootForEntity(instanceId, actorId) {
+    if (!actorId) {
+      setError("Select a player character to take loot.");
+      return;
+    }
+    setUnitContextMenu(null);
+    setActionMenuOpen(false);
+    setMapMode((m) => (m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/entities/${instanceId}/loot/take`,
+      {
+        method: "POST",
+        body: JSON.stringify({ playerId: actorId }),
+      },
+      "Loot taken",
     );
   }
 
@@ -2228,6 +2318,25 @@ function App() {
     }
   }
 
+  function withActionCheckForActor(actorId, fn) {
+    const actor = orderedEnemies.find((entity) => entity.instance_id === actorId);
+    const actorActionsUsed =
+      (actor?.actions_used ?? 0) +
+      (snapshot?.movementState?.entityId === actorId && snapshot?.movementState?.dashUsed ? 1 : 0);
+    const actorCanUseTurnAction = Boolean(
+      actor?.is_player &&
+        combatIsRunning &&
+        snapshot?.activeTurnId === actorId &&
+        !actor?.is_down,
+    );
+    if (actorCanUseTurnAction && actorActionsUsed >= 2 && !actionWarningAcknowledged) {
+      setPendingActionFn(() => fn);
+      setModal("action-warning");
+    } else {
+      fn();
+    }
+  }
+
   function handleConfirmActionWarning() {
     setActionWarningAcknowledged(true);
     closeModal();
@@ -2356,13 +2465,13 @@ function App() {
     }
   }
 
-  async function handleRollLoot() {
+  async function handleInspectSelectedLoot() {
     await applySnapshotRequest(
       `/api/battle/sessions/${snapshot.sid}/loot`,
       {
         method: "POST",
       },
-      "Loot rolled",
+      "Loot inspected",
     );
   }
 
@@ -3176,6 +3285,16 @@ function App() {
                     {isPartyWalkMode ? "Cancel Party Walk" : "Party Walk"}
                   </button>
                 ) : null}
+                {canInspectAllLoot ? (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={inspectAllLoot}
+                    disabled={busy}
+                  >
+                    Inspect all loot
+                  </button>
+                ) : null}
                 {hasQuickAttackTarget ? (
                   <button
                     className="primary-button"
@@ -3328,18 +3447,18 @@ function App() {
                     >
                       {`Heal ${selectedTargetNoun}`}
                     </button>
-                    {canRollLoot ? (
+                    {canInspectSelectedLoot ? (
                       <button
                         className="secondary-button action-more-item"
                         type="button"
                         role="menuitem"
                         onClick={() => {
                           setActionMenuOpen(false);
-                          handleRollLoot();
+                          handleInspectSelectedLoot();
                         }}
                         disabled={busy}
                       >
-                        Roll loot
+                        Inspect loot
                       </button>
                     ) : null}
                   </div>
@@ -3479,6 +3598,22 @@ function App() {
                       {selectedEntity.is_player ? <span className="badge">Player</span> : <span className="badge badge-enemy">Enemy</span>}
                       {selectedUsesPhysicalCards ? <span className="badge badge-status">Physical cards</span> : null}
                       {selectedEntity.is_down ? <span className="badge badge-down">{selectedIsKo ? "KO" : "Down"}</span> : null}
+                      {selectedHasInventory ? (
+                        <span className="loot-inventory-anchor">
+                          <button
+                            className="loot-inventory-button"
+                            type="button"
+                            aria-label="Loot inventory"
+                            onClick={() => setLootPopoverOpen((open) => !open)}
+                            title="Loot inventory"
+                          >
+                            $
+                          </button>
+                          <div className={`loot-popover ${lootPopoverOpen ? "loot-popover-open" : ""}`.trim()} role="tooltip">
+                            <LootSummary loot={selectedInventory} />
+                          </div>
+                        </span>
+                      ) : null}
                     </div>
                     <div className="selected-meta-row">
                       {!selectedEntity.is_player && selectedEntity.status_text && selectedEntity.status_text !== "-" ? (
@@ -3657,11 +3792,11 @@ function App() {
                   {selectedHasLoot ? (
                     <div className="unit-inspector-section">
                       <div className="selected-draw-label">Loot</div>
-                      <div className="loot-grid">
-                        <LootBlock label="Currency" value={JSON.stringify(selectedEntity.rolled_loot?.currency || {})} />
-                        <LootBlock label="Resources" value={JSON.stringify(selectedEntity.rolled_loot?.resources || {})} />
-                        <LootBlock label="Other" value={(selectedEntity.rolled_loot?.other || []).join(", ") || "-"} />
-                      </div>
+                      {selectedEntity.loot_taken_by ? (
+                        <div className="subtle-copy">{`Loot taken${selectedEntity.loot_taken_by_name ? ` by ${selectedEntity.loot_taken_by_name}` : ""}`}</div>
+                      ) : (
+                        <LootSummary loot={selectedEntity.rolled_loot} />
+                      )}
                     </div>
                   ) : null}
                 </div>
@@ -3838,17 +3973,33 @@ function App() {
           onContextMenu={(event) => event.preventDefault()}
         >
           {contextMenuEntity.is_down ? (
-            canContextRollLoot ? (
-              <button
-                className="secondary-button unit-context-item"
-                type="button"
-                role="menuitem"
-                onClick={() => rollLootForEntity(contextMenuEntity.instance_id)}
-                disabled={busy}
-              >
-                Roll loot
-              </button>
-            ) : null
+            <>
+              {canContextInspectLoot ? (
+                <button
+                  className="secondary-button unit-context-item"
+                  type="button"
+                  role="menuitem"
+                  onClick={() => inspectLootForEntity(contextMenuEntity.instance_id)}
+                  disabled={busy}
+                >
+                  Inspect loot
+                </button>
+              ) : null}
+              {canContextTakeLoot ? (
+                <button
+                  className="secondary-button unit-context-item"
+                  type="button"
+                  role="menuitem"
+                  onClick={() => withActionCheckForActor(
+                    unitContextMenu.actorId,
+                    () => takeLootForEntity(contextMenuEntity.instance_id, unitContextMenu.actorId),
+                  )}
+                  disabled={busy}
+                >
+                  Take loot
+                </button>
+              ) : null}
+            </>
           ) : (
             <>
               {canContextQuickAttack ? (
@@ -7141,6 +7292,17 @@ function LootBlock({ label, value }) {
     <div className="loot-block">
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function LootSummary({ loot }) {
+  const normalized = normalizeLootPayload(loot);
+  return (
+    <div className="loot-grid">
+      <LootBlock label="Currency" value={lootPairsText(normalized.currency) || "-"} />
+      <LootBlock label="Resources" value={lootPairsText(normalized.resources) || "-"} />
+      <LootBlock label="Other" value={normalized.other.join(", ") || "-"} />
     </div>
   );
 }

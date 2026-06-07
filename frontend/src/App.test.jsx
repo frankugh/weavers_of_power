@@ -47,6 +47,10 @@ function buildEnemy(overrides = {}) {
     last_draw_text: [],
     loot_rolled: false,
     rolled_loot: {},
+    loot_taken_by: null,
+    loot_taken_by_name: null,
+    loot_state: "uninspected",
+    inventory: { currency: {}, resources: {}, other: [] },
     grid_x: 4,
     grid_y: 3,
     ...overrides,
@@ -1401,7 +1405,7 @@ describe("App", () => {
     expect(screen.queryByRole("menuitem", { name: "Help" })).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "Enemy turn (no draw)" })).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "End turn" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("menuitem", { name: "Roll loot" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Inspect loot" })).not.toBeInTheDocument();
   });
 
   it("allows the active NPC to disengage from the More menu", async () => {
@@ -3918,7 +3922,7 @@ describe("App", () => {
     expect(await screen.findByText("Selected: Down Goblin")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Draw" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "More" }));
-    expect(screen.getByRole("menuitem", { name: "Roll loot" })).toBeEnabled();
+    expect(screen.getByRole("menuitem", { name: "Inspect loot" })).toBeEnabled();
   });
 
   it("selects a standing enemy before showing context actions on right-click", async () => {
@@ -4040,17 +4044,17 @@ describe("App", () => {
       "Reposition unit",
       "Show unit",
     ]);
-    expect(within(playerMenu).queryByRole("menuitem", { name: "Roll loot" })).not.toBeInTheDocument();
+    expect(within(playerMenu).queryByRole("menuitem", { name: "Inspect loot" })).not.toBeInTheDocument();
 
     fireEvent.mouseDown(document.body);
     pointerRightClickMapCell(0, 0);
 
     const downMenu = await screen.findByRole("menu", { name: "Unit actions for Down Goblin" });
-    expect(within(downMenu).getByRole("menuitem", { name: "Roll loot" })).toBeInTheDocument();
+    expect(within(downMenu).getByRole("menuitem", { name: "Inspect loot" })).toBeInTheDocument();
     expect(within(downMenu).getByRole("menuitem", { name: "Reposition unit" })).toBeInTheDocument();
     expect(within(downMenu).getByRole("menuitem", { name: "Show unit" })).toBeInTheDocument();
     expect(within(downMenu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-      "Roll loot",
+      "Inspect loot",
       "Reposition unit",
       "Show unit",
     ]);
@@ -4433,7 +4437,7 @@ describe("App", () => {
     });
   });
 
-  it("rolls loot from a down enemy context menu and hides it after loot is rolled", async () => {
+  it("inspects loot from a down enemy context menu and hides inspect after loot is known", async () => {
     const user = userEvent.setup();
     const downEnemy = buildEnemy({
       instance_id: "enemy-2",
@@ -4456,10 +4460,11 @@ describe("App", () => {
         {
           ...downEnemy,
           loot_rolled: true,
+          loot_state: "inspected",
           rolled_loot: { currency: { gold: 3 }, resources: {}, other: [] },
         },
       ],
-      combatLog: ["Loot rolled for Down Goblin"],
+      combatLog: ["Loot inspected for Down Goblin"],
     });
 
     renderWithSnapshot(
@@ -4472,7 +4477,7 @@ describe("App", () => {
           if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
             return jsonResponse(selectedDownSnapshot);
           }
-          if (url === "/api/battle/sessions/sid-123/entities/enemy-2/loot" && requestOptions?.method === "POST") {
+          if (url === "/api/battle/sessions/sid-123/entities/enemy-2/loot/inspect" && requestOptions?.method === "POST") {
             return jsonResponse(lootedSnapshot);
           }
           return undefined;
@@ -4482,19 +4487,238 @@ describe("App", () => {
 
     await findMapToken("Down Goblin");
     pointerRightClickMapCell(0, 0);
-    await user.click(await screen.findByRole("menuitem", { name: "Roll loot" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Inspect loot" }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
-        "/api/battle/sessions/sid-123/entities/enemy-2/loot",
+        "/api/battle/sessions/sid-123/entities/enemy-2/loot/inspect",
         expect.objectContaining({ method: "POST" }),
       );
     });
 
     pointerRightClickMapCell(0, 0);
     const menu = await screen.findByRole("menu", { name: "Unit actions for Down Goblin" });
-    expect(within(menu).queryByRole("menuitem", { name: "Roll loot" })).not.toBeInTheDocument();
+    expect(within(menu).queryByRole("menuitem", { name: "Inspect loot" })).not.toBeInTheDocument();
     expect(within(menu).getByRole("menuitem", { name: "Reposition unit" })).toBeInTheDocument();
+  });
+
+  it("takes inspected loot with the acting player from the context menu", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      is_player: true,
+      grid_x: 1,
+      grid_y: 0,
+      inventory: { currency: {}, resources: {}, other: [] },
+    });
+    const downEnemy = buildEnemy({
+      instance_id: "enemy-2",
+      name: "Down Goblin",
+      hp_current: 0,
+      is_down: true,
+      grid_x: 0,
+      grid_y: 0,
+      loot_rolled: true,
+      loot_state: "inspected",
+      rolled_loot: { currency: { cp: 3 }, resources: {}, other: ["note"] },
+    });
+    const selectedEnemySnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      order: ["player-1", "enemy-2"],
+      enemies: [player, downEnemy],
+    });
+    const takenSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1", "enemy-2"],
+      enemies: [
+        {
+          ...player,
+          inventory: { currency: { cp: 3 }, resources: {}, other: ["note"] },
+        },
+        {
+          ...downEnemy,
+          loot_taken_by: "player-1",
+          loot_taken_by_name: "Player 1",
+          loot_state: "taken",
+        },
+      ],
+      combatLog: ["Player 1 takes loot from Down Goblin."],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "player-1",
+        order: ["player-1", "enemy-2"],
+        enemies: [player, downEnemy],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+            return jsonResponse(selectedEnemySnapshot);
+          }
+          if (url === "/api/battle/sessions/sid-123/entities/enemy-2/loot/take" && requestOptions?.method === "POST") {
+            expect(JSON.parse(requestOptions.body)).toEqual({ playerId: "player-1" });
+            return jsonResponse(takenSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Down Goblin");
+    pointerRightClickMapCell(0, 0);
+    await user.click(await screen.findByRole("menuitem", { name: "Take loot" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/enemy-2/loot/take",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ playerId: "player-1" }),
+        }),
+      );
+    });
+    expect(await screen.findByLabelText("Loot inventory")).toBeInTheDocument();
+    await user.click(screen.getByLabelText("Loot inventory"));
+    expect(screen.getByText("cp: 3")).toBeInTheDocument();
+    expect(screen.getByText("note")).toBeInTheDocument();
+  });
+
+  it("runs take loot through the combat action warning", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      is_player: true,
+      grid_x: 1,
+      grid_y: 0,
+      actions_used: 2,
+    });
+    const downEnemy = buildEnemy({
+      instance_id: "enemy-2",
+      name: "Down Goblin",
+      hp_current: 0,
+      is_down: true,
+      grid_x: 0,
+      grid_y: 0,
+      loot_rolled: true,
+      loot_state: "inspected",
+      rolled_loot: { currency: { cp: 1 }, resources: {}, other: [] },
+    });
+    const selectedEnemySnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      activeTurnId: "player-1",
+      encounterStarted: true,
+      order: ["player-1", "enemy-2"],
+      enemies: [player, downEnemy],
+    });
+    const takenSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      activeTurnId: "player-1",
+      encounterStarted: true,
+      order: ["player-1", "enemy-2"],
+      enemies: [{ ...player, actions_used: 3 }, { ...downEnemy, loot_taken_by: "player-1", loot_state: "taken" }],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        selectedId: "player-1",
+        activeTurnId: "player-1",
+        encounterStarted: true,
+        order: ["player-1", "enemy-2"],
+        enemies: [player, downEnemy],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+            return jsonResponse(selectedEnemySnapshot);
+          }
+          if (url === "/api/battle/sessions/sid-123/entities/enemy-2/loot/take" && requestOptions?.method === "POST") {
+            return jsonResponse(takenSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await findMapToken("Down Goblin");
+    pointerRightClickMapCell(0, 0);
+    await user.click(await screen.findByRole("menuitem", { name: "Take loot" }));
+    expect(await screen.findByText("Meer dan 2 acties")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Doorgaan" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/enemy-2/loot/take",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+  });
+
+  it("shows inspect all loot out of combat for visible uninspected loot", async () => {
+    const user = userEvent.setup();
+    const downEnemy = buildEnemy({
+      instance_id: "enemy-2",
+      name: "Down Goblin",
+      hp_current: 0,
+      is_down: true,
+      grid_x: 0,
+      grid_y: 0,
+    });
+    const inspectedSnapshot = buildSnapshot({
+      order: ["enemy-1", "enemy-2"],
+      enemies: [buildEnemy(), { ...downEnemy, loot_rolled: true, loot_state: "inspected" }],
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        order: ["enemy-1", "enemy-2"],
+        enemies: [buildEnemy(), downEnemy],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/loot/inspect-all" && requestOptions?.method === "POST") {
+            return jsonResponse(inspectedSnapshot);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Inspect all loot" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/loot/inspect-all",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+  });
+
+  it("hides inspect all loot during combat", async () => {
+    const downEnemy = buildEnemy({
+      instance_id: "enemy-2",
+      name: "Down Goblin",
+      hp_current: 0,
+      is_down: true,
+      grid_x: 0,
+      grid_y: 0,
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        encounterStarted: true,
+        activeTurnId: "enemy-1",
+        order: ["enemy-1", "enemy-2"],
+        enemies: [buildEnemy(), downEnemy],
+      }),
+    );
+
+    await findMapToken("Down Goblin");
+    expect(screen.queryByRole("button", { name: "Inspect all loot" })).not.toBeInTheDocument();
   });
 
   it("double-clicks a non-active standing enemy to open attack", async () => {

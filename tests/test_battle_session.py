@@ -2073,7 +2073,7 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(player.draw_bonus_pending, 0)
         self.assertIn("unused draw bonus expires", " ".join(session.combat_log))
 
-    def test_loot_requires_down_enemy_and_cannot_roll_twice(self) -> None:
+    def test_inspect_loot_requires_down_enemy_and_is_idempotent(self) -> None:
         session = self.context.create_session("loot-down-only")
         session.add_enemy_from_template("C_GOBLIN")
         enemy = session.state.enemies[session.selected_id]
@@ -2082,14 +2082,15 @@ class BattleSessionTests(unittest.TestCase):
             session.roll_loot_for_selected()
 
         enemy.toughness_current = 0
-        session.roll_loot_for_selected()
+        session.inspect_loot_for_entity(enemy.instance_id)
+        first_loot = dict(enemy.rolled_loot)
 
         self.assertTrue(enemy.loot_rolled)
         self.assertIsInstance(enemy.rolled_loot, dict)
-        with self.assertRaisesRegex(ValueError, "already been rolled"):
-            session.roll_loot_for_selected()
+        session.inspect_loot_for_entity(enemy.instance_id)
+        self.assertEqual(enemy.rolled_loot, first_loot)
 
-    def test_loot_for_entity_does_not_depend_on_current_selection(self) -> None:
+    def test_inspect_loot_for_entity_does_not_depend_on_current_selection(self) -> None:
         session = self.context.create_session("loot-explicit-target")
         session.add_enemy_from_template("C_GOBLIN")
         down_id = session.selected_id
@@ -2098,12 +2099,145 @@ class BattleSessionTests(unittest.TestCase):
         session.add_enemy_from_template("C_WOLF")
         selected_before = session.selected_id
 
-        session.roll_loot_for_entity(down_id)
+        session.inspect_loot_for_entity(down_id)
 
         self.assertNotEqual(selected_before, down_id)
         self.assertEqual(session.selected_id, down_id)
         self.assertTrue(down_enemy.loot_rolled)
         self.assertIsInstance(down_enemy.rolled_loot, dict)
+
+    def test_take_loot_adds_to_player_inventory_out_of_combat_without_action(self) -> None:
+        session = self.context.create_session("take-loot-ooc")
+        session.add_enemy_from_template("C_GOBLIN")
+        enemy_id = session.selected_id
+        enemy = session.state.enemies[enemy_id]
+        enemy.toughness_current = 0
+        enemy.grid_x, enemy.grid_y = 4, 3
+        enemy.loot_rolled = True
+        enemy.rolled_loot = {"currency": {"cp": 7}, "resources": {"iron": 2}, "other": ["rusty key"]}
+        session.add_player(name="Mira")
+        player_id = session.selected_id
+        player = session.state.enemies[player_id]
+        player.grid_x, player.grid_y = 5, 3
+        player.inventory = {"currency": {"cp": 5}, "resources": {}, "other": ["chalk"]}
+
+        session.take_loot_for_player(enemy_id, player_id)
+
+        self.assertEqual(player.actions_used, 0)
+        self.assertEqual(player.inventory["currency"]["cp"], 12)
+        self.assertEqual(player.inventory["resources"]["iron"], 2)
+        self.assertEqual(player.inventory["other"], ["chalk", "rusty key"])
+        self.assertEqual(enemy.loot_taken_by, player_id)
+
+    def test_take_loot_in_combat_requires_active_player_and_charges_action(self) -> None:
+        session = self.context.create_session("take-loot-combat")
+        session.add_player(name="Mira")
+        player_id = session.selected_id
+        player = session.state.enemies[player_id]
+        player.grid_x, player.grid_y = 5, 3
+        session.add_player(name="Nox")
+        other_player_id = session.selected_id
+        session.state.enemies[other_player_id].grid_x, session.state.enemies[other_player_id].grid_y = 5, 4
+        session.add_enemy_from_template("C_GOBLIN")
+        enemy_id = session.selected_id
+        enemy = session.state.enemies[enemy_id]
+        enemy.grid_x, enemy.grid_y = 4, 3
+        enemy.toughness_current = 0
+        enemy.loot_rolled = True
+        enemy.rolled_loot = {"currency": {"cp": 3}, "resources": {}, "other": []}
+        session.encounter_started = True
+        session.active_turn_id = player_id
+
+        with self.assertRaisesRegex(ValueError, "only the active player"):
+            session.take_loot_for_player(enemy_id, other_player_id)
+
+        session.take_loot_for_player(enemy_id, player_id)
+
+        self.assertEqual(player.actions_used, 1)
+        self.assertEqual(player.inventory["currency"]["cp"], 3)
+        self.assertEqual(enemy.loot_taken_by, player_id)
+
+    def test_take_loot_rejects_uninspected_taken_or_non_adjacent_targets(self) -> None:
+        session = self.context.create_session("take-loot-rejects")
+        session.add_player(name="Mira")
+        player_id = session.selected_id
+        player = session.state.enemies[player_id]
+        player.grid_x, player.grid_y = 0, 0
+        session.add_enemy_from_template("C_GOBLIN")
+        enemy_id = session.selected_id
+        enemy = session.state.enemies[enemy_id]
+        enemy.grid_x, enemy.grid_y = 2, 0
+        enemy.toughness_current = 0
+
+        with self.assertRaisesRegex(ValueError, "Inspect loot"):
+            session.take_loot_for_player(enemy_id, player_id)
+
+        enemy.loot_rolled = True
+        enemy.rolled_loot = {"currency": {"cp": 1}, "resources": {}, "other": []}
+        with self.assertRaisesRegex(ValueError, "within 5ft"):
+            session.take_loot_for_player(enemy_id, player_id)
+
+        enemy.grid_x, enemy.grid_y = 1, 0
+        session.take_loot_for_player(enemy_id, player_id)
+        with self.assertRaisesRegex(ValueError, "already been taken"):
+            session.take_loot_for_player(enemy_id, player_id)
+
+    def test_inspect_all_visible_loot_is_out_of_combat_and_respects_fog(self) -> None:
+        session = self.context.create_session("inspect-all-visible")
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[0, 0], [1, 0], [4, 0]])
+        session.analyze_dungeon()
+        visible_room = next(room.room_id for room in session.dungeon.rooms if any(tuple(cell) == (0, 0) for cell in room.cells))
+        hidden_room = next(room.room_id for room in session.dungeon.rooms if any(tuple(cell) == (4, 0) for cell in room.cells))
+        session.dungeon.fog_of_war_enabled = True
+        session.dungeon.revealed_room_ids = [visible_room]
+
+        session.add_player(name="Mira")
+        player = session.state.enemies[session.selected_id]
+        player.grid_x, player.grid_y = 0, 0
+        player.room_id = visible_room
+        session.add_enemy_from_template("C_GOBLIN")
+        visible_enemy = session.state.enemies[session.selected_id]
+        visible_enemy.grid_x, visible_enemy.grid_y = 1, 0
+        visible_enemy.room_id = visible_room
+        visible_enemy.toughness_current = 0
+        session.add_enemy_from_template("C_GOBLIN")
+        hidden_enemy = session.state.enemies[session.selected_id]
+        hidden_enemy.grid_x, hidden_enemy.grid_y = 4, 0
+        hidden_enemy.room_id = hidden_room
+        hidden_enemy.toughness_current = 0
+
+        session.inspect_all_visible_loot()
+
+        self.assertTrue(visible_enemy.loot_rolled)
+        self.assertFalse(hidden_enemy.loot_rolled)
+
+        session.encounter_started = True
+        with self.assertRaisesRegex(ValueError, "out of combat"):
+            session.inspect_all_visible_loot()
+
+    def test_loot_inventory_and_taken_state_persist(self) -> None:
+        session = self.context.create_session("loot-persist")
+        session.add_player(name="Mira")
+        player_id = session.selected_id
+        player = session.state.enemies[player_id]
+        player.grid_x, player.grid_y = 5, 3
+        session.add_enemy_from_template("C_GOBLIN")
+        enemy_id = session.selected_id
+        enemy = session.state.enemies[enemy_id]
+        enemy.grid_x, enemy.grid_y = 4, 3
+        enemy.toughness_current = 0
+        enemy.loot_rolled = True
+        enemy.rolled_loot = {"currency": {"cp": 9}, "resources": {}, "other": ["token"]}
+
+        session.take_loot_for_player(enemy_id, player_id)
+
+        reloaded = self.context.load_session("loot-persist")
+        reloaded_player = reloaded.state.enemies[player_id]
+        reloaded_enemy = reloaded.state.enemies[enemy_id]
+        self.assertEqual(reloaded_player.inventory["currency"]["cp"], 9)
+        self.assertEqual(reloaded_player.inventory["other"], ["token"])
+        self.assertEqual(reloaded_enemy.loot_taken_by, player_id)
 
     def test_prepare_bonus_is_consumed_by_digital_draw_of_power(self) -> None:
         session = self.context.create_session("prepare-consumed")

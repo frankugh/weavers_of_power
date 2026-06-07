@@ -15,6 +15,23 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _empty_loot() -> dict:
+    return {"currency": {}, "resources": {}, "other": []}
+
+
+def _normalize_loot(raw: Any) -> dict:
+    if not isinstance(raw, dict):
+        return _empty_loot()
+    currency = raw.get("currency") if isinstance(raw.get("currency"), dict) else {}
+    resources = raw.get("resources") if isinstance(raw.get("resources"), dict) else {}
+    other = raw.get("other") if isinstance(raw.get("other"), list) else []
+    return {
+        "currency": dict(currency),
+        "resources": dict(resources),
+        "other": list(other),
+    }
+
+
 def _atomic_write_json(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -155,7 +172,9 @@ def enemy_to_dict(e: EnemyInstance) -> Dict[str, Any]:
     d.setdefault("opportunity_attack_used_round", int(getattr(e, "opportunity_attack_used_round", 0)))
     d.setdefault("melee_weapon", dict(getattr(e, "melee_weapon", {}) or {}))
     d.setdefault("loot_rolled", getattr(e, "loot_rolled", False))
-    d.setdefault("rolled_loot", getattr(e, "rolled_loot", None))
+    d["rolled_loot"] = _normalize_loot(getattr(e, "rolled_loot", None))
+    d.setdefault("loot_taken_by", getattr(e, "loot_taken_by", None))
+    d["inventory"] = _normalize_loot(getattr(e, "inventory", None))
     d.setdefault("grid_x", getattr(e, "grid_x", None))
     d.setdefault("grid_y", getattr(e, "grid_y", None))
     d.setdefault("room_id", getattr(e, "room_id", None))
@@ -216,7 +235,9 @@ def enemy_from_dict(d: Dict[str, Any]) -> EnemyInstance:
     if not e.draw_groups and e.visible_draw:
         e.draw_groups = [list(e.visible_draw)]
     e.loot_rolled = bool(d.get("loot_rolled", False))
-    e.rolled_loot = d.get("rolled_loot", None)
+    e.rolled_loot = _normalize_loot(d.get("rolled_loot"))
+    e.loot_taken_by = str(d.get("loot_taken_by")) if d.get("loot_taken_by") else None
+    e.inventory = _normalize_loot(d.get("inventory"))
     e.grid_x = int(d["grid_x"]) if d.get("grid_x") is not None else None
     e.grid_y = int(d["grid_y"]) if d.get("grid_y") is not None else None
     e.room_id = d.get("room_id", None)

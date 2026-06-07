@@ -73,6 +73,37 @@ class BattleSessionError(ValueError):
     pass
 
 
+def empty_loot_payload() -> dict:
+    return {"currency": {}, "resources": {}, "other": []}
+
+
+def normalize_loot_payload(raw: object) -> dict:
+    if not isinstance(raw, dict):
+        return empty_loot_payload()
+    currency = raw.get("currency") if isinstance(raw.get("currency"), dict) else {}
+    resources = raw.get("resources") if isinstance(raw.get("resources"), dict) else {}
+    other = raw.get("other") if isinstance(raw.get("other"), list) else []
+    return {
+        "currency": dict(currency),
+        "resources": dict(resources),
+        "other": list(other),
+    }
+
+
+def merge_loot_payload(target: dict, source: dict) -> dict:
+    merged = normalize_loot_payload(target)
+    incoming = normalize_loot_payload(source)
+    for group in ("currency", "resources"):
+        for key, amount in incoming[group].items():
+            try:
+                value = int(amount)
+            except (TypeError, ValueError):
+                value = 0
+            merged[group][key] = int(merged[group].get(key, 0) or 0) + value
+    merged["other"].extend(incoming["other"])
+    return merged
+
+
 def create_sid() -> str:
     return uuid.uuid4().hex[:12]
 
@@ -510,6 +541,9 @@ class BattleSession:
         self.room_rows = int(loaded_room.get("rows", ROOM_DEFAULT_ROWS) or ROOM_DEFAULT_ROWS)
 
         for enemy in enemies:
+            enemy.rolled_loot = normalize_loot_payload(getattr(enemy, "rolled_loot", None))
+            enemy.inventory = normalize_loot_payload(getattr(enemy, "inventory", None))
+            enemy.loot_taken_by = str(getattr(enemy, "loot_taken_by", "")) or None
             if self.is_player(enemy):
                 if enemy.instance_id in legacy_player_weapon_missing:
                     enemy.melee_weapon = dict(PLACEHOLDER_PC_MELEE_WEAPON)
@@ -1083,6 +1117,25 @@ class BattleSession:
                     added_ids.append(entity.instance_id)
         self.dungeon.pending_encounter_room_ids.clear()
         return added_ids
+
+    def _combat_is_running(self) -> bool:
+        return bool(self.encounter_started or self.active_turn_id is not None or self.turn_in_progress or self.pending_new_round)
+
+    def _visible_room_ids_for_loot(self) -> set[str]:
+        if self.dungeon is None:
+            return set()
+        if not getattr(self.dungeon, "fog_of_war_enabled", True):
+            return {room.room_id for room in self.dungeon.rooms}
+        visible = set(getattr(self.dungeon, "revealed_room_ids", []) or [])
+        for entity in self.state.enemies.values():
+            if self.is_player(entity) and entity.room_id:
+                visible.add(entity.room_id)
+        return visible
+
+    def _entity_is_visible_for_loot(self, entity: EnemyInstance) -> bool:
+        if self.dungeon is None:
+            return True
+        return bool(entity.room_id and entity.room_id in self._visible_room_ids_for_loot())
 
     def set_fog_of_war(self, enabled: bool) -> None:
         if self.dungeon is None:
@@ -3692,22 +3745,81 @@ class BattleSession:
 
     def roll_loot_for_selected(self) -> None:
         entity = self._require_selected_enemy()
-        self._roll_loot_for_enemy(entity)
+        self._inspect_loot_for_enemy(entity)
 
     def roll_loot_for_entity(self, instance_id: str) -> None:
+        self.inspect_loot_for_entity(instance_id)
+
+    def inspect_loot_for_entity(self, instance_id: str) -> None:
         entity = self.state.enemies.get(instance_id)
         if not entity:
             raise BattleSessionError(f"Entity '{instance_id}' does not exist")
         if self.is_player(entity):
             raise BattleSessionError("This action is not available for player cards")
         self.selected_id = instance_id
-        self._roll_loot_for_enemy(entity)
+        self._inspect_loot_for_enemy(entity)
 
-    def _roll_loot_for_enemy(self, entity: EnemyInstance) -> None:
+    def inspect_all_visible_loot(self) -> None:
+        if self._combat_is_running():
+            raise BattleSessionError("Inspect all loot is only available out of combat.")
+        inspected = 0
+        for entity in self.state.enemies.values():
+            if (
+                not self.is_player(entity)
+                and self.is_down(entity)
+                and not getattr(entity, "loot_rolled", False)
+                and self._has_template_loot(entity)
+                and self._entity_is_visible_for_loot(entity)
+            ):
+                self._inspect_loot_for_enemy(entity, autosave=False, add_log=False)
+                inspected += 1
+        if inspected:
+            self._add_log(f"Inspected loot on {inspected} down enem{'y' if inspected == 1 else 'ies'}.")
+        self.autosave()
+
+    def take_loot_for_player(self, enemy_id: str, player_id: str) -> None:
+        enemy = self.state.enemies.get(enemy_id)
+        if not enemy:
+            raise BattleSessionError(f"Entity '{enemy_id}' does not exist")
+        if self.is_player(enemy):
+            raise BattleSessionError("Player characters cannot be looted.")
+        player = self.state.enemies.get(player_id)
+        if not player:
+            raise BattleSessionError(f"Entity '{player_id}' does not exist")
+        if not self.is_player(player):
+            raise BattleSessionError("Loot can only be taken by player characters.")
+        if self.is_down(player):
+            raise BattleSessionError("Down player characters cannot take loot.")
+        if not self.is_down(enemy):
+            raise BattleSessionError("Only down enemies can be looted.")
+        if not getattr(enemy, "loot_rolled", False):
+            raise BattleSessionError("Inspect loot before taking it.")
+        if getattr(enemy, "loot_taken_by", None):
+            raise BattleSessionError(f"Loot has already been taken from {enemy.name}.")
+        if player.grid_x is None or player.grid_y is None or enemy.grid_x is None or enemy.grid_y is None:
+            raise BattleSessionError("Both the player and enemy must be on the map to take loot.")
+        distance = max(abs(player.grid_x - enemy.grid_x), abs(player.grid_y - enemy.grid_y))
+        if distance > 1:
+            raise BattleSessionError(f"{player.name} is not within 5ft of {enemy.name}.")
+
+        if self._combat_is_running():
+            if self.active_turn_id != player.instance_id:
+                raise BattleSessionError("In combat, only the active player can take loot.")
+            self._charge_action(player)
+
+        player.inventory = merge_loot_payload(getattr(player, "inventory", None), getattr(enemy, "rolled_loot", None))
+        enemy.loot_taken_by = player.instance_id
+        self.selected_id = player.instance_id
+        self._add_log(f"{player.name} takes loot from {enemy.name}.")
+        self.autosave()
+
+    def _inspect_loot_for_enemy(self, entity: EnemyInstance, *, autosave: bool = True, add_log: bool = True) -> None:
         if not self.is_down(entity):
             raise BattleSessionError("Only down enemies can be looted.")
         if getattr(entity, "loot_rolled", False):
-            raise BattleSessionError(f"Loot has already been rolled for {entity.name}.")
+            if autosave:
+                self.autosave()
+            return
         if entity.template_id == "custom":
             raise BattleSessionError("Custom enemies have no template loot.")
         template = self.context.enemy_templates.get(entity.template_id)
@@ -3722,8 +3834,10 @@ class BattleSession:
             "other": list(loot_result.other),
         }
         entity.loot_rolled = True
-        self._add_log(f"Loot rolled for {entity.name}")
-        self.autosave()
+        if add_log:
+            self._add_log(f"Loot inspected for {entity.name}")
+        if autosave:
+            self.autosave()
 
     def undo(self) -> None:
         if not self.undo_stack:
@@ -5013,6 +5127,14 @@ class BattleSession:
             }
             for index, group in enumerate(self.visible_draw_groups_for(entity))
         ]
+        loot_taken_by = getattr(entity, "loot_taken_by", None)
+        loot_state = (
+            "taken" if loot_taken_by
+            else "inspected" if getattr(entity, "loot_rolled", False)
+            else "uninspected" if self._has_template_loot(entity)
+            else "none"
+        )
+        loot_taker = self.state.enemies.get(loot_taken_by) if loot_taken_by else None
         payload = enemy_to_dict(entity)
         payload.update(
             {
@@ -5021,6 +5143,10 @@ class BattleSession:
                 "is_down": self.is_down(entity),
                 "is_ko": bool(getattr(entity, "is_ko", False)) if self.is_player(entity) else False,
                 "has_loot": self._has_template_loot(entity),
+                "loot_state": loot_state,
+                "loot_taken_by_name": loot_taker.name if loot_taker else None,
+                "inventory": normalize_loot_payload(getattr(entity, "inventory", None)),
+                "rolled_loot": normalize_loot_payload(getattr(entity, "rolled_loot", None)),
                 "template_info": self._template_info_for(entity),
                 "quick_attack_used": bool(getattr(entity, "quick_attack_used", False)),
                 "effective_movement": self.effective_movement(entity),

@@ -1119,6 +1119,42 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.loot-inventory-anchor {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.loot-inventory-button {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(220, 204, 142, 0.55);
+  background: rgba(220, 204, 142, 0.16);
+  color: #f0cf85;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.loot-popover {
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: min(280px, 72vw);
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(15, 11, 8, 0.98);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.36);
+}
+
+.loot-inventory-anchor:hover .loot-popover,
+.loot-popover-open {
+  display: block;
+}
+
 .roster-meta-row {
   max-width: 100%;
   justify-content: center;

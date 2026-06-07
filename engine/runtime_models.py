@@ -3,6 +3,10 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+def empty_loot() -> dict:
+    return {"currency": {}, "resources": {}, "other": []}
+
+
 @dataclass
 class Tile:
     tile_type: str          # "floor"
@@ -96,8 +100,10 @@ class EnemyInstance:
     initiative_total: Optional[int] = None
     initiative_mode: str = "normal"
 
-    rolled_loot: dict = field(default_factory=dict)  # later typener; nu simpel
+    rolled_loot: dict = field(default_factory=empty_loot)  # later typener; nu simpel
     loot_rolled: bool = False
+    loot_taken_by: Optional[str] = None
+    inventory: dict = field(default_factory=empty_loot)
 
     deck_state: DeckState = field(default_factory=DeckState)
     quick_attack_used: bool = False
