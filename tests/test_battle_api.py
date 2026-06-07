@@ -257,6 +257,25 @@ class BattleApiTests(unittest.TestCase):
         undone = self.client.post(f"/api/battle/sessions/{sid}/undo").json()
         self.assertEqual([enemy["instance_id"] for enemy in undone["enemies"]], [source_id])
 
+    def test_entity_loot_endpoint_targets_path_entity(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        goblin_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()["selectedId"]
+        wolf_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"}).json()["selectedId"]
+        session = self.context.load_session(sid)
+        session.state.enemies[goblin_id].toughness_current = 0
+        session.selected_id = wolf_id
+        session.autosave()
+
+        response = self.client.post(f"/api/battle/sessions/{sid}/entities/{goblin_id}/loot")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["selectedId"], goblin_id)
+        goblin = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == goblin_id)
+        wolf = next(enemy for enemy in payload["enemies"] if enemy["instance_id"] == wolf_id)
+        self.assertTrue(goblin["loot_rolled"])
+        self.assertFalse(wolf["loot_rolled"])
+
     def test_suspect_interaction_resolves_willpower_and_undoes_as_one_check(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         session = self.context.load_session(sid)

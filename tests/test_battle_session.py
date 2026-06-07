@@ -2089,6 +2089,22 @@ class BattleSessionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already been rolled"):
             session.roll_loot_for_selected()
 
+    def test_loot_for_entity_does_not_depend_on_current_selection(self) -> None:
+        session = self.context.create_session("loot-explicit-target")
+        session.add_enemy_from_template("C_GOBLIN")
+        down_id = session.selected_id
+        down_enemy = session.state.enemies[down_id]
+        down_enemy.toughness_current = 0
+        session.add_enemy_from_template("C_WOLF")
+        selected_before = session.selected_id
+
+        session.roll_loot_for_entity(down_id)
+
+        self.assertNotEqual(selected_before, down_id)
+        self.assertEqual(session.selected_id, down_id)
+        self.assertTrue(down_enemy.loot_rolled)
+        self.assertIsInstance(down_enemy.rolled_loot, dict)
+
     def test_prepare_bonus_is_consumed_by_digital_draw_of_power(self) -> None:
         session = self.context.create_session("prepare-consumed")
         session.add_player(name="Mira", power=1)
@@ -2921,6 +2937,44 @@ class WallEdgeDoorTests(unittest.TestCase):
 
         with self.assertRaises(Exception):
             session.set_door_state(0, 0, "e", True)
+
+    def test_room_search_does_not_discover_non_adjacent_secret_door(self) -> None:
+        session = self._make_dungeon("secret-search-distance", [[0, 0], [1, 0], [2, 0], [3, 0]])
+        session.edit_dungeon_walls("secret_door", [{"x": 2, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+
+        session.add_player()
+        player = session.state.enemies[session.selected_id]
+        player.grid_x, player.grid_y = 0, 0
+        player.room_id = session._room_id_for_position(0, 0)
+        player.deck_state.hand = []
+        player.deck_state.discard_pile = []
+        player.deck_state.draw_pile = ["hf_martial_success_3", "hf_void_fail", "hf_void_fail"]
+
+        session.start_room_search()
+        result = session.resolve_room_search(use_willpower=False)
+
+        self.assertNotEqual(result["searchResolved"]["outcome"], "discovered")
+        self.assertFalse(session.dungeon.walls["2,0,e"].secret_discovered)
+
+    def test_room_search_discovers_adjacent_secret_door(self) -> None:
+        session = self._make_dungeon("secret-search-adjacent", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("secret_door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+
+        session.add_player()
+        player = session.state.enemies[session.selected_id]
+        player.grid_x, player.grid_y = 0, 0
+        player.room_id = session._room_id_for_position(0, 0)
+        player.deck_state.hand = []
+        player.deck_state.discard_pile = []
+        player.deck_state.draw_pile = ["hf_martial_success_2", "hf_void_fail", "hf_void_fail"]
+
+        session.start_room_search()
+        result = session.resolve_room_search(use_willpower=False)
+
+        self.assertEqual(result["searchResolved"]["outcome"], "discovered")
+        self.assertTrue(session.dungeon.walls["0,0,e"].secret_discovered)
 
     # ------------------------------------------------------------------ persistence
 

@@ -1161,7 +1161,7 @@ class BattleSession:
         self.autosave()
 
     def _secret_door_candidates_in_room(self, entity: EnemyInstance, room_id: str) -> list[dict]:
-        """Return hidden secret doors in room_id with adjusted DCs based on PC proximity."""
+        """Return hidden secret doors directly adjacent to the PC on the room side."""
         room = next((r for r in self.dungeon.rooms if r.room_id == room_id), None)
         if room is None:
             return []
@@ -1187,8 +1187,9 @@ class BattleSession:
                 abs(entity.grid_x - room_side_cell[0]),
                 abs(entity.grid_y - room_side_cell[1]),
             )
-            # DC -2 if PC is on the cell directly bordering the edge (dist == 0)
-            adjusted_dc = max(0, getattr(wall, "secret_dc", 2) - (2 if dist == 0 else 0))
+            if dist != 0:
+                continue
+            adjusted_dc = max(0, getattr(wall, "secret_dc", 2) - 2)
             candidates.append({"edge_key": key, "adjusted_dc": adjusted_dc, "dist": dist})
         return candidates
 
@@ -3691,6 +3692,18 @@ class BattleSession:
 
     def roll_loot_for_selected(self) -> None:
         entity = self._require_selected_enemy()
+        self._roll_loot_for_enemy(entity)
+
+    def roll_loot_for_entity(self, instance_id: str) -> None:
+        entity = self.state.enemies.get(instance_id)
+        if not entity:
+            raise BattleSessionError(f"Entity '{instance_id}' does not exist")
+        if self.is_player(entity):
+            raise BattleSessionError("This action is not available for player cards")
+        self.selected_id = instance_id
+        self._roll_loot_for_enemy(entity)
+
+    def _roll_loot_for_enemy(self, entity: EnemyInstance) -> None:
         if not self.is_down(entity):
             raise BattleSessionError("Only down enemies can be looted.")
         if getattr(entity, "loot_rolled", False):

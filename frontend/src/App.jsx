@@ -1919,14 +1919,16 @@ function App() {
   }
 
   async function rollLootForEntity(instanceId) {
-    const payload = await selectEntityForAction(instanceId);
-    if (!payload) {
-      return;
-    }
     setUnitContextMenu(null);
     setActionMenuOpen(false);
     setMapMode((m) => (m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
-    await handleRollLoot();
+    await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/entities/${instanceId}/loot`,
+      {
+        method: "POST",
+      },
+      "Loot rolled",
+    );
   }
 
   function openUnitPreview(instanceId) {

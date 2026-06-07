@@ -415,6 +415,10 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def copy_entity(sid: str, instance_id: str):
         return run_mutation(sid, lambda session: session.copy_entity(instance_id))
 
+    @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/loot")
+    def roll_entity_loot(sid: str, instance_id: str):
+        return run_mutation(sid, lambda session: session.roll_loot_for_entity(instance_id))
+
     @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/move")
     def move_entity_with_movement(sid: str, instance_id: str, request: MoveRequest):
         return run_mutation(

@@ -4472,7 +4472,7 @@ describe("App", () => {
           if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
             return jsonResponse(selectedDownSnapshot);
           }
-          if (url === "/api/battle/sessions/sid-123/loot" && requestOptions?.method === "POST") {
+          if (url === "/api/battle/sessions/sid-123/entities/enemy-2/loot" && requestOptions?.method === "POST") {
             return jsonResponse(lootedSnapshot);
           }
           return undefined;
@@ -4486,7 +4486,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
-        "/api/battle/sessions/sid-123/loot",
+        "/api/battle/sessions/sid-123/entities/enemy-2/loot",
         expect.objectContaining({ method: "POST" }),
       );
     });
