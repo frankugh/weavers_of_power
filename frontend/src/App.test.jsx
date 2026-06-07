@@ -1547,6 +1547,63 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Start encounter" })).toBeInTheDocument();
   });
 
+  it("keeps the primary turn button on Next when a new enemy appears before combat is ended", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 1,
+      grid_y: 1,
+    });
+    const newEnemy = buildEnemy({
+      instance_id: "enemy-2",
+      name: "Goblin 2",
+      grid_x: 2,
+      grid_y: 1,
+    });
+    const nextSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      activeTurnId: "enemy-2",
+      encounterStarted: true,
+      order: ["player-1", "enemy-2"],
+      enemies: [player, newEnemy],
+      movementState: buildMovementState({ entityId: "enemy-2" }),
+      combatLog: ["Active turn: Goblin 2"],
+    });
+
+    renderWithSnapshot(buildSnapshot({
+      selectedId: "enemy-2",
+      activeTurnId: null,
+      encounterStarted: true,
+      hasLiveOrderedEnemy: false,
+      order: ["player-1"],
+      enemies: [player, newEnemy],
+    }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/encounter/start" && requestOptions?.method === "POST") {
+          return jsonResponse(nextSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 2");
+    expect(screen.getByRole("button", { name: "Next" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Next" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/encounter/start",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(await screen.findByText("Active Turn: Goblin 2")).toBeInTheDocument();
+  });
+
   it("disables Start encounter when every unit is down", async () => {
     renderWithSnapshot(
       buildSnapshot({

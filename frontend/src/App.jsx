@@ -1078,14 +1078,21 @@ function App() {
   const hasActiveTurn = Boolean(snapshot?.activeTurnId);
   const pendingNewRound = Boolean(snapshot?.pendingNewRound);
   const hasStartableUnit = orderedEnemies.some((entity) => !entity.is_down);
-  const hasLiveOrderedEnemy = orderIds.some((instanceId) => {
+  const hasLiveOrderedEnemy = Boolean(snapshot?.hasLiveOrderedEnemy) || orderIds.some((instanceId) => {
     const entity = orderedEnemies.find((candidate) => candidate.instance_id === instanceId);
     return entity && !entity.is_player && !entity.is_down;
   });
+  const hasLiveEnemy = orderedEnemies.some((entity) => !entity.is_player && !entity.is_down);
   const combatIsRunning = Boolean(snapshot?.encounterStarted || hasActiveTurn || pendingNewRound);
-  const canEndCombat = Boolean(snapshot?.encounterStarted && !hasLiveOrderedEnemy);
+  const canEndCombat = Boolean(snapshot?.encounterStarted && !hasLiveEnemy);
   const canManualEndCombat = Boolean(snapshot?.encounterStarted);
-  const turnAdvanceLabel = canEndCombat ? "End Combat" : hasActiveTurn ? "Next" : pendingNewRound ? "Start Round" : "Start encounter";
+  const turnAdvanceLabel = canEndCombat
+    ? "End Combat"
+    : pendingNewRound
+      ? "Start Round"
+      : hasActiveTurn || (snapshot?.encounterStarted && hasStartableUnit)
+        ? "Next"
+        : "Start encounter";
   const canAdvanceTurn = Boolean(canEndCombat || hasActiveTurn || hasStartableUnit || pendingNewRound);
   const canUseTurnAction = Boolean(combatIsRunning && selectedIsActive && !selectedIsDown);
   const selectedMovementBase =
@@ -2234,7 +2241,7 @@ function App() {
       return;
     }
 
-    if (!hasActiveTurn && !pendingNewRound && hasStartableUnit && !initiativeRolledForTarget) {
+    if (!snapshot?.encounterStarted && !hasActiveTurn && !pendingNewRound && hasStartableUnit && !initiativeRolledForTarget) {
       setInitiativeOpenReason("start");
       setInitiativeModes({});
       setModal("initiative");
@@ -2257,6 +2264,18 @@ function App() {
           method: "POST",
         },
         "Advanced round order",
+      );
+      return;
+    }
+
+    if (snapshot?.encounterStarted && hasStartableUnit) {
+      const path = pendingEncounterRoomIds.length && !hasLiveOrderedEnemy
+        ? `/api/battle/sessions/${snapshot.sid}/round/start`
+        : `/api/battle/sessions/${snapshot.sid}/encounter/start`;
+      await applySnapshotRequest(
+        path,
+        { method: "POST" },
+        pendingEncounterRoomIds.length && !hasLiveOrderedEnemy ? "Started new round" : "Advanced round order",
       );
       return;
     }
