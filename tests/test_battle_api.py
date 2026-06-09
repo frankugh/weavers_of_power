@@ -379,7 +379,7 @@ class BattleApiTests(unittest.TestCase):
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         session = self.context.load_session(sid)
         session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
-        session.edit_dungeon_tiles("floor", [[0, 0], [1, 0]])
+        session.edit_dungeon_tiles("floor", [[0, 0], [0, 1], [1, 0]])
         session.analyze_dungeon()
         session.add_player()
         player = session.state.enemies[session.selected_id]
@@ -418,6 +418,69 @@ class BattleApiTests(unittest.TestCase):
         self.assertIsNone(undone["pendingSearch"])
         self.assertEqual(undone["undoDepth"], 0)
         self.assertEqual(len(undone["dungeon"]["secretSuspects"]), 1)
+
+    def test_room_search_resolve_defaults_party_walk_false(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        session = self.context.load_session(sid)
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[0, 0], [0, 1], [1, 0]])
+        session.edit_dungeon_walls("secret_door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.dungeon.walls["0,0,e"].secret_dc = 1
+        session.add_player()
+        player = session.state.enemies[session.selected_id]
+        player.grid_x, player.grid_y = 0, 1
+        player.room_id = session._room_id_for_position(0, 1)
+        player.deck_state.hand = []
+        player.deck_state.discard_pile = []
+        player.deck_state.draw_pile = ["hf_martial_success_2", "hf_void_fail", "hf_void_fail"]
+        session.autosave()
+
+        self.client.post(f"/api/battle/sessions/{sid}/dungeon/search/start")
+        response = self.client.post(
+            f"/api/battle/sessions/{sid}/dungeon/search/resolve",
+            json={"useWillpower": False},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        resolved = response.json()["searchResolved"]
+        self.assertFalse(resolved["partyWalk"])
+        self.assertEqual(resolved["edgeKey"], "0,0,e")
+        self.assertEqual(resolved["edgeKeys"], ["0,0,e"])
+        self.assertIn(player.instance_id, resolved["movedEntityIds"])
+
+    def test_room_search_resolve_accepts_party_walk_true(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        session = self.context.load_session(sid)
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[0, 0], [0, 1], [1, 0]])
+        session.edit_dungeon_walls("secret_door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.dungeon.walls["0,0,e"].secret_dc = 1
+        ids = []
+        for position in [(0, 1), (0, 0)]:
+            session.add_player()
+            entity = session.state.enemies[session.selected_id]
+            session._set_position(entity, position[0], position[1])
+            ids.append(session.selected_id)
+        searcher = session.state.enemies[ids[0]]
+        searcher.deck_state.hand = []
+        searcher.deck_state.discard_pile = []
+        searcher.deck_state.draw_pile = ["hf_martial_success_2", "hf_void_fail", "hf_void_fail"]
+        session.selected_id = ids[0]
+        session.autosave()
+
+        self.client.post(f"/api/battle/sessions/{sid}/dungeon/search/start")
+        response = self.client.post(
+            f"/api/battle/sessions/{sid}/dungeon/search/resolve",
+            json={"useWillpower": False, "partyWalk": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        resolved = response.json()["searchResolved"]
+        self.assertTrue(resolved["partyWalk"])
+        self.assertEqual(resolved["edgeKeys"], ["0,0,e"])
+        self.assertEqual(set(resolved["movedEntityIds"]), set(ids))
 
     def test_start_encounter_endpoint_activates_highest_initiative_unit(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]

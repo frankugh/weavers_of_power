@@ -1213,12 +1213,11 @@ class BattleSession:
         self._add_log(f"GM set secret door DC to {wall.secret_dc}.")
         self.autosave()
 
-    def _secret_door_candidates_in_room(self, entity: EnemyInstance, room_id: str) -> list[dict]:
-        """Return hidden secret doors directly adjacent to the PC on the room side."""
+    def _secret_door_candidates_in_room(self, room_id: str) -> list[dict]:
+        """Return hidden secret doors in room_id."""
         room = next((r for r in self.dungeon.rooms if r.room_id == room_id), None)
         if room is None:
             return []
-        room_cells = {tuple(c) for c in room.cells}
         candidates = []
         for key, wall in self.dungeon.walls.items():
             if wall.wall_type != "secret_door" or getattr(wall, "secret_discovered", False):
@@ -1226,25 +1225,46 @@ class BattleSession:
             link = self.dungeon.linked_doors.get(key)
             if not link or room_id not in link:
                 continue
-            parts = key.split(",")
-            kx, ky, ks = int(parts[0]), int(parts[1]), parts[2]
-            cell_a = (kx, ky)
-            cell_b = (kx + 1, ky) if ks == "e" else (kx, ky + 1)
-            if cell_a in room_cells:
-                room_side_cell = cell_a
-            elif cell_b in room_cells:
-                room_side_cell = cell_b
-            else:
+            room_side_cell = self._room_side_cell_for_edge(key, room_id)
+            if room_side_cell is None:
                 continue
-            dist = max(
-                abs(entity.grid_x - room_side_cell[0]),
-                abs(entity.grid_y - room_side_cell[1]),
-            )
-            if dist != 0:
-                continue
-            adjusted_dc = max(0, getattr(wall, "secret_dc", 2) - 2)
-            candidates.append({"edge_key": key, "adjusted_dc": adjusted_dc, "dist": dist})
+            candidates.append({
+                "edge_key": key,
+                "dc": max(0, int(getattr(wall, "secret_dc", 2) or 0)),
+                "room_side_cell": room_side_cell,
+            })
         return candidates
+
+    def _edge_cells(self, edge_key: str) -> Optional[tuple[tuple[int, int], tuple[int, int]]]:
+        try:
+            kx_raw, ky_raw, side = edge_key.split(",", 2)
+            kx = int(kx_raw)
+            ky = int(ky_raw)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if side == "e":
+            return (kx, ky), (kx + 1, ky)
+        if side == "s":
+            return (kx, ky), (kx, ky + 1)
+        return None
+
+    def _room_cells(self, room_id: str) -> set[tuple[int, int]]:
+        room = next((r for r in self.dungeon.rooms if r.room_id == room_id), None) if self.dungeon else None
+        if room is None:
+            return set()
+        return {(int(c[0]), int(c[1])) for c in room.cells if len(c) >= 2}
+
+    def _room_side_cell_for_edge(self, edge_key: str, room_id: str) -> Optional[tuple[int, int]]:
+        cells = self._edge_cells(edge_key)
+        if cells is None:
+            return None
+        cell_a, cell_b = cells
+        room_cells = self._room_cells(room_id)
+        if cell_a in room_cells:
+            return cell_a
+        if cell_b in room_cells:
+            return cell_b
+        return None
 
     def _pick_false_suspect_edge(self, room_id: str) -> Optional[str]:
         """Pick a random room perimeter edge suitable for a false suspect marker.
@@ -1286,33 +1306,113 @@ class BattleSession:
             return None
         return self._rng.choice(sorted(candidates))
 
-    def _pick_player_adjacent_wall_edge(self, entity: "EnemyInstance", room_id: str) -> Optional[str]:
-        """Pick a random room-perimeter wall edge directly adjacent (dist==0) to entity, avoiding doors."""
-        if entity.grid_x is None or entity.grid_y is None:
-            return None
-        room = next((r for r in self.dungeon.rooms if r.room_id == room_id), None)
-        if room is None:
-            return None
-        room_cells = {tuple(c) for c in room.cells}
-        existing_suspect_edges = {s["edge_key"] for s in self.dungeon.secret_suspects}
-        candidates: list[str] = []
-        for nx, ny in (
-            (entity.grid_x + 1, entity.grid_y),
-            (entity.grid_x - 1, entity.grid_y),
-            (entity.grid_x, entity.grid_y + 1),
-            (entity.grid_x, entity.grid_y - 1),
-        ):
-            if (nx, ny) not in room_cells:
-                edge = canonical_edge_key(entity.grid_x, entity.grid_y, nx, ny)
-                wall = self.dungeon.walls.get(edge)
-                if wall is not None and wall.wall_type in ("door", "secret_door"):
-                    continue
-                if edge in existing_suspect_edges:
-                    continue
-                candidates.append(edge)
-        if not candidates:
-            return None
-        return self._rng.choice(sorted(candidates))
+    def _search_position_candidates(
+        self,
+        room_id: str,
+        anchor: tuple[int, int],
+        assigned_positions: set[tuple[int, int]],
+        blocked_positions: set[tuple[int, int]],
+    ) -> list[tuple[int, int]]:
+        room_cells = self._room_cells(room_id)
+        if not room_cells:
+            return []
+
+        def sort_key(cell: tuple[int, int]) -> tuple[int, int, int, int]:
+            dx = abs(cell[0] - anchor[0])
+            dy = abs(cell[1] - anchor[1])
+            return (max(dx, dy), dx + dy, cell[1], cell[0])
+
+        candidates = sorted(room_cells, key=sort_key)
+        return [
+            cell for cell in candidates
+            if cell not in assigned_positions
+            and cell not in blocked_positions
+            and self._position_is_walkable(cell[0], cell[1])
+        ]
+
+    def _place_search_entity_near_anchor(
+        self,
+        entity: EnemyInstance,
+        room_id: str,
+        anchor: tuple[int, int],
+        assigned_positions: set[tuple[int, int]],
+        blocked_positions: set[tuple[int, int]],
+    ) -> Optional[tuple[int, int]]:
+        for candidate in self._search_position_candidates(room_id, anchor, assigned_positions, blocked_positions):
+            return candidate
+        if self._has_position(entity):
+            current = (int(entity.grid_x), int(entity.grid_y))
+            assigned_positions.add(current)
+        return None
+
+    def _apply_room_search_positioning(
+        self,
+        entity: EnemyInstance,
+        room_id: str,
+        edge_keys: list[str],
+        party_walk: bool,
+    ) -> list[str]:
+        if not self.dungeon or not edge_keys:
+            return []
+
+        anchors = [
+            room_side_cell
+            for edge_key in edge_keys
+            if (room_side_cell := self._room_side_cell_for_edge(edge_key, room_id)) is not None
+        ]
+        if not anchors:
+            return []
+
+        if party_walk:
+            party = self._party_walk_party(entity)
+        elif not self.is_down(entity) and self._has_position(entity) and self._position_is_walkable(entity.grid_x, entity.grid_y):
+            party = [entity]
+        else:
+            party = []
+        if not party:
+            return []
+
+        moving_ids = {member.instance_id for member in party}
+        blocked_positions = {
+            (int(other.grid_x), int(other.grid_y))
+            for other in self.state.enemies.values()
+            if other.instance_id not in moving_ids
+            and self._blocks_position(other)
+            and self._has_position(other)
+        }
+        assigned_positions: set[tuple[int, int]] = set()
+        placements: list[tuple[EnemyInstance, int, int]] = []
+
+        for index, member in enumerate(party):
+            anchor = anchors[index] if party_walk and index < len(anchors) else anchors[0]
+            chosen = self._place_search_entity_near_anchor(member, room_id, anchor, assigned_positions, blocked_positions)
+            if chosen is None:
+                continue
+            assigned_positions.add(chosen)
+            placements.append((member, chosen[0], chosen[1]))
+
+        moved_ids: list[str] = []
+        for member, target_x, target_y in placements:
+            current = (int(member.grid_x), int(member.grid_y)) if self._has_position(member) else (None, None)
+            if current != (target_x, target_y):
+                moved_ids.append(member.instance_id)
+            self._set_position(member, target_x, target_y)
+        if moved_ids:
+            self._add_log(
+                f"Search positioning moved {len(moved_ids)} PC{'s' if len(moved_ids) != 1 else ''}."
+            )
+        unplaced_count = len(party) - len(placements)
+        if unplaced_count:
+            self._add_log(f"Search positioning left {unplaced_count} PC{'s' if unplaced_count != 1 else ''} in place.")
+        return moved_ids
+
+    def _combat_flow_active(self) -> bool:
+        return bool(
+            self.encounter_started
+            or self.active_turn_id is not None
+            or self.turn_in_progress
+            or self.pending_new_round
+        )
 
     def start_room_search(self) -> dict:
         entity = self._require_selected_entity()
@@ -1322,8 +1422,12 @@ class BattleSession:
             raise BattleSessionError("Selected player is not on the map.")
         if self.dungeon is None:
             raise BattleSessionError("No dungeon loaded.")
-        if self.active_turn_id is not None and self.active_turn_id != entity.instance_id:
-            raise BattleSessionError("Another unit has the active turn. End that turn first.")
+        if self._combat_flow_active():
+            raise BattleSessionError("Search Room is only available outside combat.")
+        if self.pending_opportunity is not None:
+            raise BattleSessionError("Resolve the pending opportunity attack before searching.")
+        if self.dungeon.pending_encounter_room_ids:
+            raise BattleSessionError("Resolve the pending encounter before searching.")
         if self.pending_search is not None:
             raise BattleSessionError("A search is already in progress. Resolve it first.")
         room_id = entity.room_id
@@ -1332,7 +1436,6 @@ class BattleSession:
         if room_id in getattr(self.dungeon, "searched_room_ids", []):
             raise BattleSessionError("This room has already been searched.")
 
-        self._charge_action(entity)
         self.dungeon.searched_room_ids.append(room_id)
 
         result = self._draw_additional_for_player(entity, 3)
@@ -1361,7 +1464,7 @@ class BattleSession:
             }
         }
 
-    def resolve_room_search(self, use_willpower: bool) -> dict:
+    def resolve_room_search(self, use_willpower: bool, party_walk: bool = False) -> dict:
         if self.pending_search is None:
             raise BattleSessionError("No pending search to resolve.")
         ps = self.pending_search
@@ -1372,61 +1475,59 @@ class BattleSession:
 
         score = ps["success_count"] + (ps["fate_count"] if use_willpower else 0)
         room_id = ps["room_id"]
+        party_walk = bool(party_walk)
 
-        candidates = self._secret_door_candidates_in_room(entity, room_id)
-        # Sort by adjusted DC ascending, then by edge_key for determinism
-        candidates.sort(key=lambda c: (c["adjusted_dc"], c["edge_key"]))
+        candidates = self._secret_door_candidates_in_room(room_id)
+        candidates.sort(key=lambda c: c["edge_key"])
 
         outcome = "nothing"
-        edge_key = None
+        edge_keys: list[str] = []
 
-        # 0 successes can never discover a door or place a true suspect
-        if score == 0:
-            pass
-        elif candidates:
-            target = candidates[0]
-            adjusted_dc = target["adjusted_dc"]
-            edge_key = target["edge_key"]
-            wall = self.dungeon.walls.get(edge_key)
-
-            if score >= adjusted_dc:
-                if wall:
-                    wall.secret_discovered = True
+        if score > 0 and candidates:
+            discovered_edges = [
+                target["edge_key"]
+                for target in candidates
+                if score >= int(target["dc"])
+            ]
+            if discovered_edges:
+                discovered_set = set(discovered_edges)
+                for discovered_edge in discovered_edges:
+                    wall = self.dungeon.walls.get(discovered_edge)
+                    if wall:
+                        wall.secret_discovered = True
                 self.dungeon.secret_suspects = [
-                    s for s in self.dungeon.secret_suspects if s["edge_key"] != edge_key
+                    s for s in self.dungeon.secret_suspects if s["edge_key"] not in discovered_set
                 ]
+                edge_keys.extend(discovered_edges)
                 outcome = "discovered"
-                self._add_log(f"{entity.name} discovers a secret door!")
-            elif score == adjusted_dc - 1:
-                already = any(s["edge_key"] == edge_key for s in self.dungeon.secret_suspects)
-                if not already:
-                    self.dungeon.secret_suspects.append({
-                        "room_id": room_id,
-                        "edge_key": edge_key,
-                        "kind": "secret",
-                        "exhausted": False,
-                        "false_dc": 0,
-                    })
-                outcome = "true_suspect"
-                self._add_log(f"{entity.name} senses something suspicious…")
+                if len(discovered_edges) == 1:
+                    self._add_log(f"{entity.name} discovers a secret door!")
+                else:
+                    self._add_log(f"{entity.name} discovers {len(discovered_edges)} secret doors!")
+            else:
+                true_suspects = [
+                    target["edge_key"]
+                    for target in candidates
+                    if score == int(target["dc"]) - 1
+                ]
+                if true_suspects:
+                    true_edge = true_suspects[0]
+                    already = any(s["edge_key"] == true_edge for s in self.dungeon.secret_suspects)
+                    if not already:
+                        self.dungeon.secret_suspects.append({
+                            "room_id": room_id,
+                            "edge_key": true_edge,
+                            "kind": "secret",
+                            "exhausted": False,
+                            "false_dc": 0,
+                        })
+                    edge_keys.append(true_edge)
+                    outcome = "true_suspect"
+                    self._add_log(f"{entity.name} senses something suspicious.")
 
-        # False suspect chance scales with failure severity; blocked only on a clean discovery.
-        # A near miss (true_suspect) can still also produce a false suspect.
-        # 0 successes → 1/2, 1 → 1/3, 2 → 1/6, 3+ → never
         false_prob = max(0.0, (3 - score) / 6) if score < 3 else 0.0
         if outcome != "discovered" and false_prob > 0 and self._rng.random() < false_prob:
-            # With 0 successes and no adjacent secret door: 33% chance of suspect at player's
-            # direct wall (the other 66% follow normal false-suspect placement rules).
-            has_adjacent_door = score == 0 and any(c["dist"] == 0 for c in candidates)
-            use_player_adjacent = (
-                score == 0
-                and not has_adjacent_door
-                and self._rng.random() < 1 / 3
-            )
-            if use_player_adjacent:
-                false_edge = self._pick_player_adjacent_wall_edge(entity, room_id)
-            else:
-                false_edge = self._pick_false_suspect_edge(room_id)
+            false_edge = self._pick_false_suspect_edge(room_id)
             if false_edge:
                 false_dc = self._rng.randint(1, 3)
                 self.dungeon.secret_suspects.append({
@@ -1436,20 +1537,25 @@ class BattleSession:
                     "exhausted": False,
                     "false_dc": false_dc,
                 })
-                self._add_log(f"{entity.name} thinks something might be hidden here…")
+                self._add_log(f"{entity.name} thinks something might be hidden here.")
+                edge_keys.append(false_edge)
                 if outcome == "nothing":
                     outcome = "false_suspect"
-                    edge_key = false_edge
+
         if outcome == "nothing":
             self._add_log(f"{entity.name} searches but finds nothing.")
 
+        moved_ids = self._apply_room_search_positioning(entity, room_id, edge_keys, party_walk)
         self.pending_search = None
         self.dungeon.render_version += 1
         self.autosave()
         return {
             "searchResolved": {
                 "outcome": outcome,
-                "edgeKey": edge_key,
+                "edgeKey": edge_keys[0] if edge_keys else None,
+                "edgeKeys": list(edge_keys),
+                "movedEntityIds": moved_ids,
+                "partyWalk": party_walk,
                 "useWillpower": use_willpower,
             }
         }
@@ -1462,8 +1568,13 @@ class BattleSession:
             raise BattleSessionError("Selected player is not on the map.")
         if self.dungeon is None:
             raise BattleSessionError("No dungeon loaded.")
-        if self.active_turn_id is not None and self.active_turn_id != entity.instance_id:
+        combat_active = self._combat_flow_active()
+        if combat_active and self.active_turn_id != entity.instance_id:
             raise BattleSessionError("Another unit has the active turn. End that turn first.")
+        if self.pending_opportunity is not None:
+            raise BattleSessionError("Resolve the pending opportunity attack before investigating.")
+        if self.dungeon.pending_encounter_room_ids:
+            raise BattleSessionError("Resolve the pending encounter before investigating.")
         if self.pending_search is not None:
             raise BattleSessionError("A search is already in progress. Resolve it first.")
 
@@ -1490,7 +1601,8 @@ class BattleSession:
         if dist > 1:
             raise BattleSessionError("Selected player is not within 5ft of the suspect marker.")
 
-        self._charge_action(entity)
+        if combat_active:
+            self._charge_action(entity)
 
         result = self._draw_additional_for_player(entity, 3)
         drawn = list(result.drawn)

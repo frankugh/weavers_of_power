@@ -193,6 +193,7 @@ class DungeonSecretDoorDcRequest(BaseModel):
 
 class SearchResolveRequest(BaseModel):
     useWillpower: bool = False
+    partyWalk: bool = False
 
 
 class InteractSuspectRequest(BaseModel):
@@ -677,7 +678,11 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
 
     @api_app.post("/api/battle/sessions/{sid}/dungeon/search/resolve")
     def resolve_room_search(sid: str, request: SearchResolveRequest):
-        return run_mutation(sid, lambda session: session.resolve_room_search(request.useWillpower), undoable=False)
+        return run_mutation(
+            sid,
+            lambda session: session.resolve_room_search(request.useWillpower, party_walk=request.partyWalk),
+            undoable=False,
+        )
 
     @api_app.post("/api/battle/sessions/{sid}/dungeon/suspects/interact")
     def interact_suspect(sid: str, request: InteractSuspectRequest):

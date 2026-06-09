@@ -3072,12 +3072,14 @@ class WallEdgeDoorTests(unittest.TestCase):
         with self.assertRaises(Exception):
             session.set_door_state(0, 0, "e", True)
 
-    def test_room_search_does_not_discover_non_adjacent_secret_door(self) -> None:
+    def test_room_search_discovers_non_adjacent_secret_door_and_moves_searcher(self) -> None:
         session = self._make_dungeon("secret-search-distance", [[0, 0], [1, 0], [2, 0], [3, 0]])
         session.edit_dungeon_walls("secret_door", [{"x": 2, "y": 0, "side": "e"}])
         session.analyze_dungeon()
+        session.dungeon.walls["2,0,e"].secret_dc = 1
 
         session.add_player()
+        player_id = session.selected_id
         player = session.state.enemies[session.selected_id]
         player.grid_x, player.grid_y = 0, 0
         player.room_id = session._room_id_for_position(0, 0)
@@ -3088,13 +3090,18 @@ class WallEdgeDoorTests(unittest.TestCase):
         session.start_room_search()
         result = session.resolve_room_search(use_willpower=False)
 
-        self.assertNotEqual(result["searchResolved"]["outcome"], "discovered")
-        self.assertFalse(session.dungeon.walls["2,0,e"].secret_discovered)
+        self.assertEqual(result["searchResolved"]["outcome"], "discovered")
+        self.assertEqual(result["searchResolved"]["edgeKey"], "2,0,e")
+        self.assertEqual(result["searchResolved"]["edgeKeys"], ["2,0,e"])
+        self.assertEqual(result["searchResolved"]["movedEntityIds"], [player_id])
+        self.assertTrue(session.dungeon.walls["2,0,e"].secret_discovered)
+        self.assertEqual((player.grid_x, player.grid_y), (2, 0))
 
     def test_room_search_discovers_adjacent_secret_door(self) -> None:
         session = self._make_dungeon("secret-search-adjacent", [[0, 0], [1, 0]])
         session.edit_dungeon_walls("secret_door", [{"x": 0, "y": 0, "side": "e"}])
         session.analyze_dungeon()
+        session.dungeon.walls["0,0,e"].secret_dc = 1
 
         session.add_player()
         player = session.state.enemies[session.selected_id]
@@ -3109,6 +3116,130 @@ class WallEdgeDoorTests(unittest.TestCase):
 
         self.assertEqual(result["searchResolved"]["outcome"], "discovered")
         self.assertTrue(session.dungeon.walls["0,0,e"].secret_discovered)
+
+    def test_room_search_is_ooc_and_does_not_charge_actions(self) -> None:
+        session = self._make_dungeon("search-ooc-action", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("secret_door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.dungeon.walls["0,0,e"].secret_dc = 1
+
+        session.add_player()
+        player = session.state.enemies[session.selected_id]
+        player.grid_x, player.grid_y = 0, 0
+        player.room_id = session._room_id_for_position(0, 0)
+        player.actions_used = 1
+        player.deck_state.hand = []
+        player.deck_state.discard_pile = []
+        player.deck_state.draw_pile = ["hf_martial_success_2", "hf_void_fail", "hf_void_fail"]
+
+        session.start_room_search()
+        session.resolve_room_search(use_willpower=False)
+
+        self.assertEqual(player.actions_used, 1)
+
+    def test_room_search_rejects_combat_and_pending_encounter(self) -> None:
+        session = self._make_dungeon("search-ooc-blocks", [[0, 0], [1, 0]])
+        session.analyze_dungeon()
+        session.add_player()
+        player_id = session.selected_id
+        player = session.state.enemies[player_id]
+        player.grid_x, player.grid_y = 0, 0
+        player.room_id = session._room_id_for_position(0, 0)
+
+        session.encounter_started = True
+        with self.assertRaisesRegex(ValueError, "outside combat"):
+            session.start_room_search()
+
+        session.encounter_started = False
+        session.dungeon.pending_encounter_room_ids = [player.room_id]
+        with self.assertRaisesRegex(ValueError, "pending encounter"):
+            session.start_room_search()
+
+    def test_room_search_proximity_does_not_lower_secret_door_dc(self) -> None:
+        session = self._make_dungeon("search-no-proximity-dc", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("secret_door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.dungeon.walls["0,0,e"].secret_dc = 2
+
+        session.add_player()
+        player = session.state.enemies[session.selected_id]
+        player.grid_x, player.grid_y = 0, 0
+        player.room_id = session._room_id_for_position(0, 0)
+        player.deck_state.hand = []
+        player.deck_state.discard_pile = []
+        player.deck_state.draw_pile = ["hf_martial_1_success", "hf_void_fail", "hf_void_fail"]
+
+        session.start_room_search()
+        result = session.resolve_room_search(use_willpower=False)
+
+        self.assertEqual(result["searchResolved"]["outcome"], "true_suspect")
+        self.assertFalse(session.dungeon.walls["0,0,e"].secret_discovered)
+        self.assertEqual(result["searchResolved"]["edgeKey"], "0,0,e")
+
+    def test_room_search_discovers_multiple_secret_doors_and_party_walk_distributes_players(self) -> None:
+        session = self._make_dungeon(
+            "search-multiple-party",
+            [[0, 0], [1, 0], [0, 1], [1, 1], [2, 0], [2, 1]],
+        )
+        session.edit_dungeon_walls("secret_door", [
+            {"x": 1, "y": 0, "side": "e"},
+            {"x": 1, "y": 1, "side": "e"},
+        ])
+        session.analyze_dungeon()
+        session.dungeon.walls["1,0,e"].secret_dc = 1
+        session.dungeon.walls["1,1,e"].secret_dc = 1
+
+        ids = []
+        for name, position in [("Searcher", (0, 0)), ("Scout", (0, 1)), ("Guard", (1, 0)), ("Down", (2, 0))]:
+            session.add_player(name=name)
+            entity = session.state.enemies[session.selected_id]
+            session._set_position(entity, position[0], position[1])
+            ids.append(session.selected_id)
+        session.state.enemies[ids[3]].is_ko = True
+        session.selected_id = ids[0]
+        searcher = session.state.enemies[ids[0]]
+        searcher.deck_state.hand = []
+        searcher.deck_state.discard_pile = []
+        searcher.deck_state.draw_pile = ["hf_martial_success_3", "hf_void_fail", "hf_void_fail"]
+
+        session.start_room_search()
+        result = session.resolve_room_search(use_willpower=False, party_walk=True)
+
+        self.assertEqual(result["searchResolved"]["edgeKeys"], ["1,0,e", "1,1,e"])
+        self.assertEqual(set(result["searchResolved"]["movedEntityIds"]), set(ids[:3]))
+        self.assertEqual((session.state.enemies[ids[0]].grid_x, session.state.enemies[ids[0]].grid_y), (1, 0))
+        self.assertEqual((session.state.enemies[ids[1]].grid_x, session.state.enemies[ids[1]].grid_y), (1, 1))
+        self.assertEqual((session.state.enemies[ids[2]].grid_x, session.state.enemies[ids[2]].grid_y), (0, 0))
+        self.assertEqual((session.state.enemies[ids[3]].grid_x, session.state.enemies[ids[3]].grid_y), (2, 0))
+        self.assertTrue(session.dungeon.walls["1,0,e"].secret_discovered)
+        self.assertTrue(session.dungeon.walls["1,1,e"].secret_discovered)
+
+    def test_room_search_positioning_falls_back_without_stacking(self) -> None:
+        session = self._make_dungeon("search-position-fallback", [[0, 0], [1, 0], [2, 0], [3, 0]])
+        session.edit_dungeon_walls("secret_door", [{"x": 2, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.dungeon.walls["2,0,e"].secret_dc = 1
+
+        session.add_player()
+        player_id = session.selected_id
+        player = session.state.enemies[player_id]
+        player.grid_x, player.grid_y = 0, 0
+        player.room_id = session._room_id_for_position(0, 0)
+        player.deck_state.hand = []
+        player.deck_state.discard_pile = []
+        player.deck_state.draw_pile = ["hf_martial_success_3", "hf_void_fail", "hf_void_fail"]
+        session.add_enemy_from_template("C_GOBLIN")
+        blocker = session.state.enemies[session.selected_id]
+        blocker.grid_x, blocker.grid_y = 2, 0
+        blocker.room_id = session._room_id_for_position(2, 0)
+        session.selected_id = player_id
+
+        session.start_room_search()
+        result = session.resolve_room_search(use_willpower=False)
+
+        self.assertEqual(result["searchResolved"]["outcome"], "discovered")
+        self.assertEqual((player.grid_x, player.grid_y), (1, 0))
+        self.assertEqual((blocker.grid_x, blocker.grid_y), (2, 0))
 
     # ------------------------------------------------------------------ persistence
 

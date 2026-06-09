@@ -1705,7 +1705,7 @@ function App() {
     } else {
       const resolved = await applySnapshotRequest(
         `/api/battle/sessions/${snapshot.sid}/dungeon/search/resolve`,
-        { method: "POST", body: JSON.stringify({ useWillpower: false }) },
+        { method: "POST", body: JSON.stringify({ useWillpower: false, partyWalk: mapMode === MAP_MODES.PARTY_WALK }) },
       );
       showSearchFlavour(resolved);
     }
@@ -1715,10 +1715,13 @@ function App() {
     const resolvePath = pendingSearch?.kind === "suspect"
       ? "dungeon/suspects/resolve"
       : "dungeon/search/resolve";
+    const body = pendingSearch?.kind === "suspect"
+      ? { useWillpower }
+      : { useWillpower, partyWalk: mapMode === MAP_MODES.PARTY_WALK };
     closeModal();
     const resolved = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/${resolvePath}`, {
       method: "POST",
-      body: JSON.stringify({ useWillpower }),
+      body: JSON.stringify(body),
     });
     showSearchFlavour(resolved);
   }
@@ -3321,7 +3324,7 @@ function App() {
                   <button
                     className="secondary-button"
                     type="button"
-                    onClick={() => { setActionMenuOpen(false); withActionCheck(handleStartSearch); }}
+                    onClick={() => { setActionMenuOpen(false); handleStartSearch(); }}
                     disabled={busy}
                   >
                     Search Room

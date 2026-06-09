@@ -1722,6 +1722,128 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "Guard" })).not.toBeInTheDocument();
   });
 
+  it("resolves Search Room with partyWalk false when Party Walk mode is off", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 0,
+      grid_y: 0,
+      actions_used: 2,
+    });
+    const dungeon = buildDungeon({ currentPcRoomIds: ["room-1"] });
+    const resolveCalls = [];
+
+    renderWithSnapshot(buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1"],
+      enemies: [player],
+      dungeon,
+    }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/dungeon/search/start" && requestOptions?.method === "POST") {
+          return jsonResponse(buildSnapshot({
+            selectedId: "player-1",
+            order: ["player-1"],
+            enemies: [player],
+            dungeon,
+            pendingSearch: {
+              kind: "search",
+              entityId: "player-1",
+              roomId: "room-1",
+              hasFate: false,
+              successCount: 2,
+              fateCount: 0,
+            },
+          }));
+        }
+        if (url === "/api/battle/sessions/sid-123/dungeon/search/resolve" && requestOptions?.method === "POST") {
+          resolveCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse(buildSnapshot({
+            selectedId: "player-1",
+            order: ["player-1"],
+            enemies: [player],
+            dungeon,
+            pendingSearch: null,
+          }));
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Player 1");
+    await user.click(screen.getByRole("button", { name: "Search Room" }));
+
+    await waitFor(() => {
+      expect(resolveCalls).toEqual([{ useWillpower: false, partyWalk: false }]);
+    });
+    expect(screen.queryByRole("heading", { name: "Meer dan 2 acties" })).not.toBeInTheDocument();
+  });
+
+  it("resolves Search Room with partyWalk true when Party Walk mode is on", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 0,
+      grid_y: 0,
+    });
+    const dungeon = buildDungeon({ currentPcRoomIds: ["room-1"] });
+    const resolveCalls = [];
+
+    renderWithSnapshot(buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1"],
+      enemies: [player],
+      dungeon,
+    }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/dungeon/search/start" && requestOptions?.method === "POST") {
+          return jsonResponse(buildSnapshot({
+            selectedId: "player-1",
+            order: ["player-1"],
+            enemies: [player],
+            dungeon,
+            pendingSearch: {
+              kind: "search",
+              entityId: "player-1",
+              roomId: "room-1",
+              hasFate: false,
+              successCount: 2,
+              fateCount: 0,
+            },
+          }));
+        }
+        if (url === "/api/battle/sessions/sid-123/dungeon/search/resolve" && requestOptions?.method === "POST") {
+          resolveCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse(buildSnapshot({
+            selectedId: "player-1",
+            order: ["player-1"],
+            enemies: [player],
+            dungeon,
+            pendingSearch: null,
+          }));
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Player 1");
+    await user.click(screen.getByRole("button", { name: "Party Walk" }));
+    expect(screen.getByRole("button", { name: "Cancel Party Walk" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Search Room" }));
+
+    await waitFor(() => {
+      expect(resolveCalls).toEqual([{ useWillpower: false, partyWalk: true }]);
+    });
+  });
+
   it("hides Search Room during combat but keeps active-player suspect investigation", async () => {
     const player = buildEnemy({
       instance_id: "player-1",
