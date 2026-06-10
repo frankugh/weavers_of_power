@@ -2239,6 +2239,29 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(reloaded_player.inventory["other"], ["token"])
         self.assertEqual(reloaded_enemy.loot_taken_by, player_id)
 
+    def test_empty_loot_taken_by_does_not_load_as_taken(self) -> None:
+        for index, raw_taker in enumerate((None, "None", "null", "")):
+            with self.subTest(raw_taker=raw_taker):
+                sid = f"loot-empty-taker-{index}"
+                session = self.context.create_session(sid)
+                session.add_enemy_from_template("C_GOBLIN")
+                enemy_id = session.selected_id
+                enemy = session.state.enemies[enemy_id]
+                enemy.toughness_current = 0
+                enemy.loot_rolled = True
+                enemy.rolled_loot = {"currency": {"cp": 3}, "resources": {}, "other": []}
+                enemy.loot_taken_by = raw_taker
+                session.autosave()
+                self.context._sessions.pop(sid, None)
+
+                reloaded = self.context.load_session(sid)
+                reloaded_enemy = reloaded.state.enemies[enemy_id]
+                snapshot_enemy = next(entity for entity in reloaded.snapshot()["enemies"] if entity["instance_id"] == enemy_id)
+
+                self.assertIsNone(reloaded_enemy.loot_taken_by)
+                self.assertEqual(snapshot_enemy["loot_state"], "inspected")
+                self.assertIsNone(snapshot_enemy["loot_taken_by"])
+
     def test_prepare_bonus_is_consumed_by_digital_draw_of_power(self) -> None:
         session = self.context.create_session("prepare-consumed")
         session.add_player(name="Mira", power=1)

@@ -543,7 +543,9 @@ class BattleSession:
         for enemy in enemies:
             enemy.rolled_loot = normalize_loot_payload(getattr(enemy, "rolled_loot", None))
             enemy.inventory = normalize_loot_payload(getattr(enemy, "inventory", None))
-            enemy.loot_taken_by = str(getattr(enemy, "loot_taken_by", "")) or None
+            raw_loot_taken_by = getattr(enemy, "loot_taken_by", None)
+            loot_taken_by = str(raw_loot_taken_by).strip() if raw_loot_taken_by is not None else ""
+            enemy.loot_taken_by = loot_taken_by if loot_taken_by and loot_taken_by.lower() not in {"none", "null"} else None
             if self.is_player(enemy):
                 if enemy.instance_id in legacy_player_weapon_missing:
                     enemy.melee_weapon = dict(PLACEHOLDER_PC_MELEE_WEAPON)
