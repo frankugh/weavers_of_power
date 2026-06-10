@@ -365,6 +365,62 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(result["opportunityEvents"][0]["damage"], 3)
         self.assertEqual(result["opportunityEvents"][0]["damageToToughness"], 3)
 
+    def test_npc_opportunity_attack_does_not_trigger_through_wall(self) -> None:
+        session = self.context.create_session("npc-opportunity-wall")
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[0, 0], [0, 1], [0, 2], [1, 0]])
+        session.edit_dungeon_walls("wall", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0)
+        player_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        player = session.state.enemies[player_id]
+        goblin = session.state.enemies[goblin_id]
+        session.set_entity_positions([
+            {"instanceId": player_id, "x": 0, "y": 0},
+            {"instanceId": goblin_id, "x": 1, "y": 0},
+        ])
+        session.active_turn_id = player_id
+        goblin.deck_state.draw_pile = ["basic_a3"]
+        goblin.deck_state.discard_pile = []
+
+        result = session.move_entity_with_movement(player_id, 0, 2)
+
+        self.assertEqual((player.grid_x, player.grid_y), (0, 2))
+        self.assertEqual(player.toughness_current, 5)
+        self.assertEqual(goblin.opportunity_attack_used_round, 0)
+        self.assertNotIn("opportunityEvents", result)
+
+    def test_pc_opportunity_attack_does_not_trigger_through_wall(self) -> None:
+        session = self.context.create_session("pc-opportunity-wall")
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[0, 0], [0, 1], [0, 2], [1, 0]])
+        session.edit_dungeon_walls("wall", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.add_player(name="Mira", toughness=5, armor=0, magic_armor=0)
+        player_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        player = session.state.enemies[player_id]
+        goblin = session.state.enemies[goblin_id]
+        goblin.toughness_current = 10
+        session.set_entity_positions([
+            {"instanceId": player_id, "x": 1, "y": 0},
+            {"instanceId": goblin_id, "x": 0, "y": 0},
+        ])
+        session.active_turn_id = goblin_id
+        player.deck_state.draw_pile = ["hf_martial_success_3", "hf_void_success_1", "hf_void_fail"]
+        player.deck_state.discard_pile = []
+        player.deck_state.hand = []
+
+        result = session.move_entity_with_movement(goblin_id, 0, 2)
+
+        self.assertEqual((goblin.grid_x, goblin.grid_y), (0, 2))
+        self.assertIsNone(session.pending_opportunity)
+        self.assertEqual(player.opportunity_attack_used_round, 0)
+        self.assertNotIn("pendingOpportunity", result)
+
     def test_multiple_npc_opportunity_attacks_are_reported_together(self) -> None:
         session = self.context.create_session("multi-npc-opportunity")
         session.add_player(name="Mira", toughness=20, armor=0, magic_armor=0)

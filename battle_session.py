@@ -2368,13 +2368,68 @@ class BattleSession:
             reach = self._opportunity_reach(attacker)
             old_distance = self._grid_distance(int(attacker.grid_x), int(attacker.grid_y), from_x, from_y)
             new_distance = self._grid_distance(int(attacker.grid_x), int(attacker.grid_y), to_x, to_y)
-            if old_distance <= reach and new_distance > old_distance:
+            if (
+                old_distance <= reach
+                and new_distance > old_distance
+                and self._opportunity_threatens_position(attacker, from_x, from_y, reach)
+            ):
                 attackers.append(attacker)
         return attackers
 
     @staticmethod
     def _grid_distance(ax: int, ay: int, bx: int, by: int) -> int:
         return max(abs(ax - bx), abs(ay - by))
+
+    def _opportunity_threatens_position(self, attacker: EnemyInstance, x: int, y: int, reach: int) -> bool:
+        if not self._has_position(attacker):
+            return False
+        reach = max(0, int(reach))
+        attacker_x = int(attacker.grid_x)
+        attacker_y = int(attacker.grid_y)
+        target = (int(x), int(y))
+        if self._grid_distance(attacker_x, attacker_y, target[0], target[1]) > reach:
+            return False
+        if not self.dungeon:
+            return True
+        if not self._position_is_walkable(target[0], target[1]):
+            return False
+
+        directions = [
+            (-1, -1),
+            (0, -1),
+            (1, -1),
+            (-1, 0),
+            (1, 0),
+            (-1, 1),
+            (0, 1),
+            (1, 1),
+        ]
+        frontier: list[tuple[int, int, int]] = [(attacker_x, attacker_y, 0)]
+        seen: set[tuple[int, int]] = {(attacker_x, attacker_y)}
+        while frontier:
+            current_x, current_y, distance = frontier.pop(0)
+            if (current_x, current_y) == target:
+                return True
+            if distance >= reach:
+                continue
+            for dx, dy in directions:
+                next_x = current_x + dx
+                next_y = current_y + dy
+                next_cell = (next_x, next_y)
+                if next_cell in seen:
+                    continue
+                if not self._position_in_bounds(next_x, next_y) or not self._position_is_walkable(next_x, next_y):
+                    continue
+                if dx != 0 and dy != 0:
+                    if self._diagonal_touches_any_wall(current_x, current_y, next_x, next_y):
+                        continue
+                elif self._wall_blocks_orthogonal(current_x, current_y, next_x, next_y):
+                    continue
+                if self._grid_distance(next_x, next_y, target[0], target[1]) > reach - distance - 1:
+                    continue
+                seen.add(next_cell)
+                frontier.append((next_x, next_y, distance + 1))
+        return False
 
     def _opportunity_reach(self, entity: EnemyInstance) -> int:
         if self.is_player(entity):
@@ -2795,7 +2850,7 @@ class BattleSession:
         reach = self._opportunity_reach(attacker)
         for step in route_steps:
             stop_x, stop_y = int(step["x"]), int(step["y"])
-            if self._grid_distance(int(attacker.grid_x), int(attacker.grid_y), stop_x, stop_y) > reach:
+            if not self._opportunity_threatens_position(attacker, stop_x, stop_y, reach):
                 break
             self._apply_movement_step(mover, step, base_movement=base_movement)
 
