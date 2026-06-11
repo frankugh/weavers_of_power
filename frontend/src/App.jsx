@@ -3143,7 +3143,7 @@ function App() {
       <header className="topbar">
         <div className="brand-block">
           <div className="brand-kicker">Weavers of Power</div>
-          <div className="brand-title">Battle Simulator</div>
+          <div className="brand-title">Weave Forge</div>
         </div>
 
         <div className="round-cluster">
@@ -3239,7 +3239,7 @@ function App() {
                 onClick={toggleGmRepositionMode}
                 disabled={busy || !canUseGmReposition}
               >
-                {isGmRepositionMode ? "Exit GM" : "GM Reposition"}
+                {isGmRepositionMode ? "Exit GM Mode" : "GM Mode"}
               </button>
               <button
                 className={`menu-button gm-dungeon-button ${isGmDungeonMode ? "gm-dungeon-active" : ""}`.trim()}
@@ -3248,7 +3248,7 @@ function App() {
                 onClick={toggleGmDungeonMode}
                 disabled={busy}
               >
-                {isGmDungeonMode ? "Exit Dungeon GM" : "GM Dungeon"}
+                {isGmDungeonMode ? "Exit Map Edit" : "Map Edit"}
               </button>
             </>
           ) : null}

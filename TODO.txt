@@ -15,21 +15,7 @@
 
 20) Als ik door een ally veld loop en een opp atack krijg en mijn move wordt gestopt mag ik niet op het veld van de ally stoppen, dan moet ik terug naar het veld waar ik daarvoor stond (en dit triggered dan natuurlijk niet extra opp attacks)
 
------
-
-UI:
-
-- Combat log loopt uit scherm zonder scrollbar
-
-- GM reposition moet GM mode heten denk ik, En GM Dungeon miss Dungeon Draw ofzo? Of Dungeon Edit. Of Map Edit. Of zelfs gewoon Edit. 
-
 - Light heb ik zelfs s'avonds op 115% omdat het allemaal wel erg donker is. Miss is 115% een betere default en is die 100% voor als we straks licht in kamers hebben ofzo
-
-- De naam battle simulator lijkt niet helemaal passend meer, het is wel meer geworden. 
-
-21) apply healing scherm als ik ernaast klik moet dit niet direct sluiten
-
-
 
 TODO:
 
@@ -253,3 +239,11 @@ Rechterklik show unit bij PC toont een volledig overview van niet alleen het pla
 
 
 10) Ik kan geen plaatje bij PC kiezen. 
+
+- Combat log loopt uit scherm zonder scrollbar
+
+- GM reposition moet GM mode heten denk ik, En GM Dungeon miss Dungeon Draw ofzo? Of Dungeon Edit. Of Map Edit. Of zelfs gewoon Edit. 
+
+- De naam battle simulator lijkt niet helemaal passend meer, het is wel meer geworden. 
+
+21) apply healing scherm als ik ernaast klik moet dit niet direct sluiten

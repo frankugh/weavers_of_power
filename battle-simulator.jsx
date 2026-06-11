@@ -642,7 +642,7 @@ export default function BattleSim(){
 
       {/* HEAL */}
       {modal==="heal"&&(
-        <Modal title="💚 Genezen" onClose={closeModal}>
+        <Modal title="💚 Genezen" onClose={closeModal} persistent>
           <p style={S.mDesc}>Klik op een karakter op het grid als doel.</p>
           <TC char={tc} empty="Geen doel — klik op het grid" bc="#2a6a3a"/>
           <div style={S.mRow3}>
@@ -781,8 +781,8 @@ const AB=({icon,l,ex={},onClick,act=false})=>(
     <span style={{fontSize:14}}>{icon}</span><span>{l}</span>
   </button>
 );
-const Modal=({title,onClose,children,wide=false})=>(
-  <div style={S.overlay} onClick={onClose}>
+const Modal=({title,onClose,children,wide=false,persistent=false})=>(
+  <div style={S.overlay} onClick={persistent?undefined:onClose}>
     <div style={{...S.mBox,...(wide?{minWidth:380,maxWidth:460}:{})}} onClick={e=>e.stopPropagation()}>
       <div style={S.mTitle}>{title}</div>
       {children}

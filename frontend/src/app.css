@@ -520,6 +520,22 @@ button:disabled {
 .right-rail-scroll .panel:last-child {
   flex: 1 0 190px;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.right-rail-scroll .panel:last-child .panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.right-rail-scroll .panel:last-child .log-list {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .unit-inspector-section {
