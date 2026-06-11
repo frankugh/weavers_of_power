@@ -129,6 +129,7 @@ class AttackRequest(BaseModel):
 
 class HealRequest(BaseModel):
     toughness: int = Field(default=0, ge=0)
+    temporaryToughness: int = Field(default=0, ge=0)
     armor: int = Field(default=0, ge=0)
     magicArmor: int = Field(default=0, ge=0)
     guard: int = Field(default=0, ge=0)
@@ -584,6 +585,7 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
             sid,
             lambda session: session.apply_heal_to_selected(
                 toughness=request.toughness,
+                temporary_toughness=request.temporaryToughness,
                 armor=request.armor,
                 magic_armor=request.magicArmor,
                 guard=request.guard,

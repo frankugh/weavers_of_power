@@ -832,6 +832,26 @@ class BattleApiTests(unittest.TestCase):
         player = next(enemy for enemy in payload["enemies"] if enemy["template_id"] == "player")
         self.assertEqual(player["toughness_current"], 3)
 
+    def test_heal_endpoint_can_add_player_temporary_toughness(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        self.client.post(
+            f"/api/battle/sessions/{sid}/players",
+            json={"name": "Mira", "toughness": 4, "armor": 0, "magicArmor": 0, "power": 0, "movement": 6},
+        )
+        self.client.post(
+            f"/api/battle/sessions/{sid}/attack",
+            json={"damage": 1, "burn": False, "poison": False, "slow": False, "paralyze": False, "modifiers": []},
+        )
+
+        payload = self.client.post(
+            f"/api/battle/sessions/{sid}/heal",
+            json={"toughness": 5, "temporaryToughness": 2, "armor": 0, "magicArmor": 0, "guard": 0},
+        ).json()
+
+        player = next(enemy for enemy in payload["enemies"] if enemy["template_id"] == "player")
+        self.assertEqual(player["toughness_current"], 6)
+        self.assertEqual(player["toughness_max"], 4)
+
     def test_quick_attack_endpoint_uses_active_draw_and_supports_undo(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         attacker_snapshot = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_WOLF"}).json()

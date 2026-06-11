@@ -3665,8 +3665,19 @@ class BattleSession:
             ]
         return result
 
-    def apply_heal_to_selected(self, *, toughness: int, armor: int, magic_armor: int, guard: int) -> None:
+    def apply_heal_to_selected(
+        self,
+        *,
+        toughness: int,
+        armor: int,
+        magic_armor: int,
+        guard: int,
+        temporary_toughness: int = 0,
+    ) -> None:
         entity = self._require_selected_entity()
+        temporary_toughness = max(0, int(temporary_toughness))
+        if temporary_toughness and not self.is_player(entity):
+            raise BattleSessionError("Temporary toughness is only available for player characters.")
         log = apply_heal(
             entity,
             toughness=max(0, int(toughness)),
@@ -3676,11 +3687,17 @@ class BattleSession:
             toughness_cap=entity.toughness_max,
             allow_temporary_armor=True,
         )
+        temp_text = ""
+        if temporary_toughness:
+            before_temp = entity.toughness_current
+            entity.toughness_current += temporary_toughness
+            temp_text = f", Temp toughness {before_temp}->{entity.toughness_current}"
         self._add_log(
             f"Heal on {entity.name}: Toughness {log.toughness_before}->{log.toughness_after}, "
             f"Armor {log.armor_before}->{log.armor_after}, "
             f"Magic {log.magic_armor_before}->{log.magic_armor_after}, "
             f"Guard {log.guard_before}->{log.guard_after}"
+            f"{temp_text}"
         )
         self.autosave()
 

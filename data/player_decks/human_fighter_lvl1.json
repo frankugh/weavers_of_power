@@ -3,26 +3,18 @@
   "name": "Human Fighter Level 1",
   "cards": [
     {
-      "id": "hf_master_success_reshuffle",
-      "title": "Master energy 1 - success (reshuffle)",
+      "id": "hf_master_success",
+      "title": "Master energy 1 - success",
       "energyType": "Master",
       "energyAmount": 1,
-      "outcome": "success",
-      "reshuffle": true
+      "outcome": "success"
     },
     {
-      "id": "hf_master_fate_1",
-      "title": "Master energy 1 - fate",
+      "id": "hf_master_fail",
+      "title": "Master energy 1 - fail",
       "energyType": "Master",
       "energyAmount": 1,
-      "outcome": "fate"
-    },
-    {
-      "id": "hf_master_fate_2",
-      "title": "Master energy 1 - fate",
-      "energyType": "Master",
-      "energyAmount": 1,
-      "outcome": "fate"
+      "outcome": "fail"
     },
     {
       "id": "hf_class_fighter",
@@ -69,13 +61,6 @@
       "outcome": "fail"
     },
     {
-      "id": "hf_martial_fail_1b",
-      "title": "Martial energy 1 - fail",
-      "energyType": "Martial",
-      "energyAmount": 1,
-      "outcome": "fail"
-    },
-    {
       "id": "hf_elemental_success_2a",
       "title": "Elemental energy 2 - success",
       "energyType": "Elemental",
@@ -98,13 +83,6 @@
     },
     {
       "id": "hf_elemental_fail_1a",
-      "title": "Elemental energy 1 - fail",
-      "energyType": "Elemental",
-      "energyAmount": 1,
-      "outcome": "fail"
-    },
-    {
-      "id": "hf_elemental_fail_1b",
       "title": "Elemental energy 1 - fail",
       "energyType": "Elemental",
       "energyAmount": 1,
@@ -139,28 +117,7 @@
       "outcome": "fail"
     },
     {
-      "id": "hf_light_fail_1b",
-      "title": "Light energy 1 - fail",
-      "energyType": "Light",
-      "energyAmount": 1,
-      "outcome": "fail"
-    },
-    {
       "id": "hf_void_success_1",
-      "title": "Void - success",
-      "energyType": "Void",
-      "energyAmount": 0,
-      "outcome": "success"
-    },
-    {
-      "id": "hf_void_success_2",
-      "title": "Void - success",
-      "energyType": "Void",
-      "energyAmount": 0,
-      "outcome": "success"
-    },
-    {
-      "id": "hf_void_success_3",
       "title": "Void - success",
       "energyType": "Void",
       "energyAmount": 0,
@@ -174,15 +131,14 @@
       "outcome": "fate"
     },
     {
-      "id": "hf_void_fail_reshuffle",
-      "title": "Void - fail (reshuffle)",
+      "id": "hf_void_fail",
+      "title": "Void - fail",
       "energyType": "Void",
       "energyAmount": 0,
-      "outcome": "fail",
-      "reshuffle": true
+      "outcome": "fail"
     },
     {
-      "id": "hf_void_fail",
+      "id": "hf_void_fail_2",
       "title": "Void - fail",
       "energyType": "Void",
       "energyAmount": 0,

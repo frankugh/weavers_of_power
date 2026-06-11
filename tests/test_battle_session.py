@@ -1874,6 +1874,30 @@ class BattleSessionTests(unittest.TestCase):
 
         self.assertEqual(player.toughness_current, 3)
 
+    def test_player_heal_can_add_temporary_toughness(self) -> None:
+        session = self.context.create_session("player-heal-temp-toughness")
+        session.add_player(name="Mira", toughness=4, armor=0, magic_armor=0, power=1, movement=5)
+        player = session.state.enemies[session.selected_id]
+        player.toughness_current = 3
+
+        session.apply_heal_to_selected(toughness=5, temporary_toughness=2, armor=0, magic_armor=0, guard=0)
+
+        self.assertEqual(player.toughness_current, 6)
+        self.assertEqual(player.toughness_max, 4)
+        self.assertTrue(any("Temp toughness 4->6" in line for line in session.combat_log))
+
+    def test_enemy_heal_rejects_temporary_toughness(self) -> None:
+        session = self.context.create_session("enemy-heal-temp-toughness")
+        session.add_enemy_from_template("C_WOLF")
+        enemy = session.state.enemies[session.selected_id]
+        enemy.toughness_current = 2
+        enemy.toughness_max = 3
+
+        with self.assertRaisesRegex(ValueError, "Temporary toughness"):
+            session.apply_heal_to_selected(toughness=1, temporary_toughness=1, armor=0, magic_armor=0, guard=0)
+
+        self.assertEqual(enemy.toughness_current, 2)
+
     def test_enemy_heal_still_clamps_to_toughness_max(self) -> None:
         session = self.context.create_session("enemy-heal-cap")
         session.add_enemy_from_template("C_WOLF")

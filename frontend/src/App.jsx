@@ -128,6 +128,7 @@ const EMPTY_ATTACK_FORM = {
 
 const EMPTY_HEAL_FORM = {
   toughness: 0,
+  temporaryToughness: 0,
   armor: 0,
   magicArmor: 0,
   guard: 0,
@@ -2573,6 +2574,7 @@ function App() {
         method: "POST",
         body: JSON.stringify({
           toughness: Number(healForm.toughness),
+          temporaryToughness: Number(healForm.temporaryToughness),
           armor: Number(healForm.armor),
           magicArmor: Number(healForm.magicArmor),
           guard: Number(healForm.guard),
@@ -4229,6 +4231,17 @@ function App() {
                 onChange={(event) => setHealForm((current) => ({ ...current, toughness: event.target.value }))}
               />
             </label>
+            {isPlayerSelected ? (
+              <label className="field">
+                <span>Temp toughness</span>
+                <input
+                  type="number"
+                  min="0"
+                  value={healForm.temporaryToughness}
+                  onChange={(event) => setHealForm((current) => ({ ...current, temporaryToughness: event.target.value }))}
+                />
+              </label>
+            ) : null}
             <label className="field">
               <span>Armor</span>
               <input

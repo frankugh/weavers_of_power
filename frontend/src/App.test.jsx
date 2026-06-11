@@ -1666,6 +1666,59 @@ describe("App", () => {
     expect(screen.getByRole("menuitem", { name: "Heal player" })).toBeInTheDocument();
   });
 
+  it("submits temporary toughness from the player heal modal", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      toughness_current: 3,
+      toughness_max: 4,
+      grid_x: 0,
+      grid_y: 0,
+    });
+    const healCalls = [];
+
+    renderWithSnapshot(buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1"],
+      enemies: [player],
+    }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/heal" && requestOptions?.method === "POST") {
+          healCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse(buildSnapshot({
+            selectedId: "player-1",
+            order: ["player-1"],
+            enemies: [{ ...player, toughness_current: 6 }],
+          }));
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Player 1");
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Heal player" }));
+    await user.clear(await screen.findByLabelText("Toughness"));
+    await user.type(screen.getByLabelText("Toughness"), "1");
+    await user.clear(screen.getByLabelText("Temp toughness"));
+    await user.type(screen.getByLabelText("Temp toughness"), "2");
+    await user.click(screen.getByRole("button", { name: "Apply healing" }));
+
+    await waitFor(() => {
+      expect(healCalls).toEqual([{
+        toughness: 1,
+        temporaryToughness: 2,
+        armor: 0,
+        magicArmor: 0,
+        guard: 0,
+      }]);
+    });
+  });
+
   it("only shows suspect investigation when the selected player is within 5ft", async () => {
     const player = buildEnemy({
       instance_id: "player-1",
