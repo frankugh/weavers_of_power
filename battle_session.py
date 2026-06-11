@@ -14,6 +14,21 @@ import uuid
 from typing import Iterable, Optional
 
 from engine.combat import WOUND_CARD_ID, AttackMod, apply_attack, apply_heal
+from engine.character_builder import (
+    CUSTOM_ART_ROOT,
+    CharacterBuilderError,
+    SUPPORTED_ART_EXTENSIONS,
+    build_character_profile,
+    build_character_art_options,
+    card_from_payload,
+    card_library_from_profile,
+    catalog_payload,
+    character_summary,
+    deck_from_profile,
+    load_character_catalog,
+    resolve_character_art,
+    slugify,
+)
 from engine.creature_workbook_save import (
     BACKUP_DIR_NAME,
     CreatureWorkbookSaveError,
@@ -255,6 +270,7 @@ class BattleSessionContext:
     player_decks_dir: Optional[Path] = None
     enemies_dir: Optional[Path] = None
     creatures_workbook: Optional[Path] = None
+    character_catalog_path: Optional[Path] = None
     images_dir: Optional[Path] = None
     save_version: int = 3
 
@@ -271,18 +287,26 @@ class BattleSessionContext:
             if self.player_decks_dir
             else (self.root / "data" / "player_decks")
         )
+        self.character_catalog_path = (
+            Path(self.character_catalog_path)
+            if self.character_catalog_path
+            else (self.root / "data" / "character_builder_catalog.json")
+        )
         self.enemies_dir = Path(self.enemies_dir) if self.enemies_dir else (self.root / "data" / "enemies")
         self.images_dir = Path(self.images_dir) if self.images_dir else (self.root / "images")
         self.saves_dir = Path(self.saves_dir) if self.saves_dir else (self.root / "saves")
         self.manual_dir = self.saves_dir / "manual"
+        self.character_dir = self.saves_dir / "characters"
         self.creature_workbook_backup_dir = self.saves_dir / BACKUP_DIR_NAME
         self._creature_workbook_lock = threading.Lock()
 
         self.saves_dir.mkdir(parents=True, exist_ok=True)
         self.manual_dir.mkdir(parents=True, exist_ok=True)
+        self.character_dir.mkdir(parents=True, exist_ok=True)
 
         self.decks = load_decks(self.decks_dir)
         self.player_decks = load_decks(self.player_decks_dir) if self.player_decks_dir.exists() else {}
+        self.character_catalog = load_character_catalog(self.character_catalog_path)
         self.enemy_templates = {}
         self.card_index = {}
         self.reload_creature_templates()
@@ -306,6 +330,104 @@ class BattleSessionContext:
 
     def current_path(self, sid: str) -> Path:
         return self.saves_dir / f"_current_{sid}.json"
+
+    def character_art_options(self) -> list[dict]:
+        return build_character_art_options(self.character_catalog, self.images_dir)
+
+    def character_catalog_payload(self) -> dict:
+        return catalog_payload(self.character_catalog, self.character_art_options())
+
+    def list_character_profiles(self) -> list[dict]:
+        profiles: list[dict] = []
+        for path in sorted(self.character_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            payload = load_save_payload(path)
+            if isinstance(payload, dict):
+                profiles.append(character_summary(payload))
+        return profiles
+
+    def create_character_profile(self, request: dict) -> dict:
+        base_name = slugify(str(request.get("name") or "character"))
+        for index in range(1000):
+            suffix = now_stamp() if index == 0 else f"{now_stamp()}_{index + 1}"
+            character_id = f"{base_name}_{suffix}"
+            path = self._character_profile_path(character_id)
+            if not path.exists():
+                break
+        else:
+            raise BattleSessionError("Could not create a unique character id")
+        try:
+            profile = build_character_profile(
+                self.character_catalog,
+                request,
+                character_id=character_id,
+                images_dir=self.images_dir,
+                character_art_options=self.character_art_options(),
+            )
+        except CharacterBuilderError as exc:
+            raise BattleSessionError(str(exc)) from exc
+        save_current(path, profile)
+        return {"character": character_summary(profile)}
+
+    def save_character_art_upload(self, filename: str, content: bytes) -> dict:
+        source_name = Path(filename or "character_art.png")
+        ext = source_name.suffix.lower()
+        if ext not in SUPPORTED_ART_EXTENSIONS:
+            raise BattleSessionError("Character art must be a PNG, JPG, JPEG, or WEBP image")
+        if len(content) > 8 * 1024 * 1024:
+            raise BattleSessionError("Character art uploads must be 8 MB or smaller")
+        if not content:
+            raise BattleSessionError("Character art upload is empty")
+
+        custom_dir = (self.images_dir / CUSTOM_ART_ROOT).resolve()
+        images_root = self.images_dir.resolve()
+        if not custom_dir.is_relative_to(images_root):
+            raise BattleSessionError("Invalid custom art directory")
+        custom_dir.mkdir(parents=True, exist_ok=True)
+
+        base = slugify(source_name.stem, fallback="custom_art")
+        for index in range(1000):
+            suffix = now_stamp() if index == 0 else f"{now_stamp()}_{index + 1}"
+            target = custom_dir / f"{base}_{suffix}{ext}"
+            if not target.exists():
+                break
+        else:
+            raise BattleSessionError("Could not create a unique character art filename")
+
+        target.write_bytes(content)
+        image_path = target.relative_to(self.images_dir).as_posix()
+        try:
+            art = resolve_character_art(
+                {"source": "upload", "imagePath": image_path, "label": source_name.stem},
+                images_dir=self.images_dir,
+                character_art_options=self.character_art_options(),
+            )
+        except CharacterBuilderError as exc:
+            raise BattleSessionError(str(exc)) from exc
+        return {"art": art}
+
+    def load_character_profile(self, character_id: str) -> dict:
+        path = self._character_profile_path(character_id)
+        payload = load_save_payload(path)
+        if not isinstance(payload, dict):
+            raise BattleSessionError("Character profile not found")
+        return payload
+
+    def delete_character_profile(self, character_id: str) -> dict:
+        path = self._character_profile_path(character_id)
+        if not path.exists():
+            raise BattleSessionError("Character profile not found")
+        path.unlink()
+        return {"characters": self.list_character_profiles()}
+
+    def _character_profile_path(self, character_id: str) -> Path:
+        safe_id = slugify(character_id, fallback="")
+        if not safe_id or safe_id != str(character_id or "").strip():
+            raise BattleSessionError("Invalid character id")
+        path = (self.character_dir / f"{safe_id}.json").resolve()
+        character_root = self.character_dir.resolve()
+        if not path.is_relative_to(character_root) or path.parent != character_root:
+            raise BattleSessionError("Invalid character path")
+        return path
 
     def reload_creature_templates(self) -> None:
         self.enemy_templates = load_creatures_from_workbook(self.creatures_workbook, images_dir=self.images_dir)
@@ -820,6 +942,51 @@ class BattleSession:
             physical_cards=physical_cards,
             rnd=self._rng,
         )
+        self.state.add_enemy(instance)
+        self._auto_place_entity(instance)
+        self.order.append(instance.instance_id)
+        self.selected_id = instance.instance_id
+        self._add_log(f"Added player: {instance.name}")
+        self.autosave()
+
+    def add_player_from_character(self, character_id: str, *, physical_cards: bool = False) -> None:
+        profile = self.context.load_character_profile(character_id)
+        deck = deck_from_profile(profile)
+        choices = profile.get("choices") or {}
+        stats = choices.get("stats") or {}
+        try:
+            art = resolve_character_art(
+                profile.get("art"),
+                images_dir=self.context.images_dir,
+                character_art_options=self.context.character_art_options(),
+            )
+        except CharacterBuilderError:
+            art = {"imagePath": "anonymous.png", "imageUrl": "/images/anonymous.png", "label": "Anonymous", "source": "anonymous"}
+        instance = spawn_player(
+            str(profile.get("name") or "Player"),
+            toughness=max(0, int(stats.get("toughness", HUMAN_FIGHTER_DEFAULTS["toughness"]) or 0)),
+            armor=max(0, int(stats.get("armor", HUMAN_FIGHTER_DEFAULTS["armor"]) or 0)),
+            magic_armor=max(0, int(stats.get("magicArmor", HUMAN_FIGHTER_DEFAULTS["magic_armor"]) or 0)),
+            power=max(0, int(stats.get("power", HUMAN_FIGHTER_DEFAULTS["power"]) or 0)),
+            movement=max(0, int(stats.get("movement", HUMAN_FIGHTER_DEFAULTS["movement"]) or 0)),
+            base_guard=max(0, int(stats.get("baseGuard", HUMAN_FIGHTER_DEFAULTS["base_guard"]) or 0)),
+            initiative_modifier=max(0, int(stats.get("initiativeModifier", HUMAN_FIGHTER_DEFAULTS["initiative_modifier"]) or 0)),
+            player_deck=deck,
+            physical_cards=physical_cards,
+            rnd=self._rng,
+        )
+        instance.image = art.get("imagePath") or "anonymous.png"
+        instance.character_profile = {
+            "id": profile.get("id"),
+            "name": profile.get("name"),
+            "className": profile.get("className"),
+            "ancestryName": profile.get("ancestryName"),
+            "energyTypes": list(choices.get("energyTypes") or []),
+            "mainArt": choices.get("mainArt"),
+            "art": dict(art),
+            "gearPreset": dict(profile.get("gearPreset") or {}),
+        }
+        instance.card_library = card_library_from_profile(profile)
         self.state.add_enemy(instance)
         self._auto_place_entity(instance)
         self.order.append(instance.instance_id)
@@ -4386,7 +4553,17 @@ class BattleSession:
         return " + ".join(parts) if parts else (card.title or card_id)
 
     def _card_for_id(self, card_id: str) -> Optional[Card]:
-        return self.context.card_index.get(card_id) or self._legacy_player_card(card_id)
+        indexed = self.context.card_index.get(card_id)
+        if indexed:
+            return indexed
+        for entity in self.state.enemies.values():
+            card_payload = dict(getattr(entity, "card_library", {}) or {}).get(card_id)
+            if isinstance(card_payload, dict):
+                try:
+                    return card_from_payload(card_payload)
+                except (KeyError, TypeError, ValueError):
+                    continue
+        return self._legacy_player_card(card_id)
 
     @staticmethod
     def _legacy_player_card(card_id: str) -> Optional[Card]:
@@ -5043,11 +5220,10 @@ class BattleSession:
             entity.draw_bonus_next_turn = 0
             self._add_log(f"{entity.name} has +{next_turn_bonus} draw bonus available this turn.")
 
-        # Strengthen overflow: temporary toughness expires at start of the next turn and grants +1 draw.
+        # Strengthen overflow is temporary toughness only; it no longer grants draw.
         if entity.toughness_current > entity.toughness_max:
             entity.toughness_current = entity.toughness_max
-            entity.draw_bonus_pending = min(3, int(getattr(entity, "draw_bonus_pending", 0) or 0) + 1)
-            self._add_log(f"{entity.name} temporary toughness expired; +1 draw bonus available this turn.")
+            self._add_log(f"{entity.name} temporary toughness expired.")
 
     def _start_turn(self, entity: EnemyInstance) -> None:
         if self.is_player(entity) and not self._uses_physical_cards(entity):

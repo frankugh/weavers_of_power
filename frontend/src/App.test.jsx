@@ -205,13 +205,114 @@ const metaPayload = {
   ],
 };
 
+const characterCatalogPayload = {
+  energyTypes: ["Martial", "Elemental", "Light", "Nature", "Shadow"],
+  defaultStats: {
+    toughness: 3,
+    armor: 1,
+    magicArmor: 0,
+    power: 4,
+    movement: 6,
+    baseGuard: 1,
+    initiativeModifier: 2,
+  },
+  classes: [
+    {
+      id: "fighter",
+      name: "Fighter",
+      requiredEnergyTypes: ["Martial"],
+      choiceRule: "anyTwo",
+      mainArtOptions: ["Martial"],
+      statOverrides: { toughness: 4 },
+      card: { name: "Fighter's Resolve", text: "Choose one:\n- Draw 1 card.", autoDraw: 0 },
+      gearPresets: [{ id: "melee", name: "Melee", items: ["basic weapon", "shield"] }],
+    },
+    {
+      id: "cleric",
+      name: "Cleric",
+      requiredEnergyTypes: ["Martial", "Light"],
+      choiceRule: "anyOne",
+      mainArtOptions: ["Light"],
+      forbiddenEnergyTypes: ["Shadow"],
+      card: { name: "Light Channeled", text: "Choose one:\n- Draw 1 card.", autoDraw: 0 },
+      gearPresets: [{ id: "default", name: "Recommended", items: ["mace", "shield"] }],
+    },
+  ],
+  ancestries: [
+    { id: "human", name: "Human", card: { name: "Human Ancestry", text: "Draw 2 cards.", autoDraw: 2 } },
+    {
+      id: "halfling",
+      name: "Halfling",
+      card: {
+        name: "Halfling Ancestry",
+        text: "Draw 1 card. You may Disengage without spending an action this turn.",
+        autoDraw: 1,
+      },
+    },
+  ],
+  characterArt: {
+    anonymous: {
+      source: "anonymous",
+      imagePath: "anonymous.png",
+      imageUrl: "/images/anonymous.png",
+      label: "Anonymous",
+    },
+    options: [
+      {
+        id: "fighter_human_male",
+        classId: "fighter",
+        ancestryId: "human",
+        gender: "male",
+        variant: "",
+        source: "catalog",
+        imagePath: "Playing_Characters/fighter_human_male.png",
+        imageUrl: "/images/Playing_Characters/fighter_human_male.png",
+        label: "Male",
+      },
+      {
+        id: "fighter_human_female",
+        classId: "fighter",
+        ancestryId: "human",
+        gender: "female",
+        variant: "",
+        source: "catalog",
+        imagePath: "Playing_Characters/fighter_human_female.png",
+        imageUrl: "/images/Playing_Characters/fighter_human_female.png",
+        label: "Female",
+      },
+      {
+        id: "cleric_human_female",
+        classId: "cleric",
+        ancestryId: "human",
+        gender: "female",
+        variant: "",
+        source: "catalog",
+        imagePath: "Playing_Characters/cleric_human_female.png",
+        imageUrl: "/images/Playing_Characters/cleric_human_female.png",
+        label: "Female",
+      },
+    ],
+  },
+};
+
 function renderWithSnapshot(snapshot, options = {}) {
-  const { extraFetch = () => undefined, meta = metaPayload } = options;
+  const {
+    extraFetch = () => undefined,
+    meta = metaPayload,
+    characterCatalog = characterCatalogPayload,
+    characters = { characters: [] },
+  } = options;
 
   window.history.pushState({}, "", `/?sid=${snapshot.sid}`);
   global.fetch.mockImplementation((url, requestOptions) => {
     if (url === "/api/battle/meta") {
       return jsonResponse(meta);
+    }
+    if (url === "/api/battle/character-builder/catalog") {
+      return jsonResponse(characterCatalog);
+    }
+    if (url === "/api/battle/characters" && (!requestOptions?.method || requestOptions.method === "GET")) {
+      return jsonResponse(characters);
     }
     if (url === `/api/battle/sessions/${snapshot.sid}`) {
       return jsonResponse(snapshot);
@@ -447,6 +548,12 @@ describe("App", () => {
     global.fetch.mockImplementation((url, requestOptions) => {
       if (url === "/api/battle/meta") {
         return jsonResponse(metaPayload);
+      }
+      if (url === "/api/battle/character-builder/catalog") {
+        return jsonResponse(characterCatalogPayload);
+      }
+      if (url === "/api/battle/characters") {
+        return jsonResponse({ characters: [] });
       }
       if (url === "/api/battle/sessions" && requestOptions?.method === "POST") {
         return jsonResponse(buildSnapshot());
@@ -1929,6 +2036,68 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Investigate Suspect" })).toBeEnabled();
   });
 
+  it("shows concrete willpower outcomes when room search draws fate", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 0,
+      grid_y: 0,
+    });
+    const dungeon = buildDungeon({ currentPcRoomIds: ["room-1"] });
+    const resolveCalls = [];
+
+    renderWithSnapshot(buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1"],
+      enemies: [player],
+      dungeon,
+    }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/dungeon/search/start" && requestOptions?.method === "POST") {
+          return jsonResponse(buildSnapshot({
+            selectedId: "player-1",
+            order: ["player-1"],
+            enemies: [player],
+            dungeon,
+            pendingSearch: {
+              kind: "search",
+              entityId: "player-1",
+              roomId: "room-1",
+              hasFate: true,
+              successCount: 1,
+              fateCount: 2,
+            },
+          }));
+        }
+        if (url === "/api/battle/sessions/sid-123/dungeon/search/resolve" && requestOptions?.method === "POST") {
+          resolveCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse(buildSnapshot({
+            selectedId: "player-1",
+            order: ["player-1"],
+            enemies: [player],
+            dungeon,
+            pendingSearch: null,
+          }));
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Player 1");
+    await user.click(screen.getByRole("button", { name: "Search Room" }));
+
+    expect(await screen.findByRole("button", { name: "Willpower inzetten voor 3 successen" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "1 succes" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Overslaan" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "1 succes" }));
+    expect(resolveCalls).toEqual([{ useWillpower: false, partyWalk: false }]);
+  });
+
   it("asks for willpower when suspect investigation draws fate", async () => {
     const user = userEvent.setup();
     const player = buildEnemy({
@@ -1989,7 +2158,7 @@ describe("App", () => {
 
     await findMapToken("Player 1");
     await user.click(screen.getByRole("button", { name: "Investigate Suspect" }));
-    await user.click(await screen.findByRole("button", { name: "Willpower inzetten" }));
+    await user.click(await screen.findByRole("button", { name: "Willpower inzetten voor 1 succes" }));
 
     expect(resolveCalls).toEqual([{ useWillpower: true }]);
   });
@@ -3296,6 +3465,177 @@ describe("App", () => {
     await waitFor(() => {
       expect(playerCalls[0]).toEqual(expect.objectContaining({ physicalCards: true }));
     });
+  });
+
+  it("locks required energy choices in the character builder", async () => {
+    const user = userEvent.setup();
+    renderWithSnapshot(buildSnapshot());
+
+    await findMapToken("Goblin 1");
+    await openAddUnitModal(user);
+    await user.click(screen.getByRole("tab", { name: "Character Builder" }));
+
+    expect(screen.getByRole("checkbox", { name: "Martial" })).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText("Class"), "cleric");
+    expect(screen.getByRole("checkbox", { name: "Light" })).toBeDisabled();
+  });
+
+  it("shows character art choices without auto-selecting when multiple matches exist", async () => {
+    const user = userEvent.setup();
+    renderWithSnapshot(buildSnapshot());
+
+    await findMapToken("Goblin 1");
+    await openAddUnitModal(user);
+    await user.click(screen.getByRole("tab", { name: "Character Builder" }));
+
+    expect(screen.getByRole("button", { name: "Anonymous" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Male" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Female" })).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(screen.getByRole("button", { name: "Female" }));
+    expect(screen.getByRole("button", { name: "Female" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("auto-selects character art when exactly one class and ancestry match exists", async () => {
+    const user = userEvent.setup();
+    renderWithSnapshot(buildSnapshot());
+
+    await findMapToken("Goblin 1");
+    await openAddUnitModal(user);
+    await user.click(screen.getByRole("tab", { name: "Character Builder" }));
+    await user.selectOptions(screen.getByLabelText("Class"), "cleric");
+
+    expect(screen.getByRole("button", { name: "Female" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("uploads custom character art and sends it with the saved profile", async () => {
+    const user = userEvent.setup();
+    const uploadCalls = [];
+    const characterCalls = [];
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/character-builder/art/upload" && requestOptions?.method === "POST") {
+          uploadCalls.push(requestOptions.body?.get("file")?.name);
+          return jsonResponse({
+            art: {
+              source: "upload",
+              imagePath: "Playing_Characters/extra/custom/portrait_20260611_203000.png",
+              imageUrl: "/images/Playing_Characters/extra/custom/portrait_20260611_203000.png",
+              label: "portrait",
+            },
+          });
+        }
+        if (url === "/api/battle/characters" && requestOptions?.method === "POST") {
+          characterCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse({
+            character: {
+              id: "mira_20260611_203000",
+              name: "Mira",
+              classId: "fighter",
+              className: "Fighter",
+              ancestryId: "human",
+              ancestryName: "Human",
+              energyTypes: ["Martial", "Elemental", "Light"],
+              mainArt: "Martial",
+              art: {
+                source: "upload",
+                imagePath: "Playing_Characters/extra/custom/portrait_20260611_203000.png",
+                imageUrl: "/images/Playing_Characters/extra/custom/portrait_20260611_203000.png",
+                label: "portrait",
+              },
+              gearPreset: { id: "melee", name: "Melee", items: ["basic weapon", "shield"] },
+            },
+          });
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await openAddUnitModal(user);
+    await user.click(screen.getByRole("tab", { name: "Character Builder" }));
+    await user.type(screen.getByLabelText("Name"), "Mira");
+    await user.upload(screen.getByLabelText("Upload custom art"), new File(["fake"], "portrait.png", { type: "image/png" }));
+    await user.click(await screen.findByRole("button", { name: /portrait custom/ }));
+    await user.click(screen.getByRole("button", { name: "Save character" }));
+
+    expect(uploadCalls).toEqual(["portrait.png"]);
+    await waitFor(() => {
+      expect(characterCalls[0]).toEqual(expect.objectContaining({
+        art: expect.objectContaining({
+          source: "upload",
+          imagePath: "Playing_Characters/extra/custom/portrait_20260611_203000.png",
+        }),
+      }));
+    });
+  });
+
+  it("saves and spawns a character builder profile", async () => {
+    const user = userEvent.setup();
+    const characterCalls = [];
+    const spawnCalls = [];
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/characters" && requestOptions?.method === "POST") {
+          characterCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse({
+            character: {
+              id: "mira_20260611_203000",
+              name: "Mira",
+              classId: "fighter",
+              className: "Fighter",
+              ancestryId: "halfling",
+              ancestryName: "Halfling",
+              energyTypes: ["Martial", "Elemental", "Light"],
+              mainArt: "Martial",
+              gearPreset: { id: "melee", name: "Melee", items: ["basic weapon", "shield"] },
+            },
+          });
+        }
+        if (url === "/api/battle/sessions/sid-123/players/from-character" && requestOptions?.method === "POST") {
+          spawnCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse(buildSnapshot({
+            selectedId: "player-1",
+            order: ["enemy-1", "player-1"],
+            enemies: [buildEnemy(), buildEnemy({
+              instance_id: "player-1",
+              template_id: "player",
+              name: "Mira",
+              is_player: true,
+            })],
+          }));
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await openAddUnitModal(user);
+    await user.click(screen.getByRole("tab", { name: "Character Builder" }));
+    await user.type(screen.getByLabelText("Name"), "Mira");
+    await user.selectOptions(screen.getByLabelText("Ancestry"), "halfling");
+    await user.click(screen.getByRole("button", { name: "Save character" }));
+
+    await waitFor(() => {
+      expect(characterCalls[0]).toEqual(expect.objectContaining({
+        name: "Mira",
+        classId: "fighter",
+        ancestryId: "halfling",
+        energyTypes: ["Martial", "Elemental", "Light"],
+        mainArt: "Martial",
+        deckUpgrades: expect.objectContaining({
+          Martial: expect.objectContaining({ success_1: 1, success_2: 1 }),
+        }),
+      }));
+    });
+
+    const savedRow = screen.getByText("Mira").closest(".saved-character-row");
+    await user.click(within(savedRow).getByRole("button", { name: "Spawn" }));
+
+    await waitFor(() => {
+      expect(spawnCalls).toEqual([{ characterId: "mira_20260611_203000", physicalCards: false }]);
+    });
+    expect(await findMapToken("Mira")).toBeInTheDocument();
   });
 
   it("submits a custom enemy through the existing custom request shape", async () => {
@@ -5878,6 +6218,12 @@ describe("App", () => {
     global.fetch.mockImplementation((url, requestOptions) => {
       if (url === "/api/battle/meta") {
         return jsonResponse(metaPayload);
+      }
+      if (url === "/api/battle/character-builder/catalog") {
+        return jsonResponse(characterCatalogPayload);
+      }
+      if (url === "/api/battle/characters") {
+        return jsonResponse({ characters: [] });
       }
       if (url === "/api/battle/sessions/sid-123") {
         return jsonResponse(buildSnapshot({ activeTurnId: "enemy-1", movementState: buildMovementState() }));

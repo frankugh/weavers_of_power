@@ -118,6 +118,8 @@ class EnemyInstance:
     physical_wounds: int = 0
     opportunity_attack_used_round: int = 0
     melee_weapon: dict = field(default_factory=dict)
+    character_profile: dict = field(default_factory=dict)
+    card_library: dict = field(default_factory=dict)
 
     statuses: dict[str, dict] = field(default_factory=dict)
 

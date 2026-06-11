@@ -28,12 +28,15 @@ function formatErrorDetail(detail, fallback) {
 }
 
 export async function requestJson(path, options = {}) {
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
+  const headers = {
+    ...(isFormData ? {} : { "Content-Type": "application/json" }),
+    ...(options.headers || {}),
+  };
+  const { headers: _headers, ...requestOptions } = options;
   const response = await fetch(path, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-    ...options,
+    ...requestOptions,
+    headers,
   });
 
   if (!response.ok) {

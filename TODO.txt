@@ -1,0 +1,255 @@
+
+25) Als ik een combat end en er nog enemies zijn kan ik nu geen search room doen
+
+----
+
+11) Ik kan de naam en stats van PC niet wijzigen na aanmaken. (Miss goed voor show unit scherm?)
+
+2) Ik wilde fighter strenghtenen in wizz beurt, maar app ondersteund niet iemand anders strengthenen. Je kunt een adjacent unit strengthenen als je ernaast staat (of cleric kan het op 30 ft)
+
+14) quick attack met if ally is adjacent wordt niet goed geparsed / begrepen in battle maps
+
+18) Ik kan de grapple niet aanvallen
+
+19) Held prey is niet geïmplementeerd. De worg kon niet weglopen met een grappled fighter
+
+20) Als ik door een ally veld loop en een opp atack krijg en mijn move wordt gestopt mag ik niet op het veld van de ally stoppen, dan moet ik terug naar het veld waar ik daarvoor stond (en dit triggered dan natuurlijk niet extra opp attacks)
+
+-----
+
+UI:
+
+- Combat log loopt uit scherm zonder scrollbar
+
+- GM reposition moet GM mode heten denk ik, En GM Dungeon miss Dungeon Draw ofzo? Of Dungeon Edit. Of Map Edit. Of zelfs gewoon Edit. 
+
+- Light heb ik zelfs s'avonds op 115% omdat het allemaal wel erg donker is. Miss is 115% een betere default en is die 100% voor als we straks licht in kamers hebben ofzo
+
+- De naam battle simulator lijkt niet helemaal passend meer, het is wel meer geworden. 
+
+21) apply healing scherm als ik ernaast klik moet dit niet direct sluiten
+
+
+
+TODO:
+
+-----
+
+Equipment en loot:
+
+Hoe gaan we weapons/armor/gear/loot inventory bijhouden? 
+(loot iets bij show unit?  En hoe met auto attacks en weapon modifiers?)
+
+23) ik kan nu alsnog niet daadwerkelijk looten
+13) Ik kan geen wapen/gear kiezen bij PC creatie
+22) Loot moet in excel tabellen komen
+
+-----
+
+17) Enemies moeten ook deuren kunnen openen
+
+
+16) Secret doors kun je nu in een lange gang overal vinden in die gang, er is geen restrictie anders dan in de kamer. Dit kan duidelijker, maar heeft niet veel haast nu
+- Line of sight implementeren zou leuker zijn dan alleen deur open/dicht logica. Zodat bv die buitengangen je niet meteen alles ziet. Dat heeft ook interactie met search room, want je zoekt alleen langs muren waar je zicht hebt.
+
+- Move unit met pijltjes ondersteunen? 
+
+- Bij units moet je (in elk geval in GM Mode) de base values zoals armor enzo kunnen aanpassen, ook mid-game 
+
+- Bij secret doors wil ik default random flavourteksten kunnen overschrijven als GM in de dungeon draw modus
+
+- Per chamber optionele flavour tekst (GM description + room details)
+
+- In GM mode en Dungeon Draw mode wil ik units naar unplaced en terug kunnen repositionen 
+	o Een unplaced unit krijgt geen beurten totdat deze placed wordt. 
+	o Als GM een unplaced unit wil placen in een encounter ronde geef dan een pop-up met can't roll initiative during active round, wait for end of round or place manually   wait | manually   bij manually komt unit achter in initiative en kan GM zelf schuiven. Tussen rondes rold de unit initiative zonder aanpassingen en wordt geplaatst. GM kan natuurlijk altijd wijzigen indien gewenst. 
+	o Unplaced panel kun je minimaliseren en heropenen. 
+
+- Verschil tussen sessie opslaan/laden en kamer/dungeon/encounter opslaan/laden. Het 2e heeft nog geen start combat.
+
+- Path zien wann je een movement doet. 
+
+
+
+TODO Epic:
+ 
+- Extra terrein toevoegen
+- Props, treasures, traps
+
+- Enemy groups
+
+- Karakters maken via panel (custom enemy uitbreiden, en mogelijkheid tot opslaan als type, en mogelijkheid andere decks te maken)
+- Meer content: enemies / decks
+
+- Create PC verbeteren v2 (lvl 1): 	 
+	o Besteed X punten op energy om kaarten te verhogen volgens regels
+	o Kies skills en verdeel punten volgens regels (met quick button voor random waardes)
+	o Kies specializations en verdeel punten volgens regels (met quick button voor random waardes)
+	o Kies wapens v1 mag deze op TODO en skip zetten
+	o Kies spells menu maar deze is nu 'TODO en skip' 
+	o Kies default plaatje of upload plaatje om evt anoniem plaatje te vervangen
+	o Kies naam en optioneel flaw (open tekst veld) en optioneel background story (open tekst veld) 
+
+- Muziek, plaatjes, filmpjes, animaties in ruimtes
+
+- Simulaties voor combat rating 
+	o Eerst een lvl 1 karakter uitrekenen wat gem dmg in / out is als meting, dan hoef je geen volledig PC combat simulatie te hebben. 
+	o Combat simulator:
+		- Evt met af en toe random special effecten, 
+		- of bv 5 soorten PC's met verschillende krachten / zwaktes. 
+		- Misschien daarnaast een aantal typische enemy groepen zoals 1 goblin, 5 goblins, 1 trol, 1 schim, etc. 
+	o Conceptueel uitdenken hoe om te gaan met party size
+	o CR van enemy kunnen berekenen via simulatie
+	o CR van kamers kunnen berekenen via simulatie
+	o CR van dungeons kunnen berekenen via simulatie
+
+- Journey maps (plaatjes)  
+
+- LLMs voor interacties teksten
+- Dungeon AI generatie en populatie
+- Journey map generatie
+
+
+
+|||||||||||||||||||||||||||||||||||||||||||||
+||||||||||||||||| Afgerond ||||||||||||||||||
+|||||||||||||||||||||||||||||||||||||||||||||
+
+
+- Battle room in main panel zoals voorbeeld react ipv selected unit zichtbaar in main panel
+
+- Miss scrollen alleen rechter pane en rest fitten op scherm?
+
+- Undo / redo knop
+
+- Zoom in/uit en move map door te slepen  
+
+- Kaart draw animatie en inspectie
+
+27-04
+
+- Movement door battle room implementeren
+
+- Rechter en dubbelklik op units op map rework
+
+- Start encounter
+
+- Meer content: enemies / decks
+
+- Add enemy dynamisch zodat extra enemies/decks zichtbaar zijn zodra ik ze toevoeg. 
+
+- Introduceer start nieuwe ronde
+
+- Verbeterde add custom unit
+
+29-04
+
+- hovers boven waardes in unit inspector met uitleg
+
+- In NPC beurt: quick attack button based on draw
+
+- Roll initiative en start encounter
+
+- Attack/heal player
+
+- Dungeons drawen (grote update)
+
+- tijdens tekenen ipv na tekenen de aanpassingen zien
+
+- deur orientatie intelligent h/v
+
+- rooms visible slimmer
+
+- Menutjes in DM dungeon draw mooier
+
+- Bij add unit / undo verlaat ik GM Dungeon Draw modus
+
+- Totale grid size via draw ipv resize knop
+
+- rectangle drawing
+
+01-05
+
+- Reposition en andere acties mogelijk in DM dungeon draw modus 
+ 
+- Helderheidsscale voor overdag
+
+- Slimmer fitten van view van map
+
+- GM Dungeon Draw modus select/pan/draw 
+
+- Unit copy 
+
+- 1) Het is bijna onmogelijk om muren te tekenen zonder dat hij in alle richtingen aan het tekenen is, dit is veel te gevoelig, zie ook plaatje waar je ziet dat hij 3x een zijkant opging
+2) muren zijn te dun en daarom niet goed te zien
+
+- Player draws
+
+- Roll initiative fix wann je deur opent naar kamer met nieuwe enemies
+
+- Secret doors
+
+- Flavour teksts en fixes voor secret doors
+
+- Graag een highlight animatie op een spotted secret door
+
+6-06)
+
+1) Acties zijn mogelijk buiten combat. Alleen attack/heal player zouden mogelijk moeten zijn. Geen echte acties zoals strengthen/guard/etc
+
+3) Ik kon geen temp armor geven van staff of stone van wizzard. Als ik heal wizzard druk en armor druk blijft armor gelijk. Voor nu miss gwn +1 armor en dan als je begin beurt meer current armor dan max armor hebt reset je armor. 
+
+5) Na laatste enemy down kom ik niet in end of combat. 
+
+6) Als ik met selected unit een actie doe terwijl die geen turn heeft krijg ik alsnog pop-up 3e actie deze beurt, maar het is geen beurt. Miss andere melding hier
+
+7) Ik heb geen mogelijkheid om combat handmatig te beeïndigen 
+
+9) Ik kan units die down zijn niet looten. Selecteren en loot is disabeled.
+Maar sowieso wil je gwn rechterklik en bij reposition/show ook loot hebben als optie
+
+24) Er is ineens een bug dat ik een nieuw encounter niet kan hebben, dan blijft hij end combat ipv next zeggen nadat er dus nieuwe enemies zijn. 
+Ik vind het gevaarlijk als dit soort bugs ontstaan nadat het al werkte. Is er iets dat we kunnen doen om te voorkomen dat het code project straks een ping pong spelletje wordt waarbij ik a fix en b omvalt, waarna we b fixen en a omvalt. 
+
+15) Als ik een secret door vind zou het logisch zijn als ik er ook naast sta
+
+F) Start Character builder
+12) Ik kan geen PC from scratch maken
+
+26) Strengthen overflow geeft geen extra kaarten meer tegenwoordig. Is dat al correct in de app?
+
+8) WP wel/niet inzetten bij secret deur search / investigate zegt willpower inzetten of overslaan, maar ik vind hoe we dat bij opportunity attacks doen mooier, toon wat je doet in knop (X successen / wp inzetten voor X+F successen)
+
+|||||
+Opschoningen BL eerder opgepakt:
+
+- Wonden ook toevoegen / tonen in card energy panel in een soort subpanel ofzo? 
+
+p - Draw of Power wil ik zien welke energie ik heb en dat de hele beurt duidelijk zien bv bovenin main panel (let op draw X is NIET draw of power!). Maar het visueel een beetje leuk pls. 
+	1) class/race kaarten tekst loopt uit scherm
+	2) locatie van panel niet heel logisch
+`	3) In unit inspector scherm zit er nog en moet eruit
+	4) De ruitjes van main panel drawen niet wanneer card panel weer sluit. Ik weet niet zeker hoe dat met het unplaced panel werkte, maar check die ook even.
+
+- Dungeon ipv room combat
+- Dungeon overview 
+
+- Create PC (lvl 1): 
+
+Action bar:
+- Guard actie (zelfde scherm als draw X, maar uitkomst is guard verhoging gelijk aan het gekozen getal)
+- Heal actie ook?
+- Redesign action bar, hij is nu erg rommelig en het is wat onlogisch dat sommige zaken acties zijn andere unit adjustments
+- Een gecreeërde PC kun je vanaf nu laden. Er komen ook default PCs voor alle classes voor quickload, te beginnen met fighter en wizzard (en snel te volgen door cleric en later ook andere classes) 
+Rechterklik show unit bij PC toont een volledig overview van niet alleen het plaatje maar daar rechts van ook tabs met info die is ingevuld. Tab met alle skill waardes. Tab met naam en teksten. Tab met notities die je kunt bijhouden / aanvullen zo je wilt. 
+- Out of combat modus
+
+- Oppertunity attacks
+
+- In Dungeon Draw als ik unit move zou ik deze graag echt 'oppakken' en dragen naar nieuwe locatie en daar weer loslaten. Ook graag direct de uniit die ik aanklik en start te slepen geselecteerd maken, nu moet ik eerst selecteren en kan daarna pas slepen. 
+- Move unit met slepen ondersteunen in gm modus net als in Dungeon Draw. 
+
+|||||
+
+
+10) Ik kan geen plaatje bij PC kiezen. 

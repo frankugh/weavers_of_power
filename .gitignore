@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 *.pyo
 
+_tmp_saves_debug/
+
 # Virtual environments
 .venv/
 venv/

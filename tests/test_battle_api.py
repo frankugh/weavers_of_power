@@ -84,6 +84,117 @@ class BattleApiTests(unittest.TestCase):
         self.assertIn("coverageStatus", templates_by_id["C_GOBLIN"]["simActions"][0])
         self.assertEqual(templates_by_id["C_WOLF"]["category"], "Changelings")
 
+    def test_character_builder_catalog_endpoint_returns_classes_and_ancestries(self) -> None:
+        response = self.client.get("/api/battle/character-builder/catalog")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("Martial", payload["energyTypes"])
+        class_ids = {entry["id"] for entry in payload["classes"]}
+        ancestry_by_id = {entry["id"]: entry for entry in payload["ancestries"]}
+        self.assertIn("fighter", class_ids)
+        self.assertEqual(ancestry_by_id["halfling"]["card"]["autoDraw"], 1)
+        self.assertIn("Disengage without spending an action", ancestry_by_id["halfling"]["card"]["text"])
+        art_paths = {entry["imagePath"] for entry in payload["characterArt"]["options"]}
+        self.assertIn("Playing_Characters/fighter_human_male.png", art_paths)
+        fighter_human = next(entry for entry in payload["characterArt"]["options"] if entry["imagePath"] == "Playing_Characters/fighter_human_male.png")
+        self.assertEqual(fighter_human["classId"], "fighter")
+        self.assertEqual(fighter_human["ancestryId"], "human")
+        self.assertEqual(fighter_human["imageUrl"], "/images/Playing_Characters/fighter_human_male.png")
+
+    def test_character_art_upload_endpoint_stores_custom_images(self) -> None:
+        images_dir = Path(self.temp_dir.name) / "images"
+        saves_dir = Path(self.temp_dir.name) / "upload_saves"
+        context = BattleSessionContext(root=PROJECT_ROOT, saves_dir=saves_dir, images_dir=images_dir)
+        app = FastAPI()
+        register_battle_api(app, context)
+        client = TestClient(app)
+
+        response = client.post(
+            "/api/battle/character-builder/art/upload",
+            files={"file": ("portrait.png", b"not really png", "image/png")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        art = response.json()["art"]
+        self.assertEqual(art["source"], "upload")
+        self.assertTrue(art["imagePath"].startswith("Playing_Characters/extra/custom/portrait_"))
+        self.assertEqual((images_dir / art["imagePath"]).read_bytes(), b"not really png")
+
+        bad_response = client.post(
+            "/api/battle/character-builder/art/upload",
+            files={"file": ("portrait.txt", b"nope", "text/plain")},
+        )
+        self.assertEqual(bad_response.status_code, 400)
+        self.assertIn("PNG, JPG, JPEG, or WEBP", bad_response.json()["detail"])
+
+    def test_character_profile_crud_and_spawn_endpoint(self) -> None:
+        create_response = self.client.post(
+            "/api/battle/characters",
+            json={
+                "name": "Mira",
+                "classId": "fighter",
+                "ancestryId": "halfling",
+                "energyTypes": ["Martial", "Elemental", "Light"],
+                "mainArt": "Martial",
+                "deckUpgrades": {
+                    "Martial": {"success_1": 1, "success_2": 1},
+                    "Elemental": {"success_1": 1, "success_2": 1},
+                    "Light": {"success_1": 1, "success_2": 1},
+                },
+                "classImprovementTarget": "success_1",
+                "gearPresetId": "melee",
+                "art": {
+                    "source": "catalog",
+                    "imagePath": "Playing_Characters/fighter_human_male.png",
+                    "label": "Male",
+                },
+            },
+        )
+        self.assertEqual(create_response.status_code, 200)
+        character_id = create_response.json()["character"]["id"]
+        self.assertEqual(create_response.json()["character"]["art"]["imagePath"], "Playing_Characters/fighter_human_male.png")
+
+        listed = self.client.get("/api/battle/characters").json()["characters"]
+        self.assertIn(character_id, {entry["id"] for entry in listed})
+
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        spawned = self.client.post(
+            f"/api/battle/sessions/{sid}/players/from-character",
+            json={"characterId": character_id},
+        )
+        self.assertEqual(spawned.status_code, 200)
+        player = next(enemy for enemy in spawned.json()["enemies"] if enemy["template_id"] == "player")
+        self.assertEqual(player["name"], "Mira")
+        self.assertEqual(player["image_url"], "/images/Playing_Characters/fighter_human_male.png")
+        self.assertEqual(player["character_profile"]["className"], "Fighter")
+        self.assertEqual(len(player["card_library"]), 20)
+
+        deleted = self.client.delete(f"/api/battle/characters/{character_id}")
+        self.assertEqual(deleted.status_code, 200)
+        self.assertNotIn(character_id, {entry["id"] for entry in deleted.json()["characters"]})
+
+    def test_character_profile_endpoint_rejects_invalid_energy_without_override(self) -> None:
+        response = self.client.post(
+            "/api/battle/characters",
+            json={
+                "name": "Mira",
+                "classId": "cleric",
+                "ancestryId": "human",
+                "energyTypes": ["Martial", "Light", "Shadow"],
+                "mainArt": "Light",
+                "deckUpgrades": {
+                    "Martial": {"success_1": 1, "success_2": 1},
+                    "Light": {"success_1": 1, "success_2": 1},
+                    "Shadow": {"success_1": 1, "success_2": 1},
+                },
+                "classImprovementTarget": "success_1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("GM override", response.json()["detail"])
+
     def test_create_and_load_session(self) -> None:
         create_response = self.client.post("/api/battle/sessions")
         self.assertEqual(create_response.status_code, 200)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 from typing import Any, Literal, Optional
 
-from fastapi import HTTPException
+from fastapi import File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from battle_session import (
@@ -72,6 +72,35 @@ class AddPlayerRequest(BaseModel):
     movement: int = Field(default=6, ge=0)
     baseGuard: int = Field(default=1, ge=0)
     initiativeModifier: int = Field(default=2, ge=0)
+    physicalCards: bool = False
+
+
+class CharacterStatsRequest(BaseModel):
+    toughness: int = Field(default=3, ge=0)
+    armor: int = Field(default=1, ge=0)
+    magicArmor: int = Field(default=0, ge=0)
+    power: int = Field(default=4, ge=0)
+    movement: int = Field(default=6, ge=0)
+    baseGuard: int = Field(default=1, ge=0)
+    initiativeModifier: int = Field(default=2, ge=0)
+
+
+class CharacterProfileRequest(BaseModel):
+    name: str = ""
+    classId: str
+    ancestryId: str
+    energyTypes: list[str]
+    mainArt: str
+    gmOverride: bool = False
+    deckUpgrades: dict[str, dict[str, int]] = Field(default_factory=dict)
+    classImprovementTarget: str = "success_1"
+    gearPresetId: str = ""
+    stats: CharacterStatsRequest = Field(default_factory=CharacterStatsRequest)
+    art: dict[str, Any] = Field(default_factory=dict)
+
+
+class SpawnCharacterRequest(BaseModel):
+    characterId: str
     physicalCards: bool = False
 
 
@@ -303,6 +332,36 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def battle_meta():
         return context.metadata()
 
+    @api_app.get("/api/battle/character-builder/catalog")
+    def character_builder_catalog():
+        return context.character_catalog_payload()
+
+    @api_app.post("/api/battle/character-builder/art/upload")
+    async def upload_character_builder_art(file: UploadFile = File(...)):
+        try:
+            content = await file.read(8 * 1024 * 1024 + 1)
+            return context.save_character_art_upload(file.filename or "character_art.png", content)
+        except BattleSessionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @api_app.get("/api/battle/characters")
+    def character_profiles():
+        return {"characters": context.list_character_profiles()}
+
+    @api_app.post("/api/battle/characters")
+    def create_character_profile(request: CharacterProfileRequest):
+        try:
+            return context.create_character_profile(request.model_dump())
+        except BattleSessionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @api_app.delete("/api/battle/characters/{character_id}")
+    def delete_character_profile(character_id: str):
+        try:
+            return context.delete_character_profile(character_id)
+        except BattleSessionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @api_app.post("/api/combat-sim/simulate")
     def combat_simulate(request: CombatSimRequest):
         strategy_a = request.strategyA or request.strategy or DEFAULT_TARGET_STRATEGY
@@ -398,6 +457,16 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
                 base_guard=request.baseGuard,
                 initiative_modifier=request.initiativeModifier,
                 player_deck_id=request.playerDeckId,
+                physical_cards=request.physicalCards,
+            ),
+        )
+
+    @api_app.post("/api/battle/sessions/{sid}/players/from-character")
+    def add_player_from_character(sid: str, request: SpawnCharacterRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.add_player_from_character(
+                request.characterId,
                 physical_cards=request.physicalCards,
             ),
         )

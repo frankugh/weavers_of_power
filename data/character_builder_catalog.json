@@ -1,0 +1,349 @@
+{
+  "energyTypes": ["Martial", "Elemental", "Light", "Nature", "Shadow"],
+  "defaultStats": {
+    "toughness": 3,
+    "armor": 1,
+    "magicArmor": 0,
+    "power": 4,
+    "movement": 6,
+    "baseGuard": 1,
+    "initiativeModifier": 2
+  },
+  "classes": [
+    {
+      "id": "fighter",
+      "name": "Fighter",
+      "coreIdentity": "Durable Martial combatant.",
+      "requiredEnergyTypes": ["Martial"],
+      "choiceRule": "anyTwo",
+      "mainArtOptions": ["Martial"],
+      "statOverrides": { "toughness": 4 },
+      "startingChanges": [
+        "Your starting Toughness is 4 instead of 3.",
+        "Increase your Athletics by +1. This can raise Athletics above the normal starting maximum.",
+        "Choose one Energy card of your main Weaving Art and set its energy value to 3."
+      ],
+      "card": {
+        "name": "Fighter's Resolve",
+        "text": "Choose one:\n- Draw 1 card.\n- Bind 1 Martial Energy card from your hand.\n- Choose 1 non-Martial Energy card in your hand. Until the end of this turn, you may use energy from that card as 1 Martial energy, regardless of its printed value.",
+        "autoDraw": 0
+      },
+      "features": [
+        "Skilled Combatant: Once per long rest, after you perform a Martial Energy Action, you may perform another Martial Energy Action as a free action. Use the same Martial energy value as the first action."
+      ],
+      "gearPresets": [
+        { "id": "melee", "name": "Melee", "items": ["basic weapon", "shield", "travel armor", "explorer's pack"] },
+        { "id": "ranged", "name": "Ranged", "items": ["bow", "basic one-handed weapon", "travel armor", "explorer's pack"] }
+      ]
+    },
+    {
+      "id": "wizard",
+      "name": "Wizard",
+      "coreIdentity": "Flexible Elemental caster and arcane problem-solver.",
+      "requiredEnergyTypes": ["Martial", "Elemental"],
+      "choiceRule": "anyOne",
+      "mainArtOptions": ["Elemental"],
+      "startingChanges": [
+        "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
+        "You learn one additional Elemental Thread.",
+        "You learn one Elemental Weaving Modifier or Technique of your choice."
+      ],
+      "card": {
+        "name": "Elemental Spark",
+        "text": "Choose one:\n- Draw 1 card.\n- Bind 1 Elemental Energy card from your hand.\n- Choose 1 non-Elemental Energy card in your hand. Until the end of this turn, you may use energy from that card as 1 Elemental energy, regardless of its printed value.",
+        "autoDraw": 0
+      },
+      "features": [
+        "Elemental Preparation: Once per long rest, when you perform an Elemental action, you may treat one non-Elemental Energy card in your hand as Elemental energy at its printed value. If that action uses a Weaving Modifier that requires you to discard a card, you may ignore one discard-a-card cost for that action."
+      ],
+      "gearPresets": [
+        { "id": "default", "name": "Recommended", "items": ["elemental staff", "travel armor", "explorer's pack"] }
+      ]
+    },
+    {
+      "id": "cleric",
+      "name": "Cleric",
+      "coreIdentity": "Light healer and armored support caster.",
+      "requiredEnergyTypes": ["Martial", "Light"],
+      "choiceRule": "anyOne",
+      "mainArtOptions": ["Light"],
+      "forbiddenEnergyTypes": ["Shadow"],
+      "startingChanges": [
+        "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
+        "You may use Heal and Strengthen on targets within 30 ft.",
+        "You learn one additional Light Thread."
+      ],
+      "card": {
+        "name": "Light Channeled",
+        "text": "Choose one:\n- Draw 1 card.\n- Bind 1 Light Energy card from your hand.\n- Choose 1 non-Light Energy card in your hand. Until the end of this turn, you may use energy from that card as 1 Light energy, regardless of its printed value.",
+        "autoDraw": 0
+      },
+      "features": [
+        "Healing Hands: Once per long rest, when the party finishes a short rest, remove a number of Wounds from party members equal to your Power. Divide this healing among characters as you choose."
+      ],
+      "gearPresets": [
+        { "id": "default", "name": "Recommended", "items": ["mace or other basic weapon", "shield", "travel armor", "explorer's pack"] }
+      ]
+    },
+    {
+      "id": "druid",
+      "name": "Druid",
+      "coreIdentity": "Nature support caster and spirit-bonded wilderness expert.",
+      "requiredEnergyTypes": ["Martial", "Nature"],
+      "choiceRule": "anyOne",
+      "mainArtOptions": ["Nature"],
+      "startingChanges": [
+        "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
+        "You learn the Summon Spirit Weaving Technique."
+      ],
+      "card": {
+        "name": "Green Pulse",
+        "text": "Choose one:\n- Draw 1 card.\n- Bind 1 Nature Energy card from your hand.\n- Choose 1 non-Nature Energy card in your hand. Until the end of this turn, you may use energy from that card as 1 Nature energy, regardless of its printed value.",
+        "autoDraw": 0
+      },
+      "features": [
+        "Master of the Land: Choose one natural terrain type. While you are in similar terrain, you have advantage on Survival checks.",
+        "Healing Spirits: Spirits you summon may use Spirit Heal X.",
+        "Spirit Bond: Once per long rest, ask nearby spirits for omens. Scry 7. Allies within 3 fields may Scry 3."
+      ],
+      "gearPresets": [
+        { "id": "default", "name": "Recommended", "items": ["staff or basic weapon", "travel armor", "explorer's pack"] }
+      ]
+    },
+    {
+      "id": "dark_mage",
+      "name": "Dark Mage",
+      "coreIdentity": "Dangerous Shadow caster with demonic backlash.",
+      "requiredEnergyTypes": ["Martial", "Shadow"],
+      "choiceRule": "anyOne",
+      "mainArtOptions": ["Shadow"],
+      "forbiddenEnergyTypes": ["Light"],
+      "startingChanges": [
+        "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
+        "You learn one Shadow Weaving Modifier or Technique of your choice."
+      ],
+      "card": {
+        "name": "All is Darkness",
+        "text": "Choose one:\n- Draw 1 card.\n- Bind 1 Shadow Energy card from your hand.\n- Choose 1 non-Shadow Energy card in your hand. Until the end of this turn, you may use energy from that card as 1 Shadow energy, regardless of its printed value.",
+        "autoDraw": 0
+      },
+      "features": [
+        "Shadow Possession: Once per long rest, you may take 1 Wound into your discard pile for a combat or skill-check burst."
+      ],
+      "gearPresets": [
+        { "id": "default", "name": "Recommended", "items": ["dark staff", "dagger or other basic weapon", "travel armor", "explorer's pack"] }
+      ]
+    },
+    {
+      "id": "shadowmaster",
+      "name": "Shadowmaster",
+      "coreIdentity": "Stealth striker who weaponizes concealment.",
+      "requiredEnergyTypes": ["Martial", "Shadow"],
+      "choiceRule": "anyOne",
+      "mainArtOptions": ["Martial", "Shadow"],
+      "startingChanges": [
+        "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
+        "Increase your Stealth by +1. This can raise Stealth above the normal starting maximum."
+      ],
+      "card": {
+        "name": "Veil of Mist",
+        "text": "Spend 1 action. Make a Stealth check contested by one target's Alertness. If you win, your next Strike against that target this turn may use your Unseen Strike feature as if you were Hidden. This does not make you Hidden. If you are already Hidden, the Strike still benefits from Unseen Strike only once.",
+        "autoDraw": 0
+      },
+      "features": [
+        "Unseen Strike: While you are Hidden in combat, your strikes add your Power to their damage total instead of regular advantage +2 DMG bonus.",
+        "Veil of Shadows: Once per long rest, as a free action, choose a 3 x 3 area within 30 ft. Mist and shadow fill that area for 1 minute."
+      ],
+      "gearPresets": [
+        { "id": "default", "name": "Recommended", "items": ["two daggers", "travel armor", "explorer's pack"] },
+        { "id": "bow_swap", "name": "Bow swap", "items": ["dagger", "bow", "travel armor", "explorer's pack"] }
+      ]
+    },
+    {
+      "id": "knight",
+      "name": "Knight",
+      "coreIdentity": "Armored protector and melee controller.",
+      "requiredEnergyTypes": ["Martial"],
+      "choiceRule": "anyTwo",
+      "mainArtOptions": ["Martial"],
+      "startingChanges": [
+        "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
+        "You learn the Ironbody Martial Thread.",
+        "While wearing armor, you gain +1 Armor.",
+        "You may choose a versatile weapon as part of your starting equipment without reducing your starting wealth."
+      ],
+      "card": {
+        "name": "Knight's Challenge",
+        "text": "Draw 1 card. If your next Martial melee Strike this turn deals damage, the target has disadvantage on attacks against creatures other than you until the end of its next turn.",
+        "autoDraw": 1
+      },
+      "features": [
+        "Knight's Endurance: Once per long rest, discard all Wounds from your hand. Then draw that many cards and gain temporary Toughness equal to your Toughness."
+      ],
+      "gearPresets": [
+        { "id": "default", "name": "Recommended", "items": ["longsword or other versatile weapon", "shield", "travel armor", "explorer's pack"] }
+      ]
+    },
+    {
+      "id": "paladin",
+      "name": "Paladin",
+      "coreIdentity": "Light-fueled frontline striker.",
+      "requiredEnergyTypes": ["Martial", "Light"],
+      "choiceRule": "anyOne",
+      "mainArtOptions": ["Martial", "Light"],
+      "forbiddenEnergyTypes": ["Shadow"],
+      "startingChanges": [
+        "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
+        "You learn the Mercy's Voice Light Thread."
+      ],
+      "card": {
+        "name": "Divine Strike",
+        "text": "Choose one:\n- Draw 1 card.\n- Spend 1 action and 1 Light Energy card from your hand. Your next Martial melee Strike this turn deals +DMG equal to that card's energy value.",
+        "autoDraw": 0
+      },
+      "features": [
+        "Light's Endurance: When you use Heal on yourself, you may draw 1 card for each Wound discarded from your hand this way.",
+        "Light Surge: Once per long rest, when you use Divine Strike, you may take 1 Wound into your discard pile to add any number of Light cards in your hand to that Strike's damage."
+      ],
+      "gearPresets": [
+        { "id": "default", "name": "Recommended", "items": ["basic weapon", "shield", "travel armor", "explorer's pack"] }
+      ]
+    },
+    {
+      "id": "ranger",
+      "name": "Ranger",
+      "coreIdentity": "Wilderness hunter and mobile Martial striker.",
+      "requiredEnergyTypes": ["Martial", "Nature"],
+      "choiceRule": "anyOne",
+      "mainArtOptions": ["Martial", "Nature"],
+      "startingChanges": [
+        "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
+        "Increase your Survival by +1. If you do not have Survival, learn it at value 2 instead."
+      ],
+      "card": {
+        "name": "Hunter's Instinct",
+        "text": "Draw 1 card. Your next Martial Strike this turn deals +1 DMG. If that Strike deals damage, you may move up to half your Movement after resolving it. This movement does not provoke opportunity attacks from the target.",
+        "autoDraw": 1
+      },
+      "features": [
+        "Master Bowman: When you perform a Martial ranged Strike you may discard a card to have that Strike deal +1 DMG.",
+        "Fury: Once per long rest, when you perform a Martial ranged Strike, you may target up to 2 different creatures instead of one."
+      ],
+      "gearPresets": [
+        { "id": "default", "name": "Recommended", "items": ["bow", "basic melee weapon", "travel armor", "explorer's pack"] }
+      ]
+    },
+    {
+      "id": "necromancer",
+      "name": "Necromancer",
+      "coreIdentity": "Shadow caster who raises and commands the undead.",
+      "requiredEnergyTypes": ["Martial", "Shadow"],
+      "choiceRule": "anyOne",
+      "mainArtOptions": ["Shadow"],
+      "forbiddenEnergyTypes": ["Light"],
+      "startingChanges": [
+        "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
+        "You learn the Sense the Unliving Thread.",
+        "You learn the Animate Dead Technique instead of the Sickness Technique."
+      ],
+      "card": {
+        "name": "Grave Rot",
+        "text": "Choose one:\n- Draw 1 card.\n- If you command your undead to Strike this turn, each undead that deals damage with its Strike also applies Poison 1.",
+        "autoDraw": 0
+      },
+      "features": [
+        "Pouch of Preservation: One undead raised with Animate Dead may be raised from your pouch instead of a nearby corpse.",
+        "Open the Graves: Once per long rest, when you use Animate Dead, you may animate one additional undead."
+      ],
+      "gearPresets": [
+        { "id": "default", "name": "Recommended", "items": ["staff or basic weapon", "travel armor", "explorer's pack"] }
+      ]
+    },
+    {
+      "id": "berserker",
+      "name": "Berserker",
+      "coreIdentity": "Reckless melee striker who turns injury into momentum.",
+      "requiredEnergyTypes": ["Martial"],
+      "choiceRule": "anyTwo",
+      "mainArtOptions": ["Martial"],
+      "startingChanges": [
+        "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
+        "Increase your Athletics by +1. This can raise Athletics above the normal starting maximum."
+      ],
+      "card": {
+        "name": "Blood Rush",
+        "text": "Draw 1 card. You may Shed 1 Wound as a free action. If you Shed a Wound with this card, your next Martial melee Strike this turn gains +1 DMG.",
+        "autoDraw": 1
+      },
+      "features": [
+        "Easily Enraged: When you take one or more Wounds during combat and are not Berserk, those Wounds enter your discard pile instead of your hand. Then you become Berserk."
+      ],
+      "gearPresets": [
+        { "id": "default", "name": "Recommended", "items": ["heavy melee weapon or two basic melee weapons", "travel armor", "explorer's pack"] }
+      ]
+    },
+    {
+      "id": "monk",
+      "name": "Monk",
+      "coreIdentity": "Disciplined mystic who spends Ki to bend body, mind, gravity, and energy.",
+      "requiredEnergyTypes": ["Martial"],
+      "choiceRule": "monk",
+      "mainArtOptions": ["Martial", "Elemental", "Light"],
+      "startingChanges": [
+        "Choose Elemental or Light as your second energy type. Choose 1 additional energy type of your choice.",
+        "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
+        "You have 3 Ki. You recover 1 Ki on a short rest and all Ki on a long rest."
+      ],
+      "card": {
+        "name": "Flow of Ki",
+        "text": "Spend 1 action. Until the start of your next turn, you may use one Ki Technique without spending Ki.",
+        "autoDraw": 0
+      },
+      "features": [
+        "Ki Techniques: Focused Awareness, Ignore Gravity, Bend Reality, Uncanny Dodge, Deep Zen."
+      ],
+      "gearPresets": [
+        { "id": "default", "name": "Recommended", "items": ["staff or basic melee weapon", "travel armor", "explorer's pack"] }
+      ]
+    },
+    {
+      "id": "diviner",
+      "name": "Diviner",
+      "coreIdentity": "Prophetic deck-controller who prepares key moments before they happen.",
+      "requiredEnergyTypes": ["Martial"],
+      "choiceRule": "twoNonMartial",
+      "mainArtOptions": ["Elemental", "Light", "Nature", "Shadow"],
+      "startingChanges": [
+        "Choose two non-Martial energy types.",
+        "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
+        "You have 3 Foresight. You recover 1 Foresight on a short rest and all Foresight on a long rest."
+      ],
+      "card": {
+        "name": "Foreseen Alignment",
+        "text": "Name one energy type in your deck. Then Scry 3. Finally, draw 1 card. You may use Foresight before drawing this card. If the drawn card is an Energy card of the named type, or a Master Energy card, it becomes aligned until the end of this turn.",
+        "autoDraw": 0
+      },
+      "features": [
+        "Foresight: When your deck is reshuffled, you may spend 1 Foresight to set aside 1 non-Martial Energy card from your discard pile before shuffling.",
+        "Vision: The GM may give you visions of what was, what is, or what may come."
+      ],
+      "gearPresets": [
+        { "id": "default", "name": "Recommended", "items": ["staff", "dagger or other basic weapon", "travel armor", "explorer's pack"] }
+      ]
+    }
+  ],
+  "ancestries": [
+    { "id": "human", "name": "Human", "card": { "name": "Human Ancestry", "text": "Draw 2 cards.", "autoDraw": 2 } },
+    { "id": "elf", "name": "Elf", "card": { "name": "Elf Ancestry", "text": "Scry 3, then draw 1 card.", "autoDraw": 0 } },
+    { "id": "dwarf", "name": "Dwarf", "card": { "name": "Dwarf Ancestry", "text": "Discard 1 or 2 cards from your hand; these may be Wounds. Then, draw 1 card for each non-Wound you discarded.", "autoDraw": 0 } },
+    { "id": "gnome", "name": "Gnome", "card": { "name": "Gnome Ancestry", "text": "Scry 7.", "autoDraw": 0 } },
+    { "id": "orc", "name": "Orc", "card": { "name": "Orc Ancestry", "text": "You may take the Grapple action as a free action this turn. If your Grapple succeeds, you may use one Martial energy card you spent this turn a second time on another action this turn.", "autoDraw": 0 } },
+    { "id": "tiefling", "name": "Tiefling", "card": { "name": "Tiefling Ancestry", "text": "Draw 3 cards, then discard 2 non-Wound cards.", "autoDraw": 0 } },
+    { "id": "half_elf", "name": "Half-Elf", "card": { "name": "Half-Elf Ancestry", "text": "Shuffle any number of non-Wound cards from your hand back into your deck. Then draw that many cards.", "autoDraw": 0 } },
+    { "id": "half_dwarf", "name": "Half-Dwarf", "card": { "name": "Half-Dwarf Ancestry", "text": "Discard 1 card from your hand; this may be a Wound. Then discard 1 non-Wound, non-Void card from your hand if able. Then draw 2 cards.", "autoDraw": 0 } },
+    { "id": "half_giant", "name": "Half-Giant", "card": { "name": "Half-Giant Ancestry", "text": "Discard any number of cards from your hand, including Wounds. Then draw 1 card.", "autoDraw": 0 } },
+    { "id": "halfling", "name": "Halfling", "card": { "name": "Halfling Ancestry", "text": "Draw 1. You may Disengage without spending an action this turn.", "autoDraw": 1 } },
+    { "id": "drow", "name": "Drow", "card": { "name": "Drow Ancestry", "text": "Scry 2, then draw 1 card. If you are Hidden or in shadow/darkness/mist, Scry 4 instead.", "autoDraw": 0 } },
+    { "id": "dragonborn", "name": "Dragonborn", "card": { "name": "Dragonborn Ancestry", "text": "Bind 1 (set aside 1 basic energy card from your hand; it is not discarded at end of turn, and joins a future Draw of Power of your choice). Then, Scry 2.", "autoDraw": 0 } }
+  ]
+}

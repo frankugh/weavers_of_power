@@ -1,0 +1,148 @@
+{
+  "id": "human_cleric_lvl1",
+  "name": "Human Cleric Level 1",
+  "cards": [
+    {
+      "id": "hf_master_success",
+      "title": "Master energy 1 - success",
+      "energyType": "Master",
+      "energyAmount": 1,
+      "outcome": "success"
+    },
+    {
+      "id": "hf_master_fail",
+      "title": "Master energy 1 - fail",
+      "energyType": "Master",
+      "energyAmount": 1,
+      "outcome": "fail"
+    },
+    {
+      "id": "hf_class_cleric",
+      "title": "Light Channeled - Draw 1 card. Until the end of this turn, energy from cards in your hand that is not Light may be used as Light energy. Energy converted this way counts as value 1, regardless of its printed value.",
+      "energyType": "Class",
+      "outcome": "fate",
+      "extraDraw": 1,
+      "instruction": "Until the end of this turn, energy from cards in your hand that is not Light may be used as Light energy (value 1)."
+    },
+    {
+      "id": "hf_ancestry_human",
+      "title": "Human Ancestry - Draw 2 cards.",
+      "energyType": "Ancestry",
+      "outcome": "fate",
+      "extraDraw": 2,
+      "instruction": "Draw 2 cards."
+    },
+    {
+      "id": "hf_light_success_3",
+      "title": "Light energy 3 - success",
+      "energyType": "Light",
+      "energyAmount": 3,
+      "outcome": "success"
+    },
+    {
+      "id": "hf_light_success_2",
+      "title": "Light energy 2 - success",
+      "energyType": "Light",
+      "energyAmount": 2,
+      "outcome": "success"
+    },
+    {
+      "id": "hf_light_fate_1",
+      "title": "Light energy 1 - fate",
+      "energyType": "Light",
+      "energyAmount": 1,
+      "outcome": "fate"
+    },
+    {
+      "id": "hf_light_fail_1a",
+      "title": "Light energy 1 - fail",
+      "energyType": "Light",
+      "energyAmount": 1,
+      "outcome": "fail"
+    },
+    {
+      "id": "hf_martial_success_2a",
+      "title": "Martial energy 2 - success",
+      "energyType": "Martial",
+      "energyAmount": 2,
+      "outcome": "success"
+    },
+    {
+      "id": "hf_martial_success_2b",
+      "title": "Martial energy 2 - success",
+      "energyType": "Martial",
+      "energyAmount": 2,
+      "outcome": "success"
+    },
+    {
+      "id": "hf_martial_fate_1",
+      "title": "Martial energy 1 - fate",
+      "energyType": "Martial",
+      "energyAmount": 1,
+      "outcome": "fate"
+    },
+    {
+      "id": "hf_martial_fail_1a",
+      "title": "Martial energy 1 - fail",
+      "energyType": "Martial",
+      "energyAmount": 1,
+      "outcome": "fail"
+    },
+    {
+      "id": "hf_elemental_success_2a",
+      "title": "Elemental energy 2 - success",
+      "energyType": "Elemental",
+      "energyAmount": 2,
+      "outcome": "success"
+    },
+    {
+      "id": "hf_elemental_success_2b",
+      "title": "Elemental energy 2 - success",
+      "energyType": "Elemental",
+      "energyAmount": 2,
+      "outcome": "success"
+    },
+    {
+      "id": "hf_elemental_fate_1",
+      "title": "Elemental energy 1 - fate",
+      "energyType": "Elemental",
+      "energyAmount": 1,
+      "outcome": "fate"
+    },
+    {
+      "id": "hf_elemental_fail_1a",
+      "title": "Elemental energy 1 - fail",
+      "energyType": "Elemental",
+      "energyAmount": 1,
+      "outcome": "fail"
+    },
+    {
+      "id": "hf_void_success_1",
+      "title": "Void - success",
+      "energyType": "Void",
+      "energyAmount": 0,
+      "outcome": "success"
+    },
+    {
+      "id": "hf_void_fate",
+      "title": "Void - fate",
+      "energyType": "Void",
+      "energyAmount": 0,
+      "outcome": "fate"
+    },
+    {
+      "id": "hf_void_fail",
+      "title": "Void - fail",
+      "energyType": "Void",
+      "energyAmount": 0,
+      "outcome": "fail"
+    },
+    {
+      "id": "hf_void_fail_2",
+      "title": "Void - fail",
+      "energyType": "Void",
+      "energyAmount": 0,
+      "outcome": "fail"
+    }
+  ]
+}

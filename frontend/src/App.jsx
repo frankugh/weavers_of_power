@@ -134,6 +134,181 @@ const EMPTY_HEAL_FORM = {
   guard: 0,
 };
 
+const BUILDER_UPGRADE_KEYS = [
+  { key: "success_1", label: "Success 1" },
+  { key: "success_2", label: "Success 2" },
+  { key: "fate_1", label: "Fate" },
+  { key: "fail_1", label: "Fail" },
+];
+
+const DEFAULT_CHARACTER_STATS = {
+  toughness: 3,
+  armor: 1,
+  magicArmor: 0,
+  power: 4,
+  movement: 6,
+  baseGuard: 1,
+  initiativeModifier: 2,
+};
+
+function findCatalogClass(catalog, classId) {
+  return (catalog?.classes || []).find((entry) => entry.id === classId) || null;
+}
+
+function findCatalogAncestry(catalog, ancestryId) {
+  return (catalog?.ancestries || []).find((entry) => entry.id === ancestryId) || null;
+}
+
+function defaultStatsForClass(catalog, classEntry) {
+  return {
+    ...DEFAULT_CHARACTER_STATS,
+    ...(catalog?.defaultStats || {}),
+    ...(classEntry?.statOverrides || {}),
+  };
+}
+
+function defaultGearPresetId(classEntry) {
+  return classEntry?.gearPresets?.[0]?.id || "";
+}
+
+function defaultEnergyTypesForClass(catalog, classEntry) {
+  const energyTypes = catalog?.energyTypes || [];
+  if (!classEntry) {
+    return energyTypes.slice(0, 3);
+  }
+  const chosen = [...(classEntry.requiredEnergyTypes || [])];
+  const addEnergy = (energyType) => {
+    if (chosen.length < 3 && energyType && !chosen.includes(energyType)) {
+      chosen.push(energyType);
+    }
+  };
+  if (classEntry.choiceRule === "monk") {
+    addEnergy("Elemental");
+  }
+  for (const energyType of energyTypes) {
+    if (classEntry.choiceRule === "twoNonMartial" && energyType === "Martial") {
+      continue;
+    }
+    if (classEntry.forbiddenEnergyTypes?.includes(energyType)) {
+      continue;
+    }
+    addEnergy(energyType);
+  }
+  return chosen.slice(0, 3);
+}
+
+function anonymousCharacterArt(catalog) {
+  return catalog?.characterArt?.anonymous || {
+    source: "anonymous",
+    imagePath: "anonymous.png",
+    imageUrl: "/images/anonymous.png",
+    label: "Anonymous",
+  };
+}
+
+function matchingCharacterArtOptions(catalog, classId, ancestryId) {
+  return (catalog?.characterArt?.options || []).filter(
+    (option) => option.classId === classId && option.ancestryId === ancestryId,
+  );
+}
+
+function sameCharacterArt(left, right) {
+  return Boolean(left && right && left.imagePath === right.imagePath && left.source === right.source);
+}
+
+function defaultCharacterArt(catalog, classId, ancestryId, currentArt = null) {
+  if (currentArt?.source === "upload") {
+    return currentArt;
+  }
+  const options = matchingCharacterArtOptions(catalog, classId, ancestryId);
+  if (currentArt?.source === "catalog" && options.some((option) => sameCharacterArt(option, currentArt))) {
+    return currentArt;
+  }
+  if (options.length === 1) {
+    return options[0];
+  }
+  return anonymousCharacterArt(catalog);
+}
+
+function emptyDeckUpgrades(energyTypes) {
+  const result = {};
+  energyTypes.forEach((energyType) => {
+    result[energyType] = { success_1: 1, success_2: 1, fate_1: 0, fail_1: 0 };
+  });
+  return result;
+}
+
+function createCharacterBuilderForm(catalog, classId = null) {
+  const classEntry = findCatalogClass(catalog, classId) || catalog?.classes?.[0] || null;
+  const ancestryId = catalog?.ancestries?.[0]?.id || "";
+  const energyTypes = defaultEnergyTypesForClass(catalog, classEntry);
+  return {
+    name: "",
+    classId: classEntry?.id || "",
+    ancestryId,
+    energyTypes,
+    mainArt: classEntry?.mainArtOptions?.find((energyType) => energyTypes.includes(energyType)) || energyTypes[0] || "",
+    gmOverride: false,
+    deckUpgrades: emptyDeckUpgrades(energyTypes),
+    classImprovementTarget: "success_1",
+    gearPresetId: defaultGearPresetId(classEntry),
+    stats: defaultStatsForClass(catalog, classEntry),
+    art: defaultCharacterArt(catalog, classEntry?.id || "", ancestryId),
+    physicalCards: false,
+  };
+}
+
+function normalizeBuilderUpgrades(current, energyTypes) {
+  const next = {};
+  energyTypes.forEach((energyType) => {
+    next[energyType] = {};
+    BUILDER_UPGRADE_KEYS.forEach(({ key }) => {
+      next[energyType][key] = Math.max(0, Number(current?.[energyType]?.[key] || 0));
+    });
+  });
+  return next;
+}
+
+function builderValidationErrors(catalog, form) {
+  const errors = [];
+  const classEntry = findCatalogClass(catalog, form.classId);
+  if (!classEntry) {
+    errors.push("Choose a class.");
+    return errors;
+  }
+  if (!findCatalogAncestry(catalog, form.ancestryId)) {
+    errors.push("Choose an ancestry.");
+  }
+  if (!form.name.trim()) {
+    errors.push("Name is required.");
+  }
+  if (form.energyTypes.length !== 3 || new Set(form.energyTypes).size !== 3) {
+    errors.push("Choose exactly 3 unique energy types.");
+  }
+  const missing = (classEntry.requiredEnergyTypes || []).filter((energyType) => !form.energyTypes.includes(energyType));
+  if (missing.length) {
+    errors.push(`Missing required energy: ${missing.join(", ")}.`);
+  }
+  const blocked = (classEntry.forbiddenEnergyTypes || []).filter((energyType) => form.energyTypes.includes(energyType));
+  if (blocked.length && !form.gmOverride) {
+    errors.push(`GM override required for: ${blocked.join(", ")}.`);
+  }
+  if (!classEntry.mainArtOptions?.includes(form.mainArt) || !form.energyTypes.includes(form.mainArt)) {
+    errors.push("Main art must be an allowed selected energy type.");
+  }
+  form.energyTypes.forEach((energyType) => {
+    const total = BUILDER_UPGRADE_KEYS.reduce((sum, { key }) => sum + Number(form.deckUpgrades?.[energyType]?.[key] || 0), 0);
+    if (total !== 2) {
+      errors.push(`${energyType} must spend exactly 2 deck upgrade points.`);
+    }
+  });
+  const classTargetValue = 1 + Number(form.deckUpgrades?.[form.mainArt]?.[form.classImprovementTarget] || 0);
+  if (classTargetValue >= 3) {
+    errors.push("Class improvement target must be below energy value 3 before the class improvement.");
+  }
+  return errors;
+}
+
 function getSidFromUrl() {
   const params = new URLSearchParams(window.location.search);
   return params.get("sid");
@@ -621,6 +796,21 @@ function opportunityNoWillpowerLabel(pendingOpportunity) {
   return "Critical hit";
 }
 
+function successCountLabel(count) {
+  const successes = Number(count || 0);
+  return `${successes} ${successes === 1 ? "succes" : "successen"}`;
+}
+
+function searchNoWillpowerLabel(pendingSearch) {
+  return successCountLabel(pendingSearch?.successCount);
+}
+
+function searchWillpowerLabel(pendingSearch) {
+  const successes = Number(pendingSearch?.successCount || 0);
+  const fate = Number(pendingSearch?.fateCount || 0);
+  return `Willpower inzetten voor ${successCountLabel(successes + fate)}`;
+}
+
 function opportunityWillpowerLabel(pendingOpportunity) {
   const successes = Number(pendingOpportunity?.successCount || 0);
   const fate = Number(pendingOpportunity?.fateCount || 0);
@@ -780,6 +970,8 @@ function App() {
 
   const [snapshot, setSnapshot] = useState(null);
   const [meta, setMeta] = useState(null);
+  const [characterCatalog, setCharacterCatalog] = useState(null);
+  const [savedCharacters, setSavedCharacters] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -837,6 +1029,7 @@ function App() {
     initiativeModifier: 2,
     physicalCards: false,
   });
+  const [characterBuilderForm, setCharacterBuilderForm] = useState(() => createCharacterBuilderForm(null));
   const [initiativeModes, setInitiativeModes] = useState({});
   const [initiativeOpenReason, setInitiativeOpenReason] = useState("manual");
   const [selectedUnitIds, setSelectedUnitIds] = useState([]);
@@ -1054,12 +1247,17 @@ function App() {
       setError("");
       try {
         const sid = getSidFromUrl();
-        const [metaPayload, snapshotPayload] = await Promise.all([
+        const [metaPayload, snapshotPayload, characterCatalogPayload, charactersPayload] = await Promise.all([
           requestJson("/api/battle/meta"),
           sid ? requestJson(`/api/battle/sessions/${sid}`) : requestJson("/api/battle/sessions", { method: "POST" }),
+          requestJson("/api/battle/character-builder/catalog"),
+          requestJson("/api/battle/characters"),
         ]);
         setMeta(metaPayload);
         setSnapshot(snapshotPayload);
+        setCharacterCatalog(characterCatalogPayload);
+        setSavedCharacters(charactersPayload.characters || []);
+        setCharacterBuilderForm(createCharacterBuilderForm(characterCatalogPayload));
         if (!sid) {
           setSidInUrl(snapshotPayload.sid);
         }
@@ -1426,6 +1624,41 @@ function App() {
     }),
     [allTemplates, templateSearch, templateCategory, templateSection, templateAvailability, templateThreatMin, templateThreatMax],
   );
+  const builderClass = useMemo(
+    () => findCatalogClass(characterCatalog, characterBuilderForm.classId),
+    [characterCatalog, characterBuilderForm.classId],
+  );
+  const builderAncestry = useMemo(
+    () => findCatalogAncestry(characterCatalog, characterBuilderForm.ancestryId),
+    [characterCatalog, characterBuilderForm.ancestryId],
+  );
+  const builderArtOptions = useMemo(
+    () => matchingCharacterArtOptions(characterCatalog, characterBuilderForm.classId, characterBuilderForm.ancestryId),
+    [characterCatalog, characterBuilderForm.classId, characterBuilderForm.ancestryId],
+  );
+  const builderAnonymousArt = useMemo(
+    () => anonymousCharacterArt(characterCatalog),
+    [characterCatalog],
+  );
+  const builderShownArtOptions = useMemo(() => {
+    const options = [builderAnonymousArt, ...builderArtOptions];
+    if (
+      characterBuilderForm.art?.source === "upload" &&
+      !options.some((option) => sameCharacterArt(option, characterBuilderForm.art))
+    ) {
+      options.push(characterBuilderForm.art);
+    }
+    return options;
+  }, [builderAnonymousArt, builderArtOptions, characterBuilderForm.art]);
+  const builderErrors = useMemo(
+    () => builderValidationErrors(characterCatalog, characterBuilderForm),
+    [characterCatalog, characterBuilderForm],
+  );
+  const builderCanSave = Boolean(characterCatalog && builderErrors.length === 0);
+  const builderClassTargetOptions = useMemo(() => {
+    const upgrades = characterBuilderForm.deckUpgrades?.[characterBuilderForm.mainArt] || {};
+    return BUILDER_UPGRADE_KEYS.filter(({ key }) => 1 + Number(upgrades[key] || 0) < 3);
+  }, [characterBuilderForm.deckUpgrades, characterBuilderForm.mainArt]);
   const selectedDrawPreviewHighlighted = Boolean(
     drawReveal?.phase === "settle" && selectedEntity?.instance_id === drawReveal.entityId,
   );
@@ -2189,6 +2422,162 @@ function App() {
   async function handleAddPC(event) {
     event.preventDefault();
     await handleAddPlayer();
+  }
+
+  function updateBuilderClass(classId) {
+    const classEntry = findCatalogClass(characterCatalog, classId);
+    const energyTypes = defaultEnergyTypesForClass(characterCatalog, classEntry);
+    setCharacterBuilderForm((current) => ({
+      ...createCharacterBuilderForm(characterCatalog, classId),
+      name: current.name,
+      ancestryId: current.ancestryId || characterCatalog?.ancestries?.[0]?.id || "",
+      energyTypes,
+      deckUpgrades: emptyDeckUpgrades(energyTypes),
+      stats: defaultStatsForClass(characterCatalog, classEntry),
+      art: defaultCharacterArt(
+        characterCatalog,
+        classId,
+        current.ancestryId || characterCatalog?.ancestries?.[0]?.id || "",
+        current.art,
+      ),
+    }));
+  }
+
+  function updateBuilderAncestry(ancestryId) {
+    setCharacterBuilderForm((current) => ({
+      ...current,
+      ancestryId,
+      art: defaultCharacterArt(characterCatalog, current.classId, ancestryId, current.art),
+    }));
+  }
+
+  function toggleBuilderEnergy(energyType) {
+    setCharacterBuilderForm((current) => {
+      const classEntry = findCatalogClass(characterCatalog, current.classId);
+      if (classEntry?.requiredEnergyTypes?.includes(energyType)) {
+        return current;
+      }
+      const selected = current.energyTypes.includes(energyType)
+        ? current.energyTypes.filter((item) => item !== energyType)
+        : current.energyTypes.length < 3
+          ? [...current.energyTypes, energyType]
+          : current.energyTypes;
+      const mainArt = selected.includes(current.mainArt)
+        ? current.mainArt
+        : classEntry?.mainArtOptions?.find((item) => selected.includes(item)) || selected[0] || "";
+      const deckUpgrades = normalizeBuilderUpgrades(current.deckUpgrades, selected);
+      return { ...current, energyTypes: selected, mainArt, deckUpgrades };
+    });
+  }
+
+  function updateBuilderUpgrade(energyType, cardKey, value) {
+    setCharacterBuilderForm((current) => ({
+      ...current,
+      deckUpgrades: {
+        ...current.deckUpgrades,
+        [energyType]: {
+          ...(current.deckUpgrades?.[energyType] || {}),
+          [cardKey]: Math.max(0, Number(value || 0)),
+        },
+      },
+    }));
+  }
+
+  async function refreshSavedCharacters() {
+    try {
+      const payload = await requestJson("/api/battle/characters");
+      setSavedCharacters(payload.characters || []);
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
+  async function handleSaveBuilderCharacter(event) {
+    event.preventDefault();
+    if (!builderCanSave) {
+      setError(builderErrors[0] || "Character builder is incomplete.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const payload = await requestJson("/api/battle/characters", {
+        method: "POST",
+        body: JSON.stringify({
+          name: characterBuilderForm.name,
+          classId: characterBuilderForm.classId,
+          ancestryId: characterBuilderForm.ancestryId,
+          energyTypes: characterBuilderForm.energyTypes,
+          mainArt: characterBuilderForm.mainArt,
+          gmOverride: characterBuilderForm.gmOverride,
+          deckUpgrades: characterBuilderForm.deckUpgrades,
+          classImprovementTarget: characterBuilderForm.classImprovementTarget,
+          gearPresetId: characterBuilderForm.gearPresetId,
+          stats: characterBuilderForm.stats,
+          art: characterBuilderForm.art,
+        }),
+      });
+      setSavedCharacters((current) => [payload.character, ...current.filter((item) => item.id !== payload.character.id)]);
+      setNotice("Character saved");
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSpawnSavedCharacter(characterId, physicalCards = false) {
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/players/from-character`,
+      {
+        method: "POST",
+        body: JSON.stringify({ characterId, physicalCards }),
+      },
+      "Player added",
+    );
+    if (payload) {
+      closeModal();
+    }
+  }
+
+  async function handleCharacterArtUpload(event) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const payload = await requestJson("/api/battle/character-builder/art/upload", {
+        method: "POST",
+        body: formData,
+      });
+      if (payload?.art) {
+        setCharacterBuilderForm((current) => ({ ...current, art: payload.art }));
+        setNotice("Character art uploaded");
+      }
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      event.target.value = "";
+      setBusy(false);
+    }
+  }
+
+  async function handleDeleteSavedCharacter(characterId) {
+    setBusy(true);
+    setError("");
+    try {
+      const payload = await requestJson(`/api/battle/characters/${encodeURIComponent(characterId)}`, { method: "DELETE" });
+      setSavedCharacters(payload.characters || []);
+      setNotice("Character deleted");
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleAddCustomEnemy(event) {
@@ -4441,7 +4830,7 @@ function App() {
       >
         <div className="panel-body add-unit-body">
           <div className="add-unit-tabs" role="tablist">
-            {[["premade", "Premade"], ["pc", "Player Character"], ["custom", "Custom Enemy"]].map(([id, label]) => (
+            {[["premade", "Premade"], ["pc", "Player Character"], ["builder", "Character Builder"], ["custom", "Custom Enemy"]].map(([id, label]) => (
               <button
                 key={id}
                 type="button"
@@ -4724,6 +5113,289 @@ function App() {
                   </button>
                 </div>
               </form>
+            </div>
+          )}
+
+          {addUnitTab === "builder" && (
+            <div className="add-unit-tab-panel character-builder-panel">
+              <div className="character-builder-layout">
+                <section className="character-builder-saved" aria-label="Saved characters">
+                  <div className="builder-section-header">
+                    <div>
+                      <h3>Saved characters</h3>
+                    </div>
+                    <button className="secondary-button compact-button" type="button" onClick={refreshSavedCharacters} disabled={busy}>
+                      Refresh
+                    </button>
+                  </div>
+                  <div className="saved-character-list">
+                    {savedCharacters.map((character) => (
+                      <div className="saved-character-row" key={character.id}>
+                        <div>
+                          <strong>{character.name}</strong>
+                          <span>{[character.className, character.ancestryName].filter(Boolean).join(" / ")}</span>
+                          <small>{(character.energyTypes || []).join(", ")}</small>
+                        </div>
+                        <div className="saved-character-actions">
+                          <button
+                            className="primary-button compact-button"
+                            type="button"
+                            onClick={() => handleSpawnSavedCharacter(character.id)}
+                            disabled={busy}
+                          >
+                            Spawn
+                          </button>
+                          <button
+                            className="secondary-button compact-button"
+                            type="button"
+                            onClick={() => handleDeleteSavedCharacter(character.id)}
+                            disabled={busy}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    {!savedCharacters.length ? <div className="empty-copy">No saved characters yet.</div> : null}
+                  </div>
+                </section>
+
+                <form className="modal-form character-builder-form" onSubmit={handleSaveBuilderCharacter}>
+                  <div className="builder-section-header">
+                    <div>
+                      <h3>Build character</h3>
+                    </div>
+                    <span className="builder-step-pill">20-card start deck</span>
+                  </div>
+
+                  <div className="field-grid">
+                    <label className="field field-full">
+                      <span>Name</span>
+                      <input
+                        type="text"
+                        value={characterBuilderForm.name}
+                        onChange={(event) => setCharacterBuilderForm((current) => ({ ...current, name: event.target.value }))}
+                        placeholder="Mira"
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Class</span>
+                      <select value={characterBuilderForm.classId} onChange={(event) => updateBuilderClass(event.target.value)}>
+                        {(characterCatalog?.classes || []).map((classEntry) => (
+                          <option key={classEntry.id} value={classEntry.id}>
+                            {classEntry.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      <span>Ancestry</span>
+                      <select
+                        value={characterBuilderForm.ancestryId}
+                        onChange={(event) => updateBuilderAncestry(event.target.value)}
+                      >
+                        {(characterCatalog?.ancestries || []).map((ancestry) => (
+                          <option key={ancestry.id} value={ancestry.id}>
+                            {ancestry.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="builder-card">
+                    <div className="builder-card-title">Character art</div>
+                    <div className="builder-art-grid">
+                      {builderShownArtOptions.map((artOption) => {
+                        const selected = sameCharacterArt(artOption, characterBuilderForm.art);
+                        return (
+                          <button
+                            className={`builder-art-option ${selected ? "builder-art-selected" : ""}`.trim()}
+                            type="button"
+                            key={`${artOption.source}-${artOption.imagePath}`}
+                            onClick={() => setCharacterBuilderForm((current) => ({ ...current, art: artOption }))}
+                            aria-pressed={selected}
+                          >
+                            <span className="builder-art-thumb">
+                              <img src={artOption.imageUrl} alt="" aria-hidden="true" />
+                            </span>
+                            <span>{artOption.label}</span>
+                            {artOption.source === "upload" ? <small>custom</small> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {!builderArtOptions.length ? (
+                      <div className="empty-copy">No matching class/ancestry art yet. Anonymous or custom upload will be used.</div>
+                    ) : null}
+                    <label className="secondary-button character-art-upload">
+                      Upload custom art
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={handleCharacterArtUpload}
+                        disabled={busy}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="builder-card">
+                    <div className="builder-card-title">Energy types</div>
+                    <div className="builder-energy-grid">
+                      {(characterCatalog?.energyTypes || []).map((energyType) => {
+                        const checked = characterBuilderForm.energyTypes.includes(energyType);
+                        const required = builderClass?.requiredEnergyTypes?.includes(energyType);
+                        const blocked = builderClass?.forbiddenEnergyTypes?.includes(energyType);
+                        const disabled = required || (!checked && characterBuilderForm.energyTypes.length >= 3);
+                        return (
+                          <label
+                            key={energyType}
+                            className={`builder-energy-option ${checked ? "builder-energy-selected" : ""} ${blocked ? "builder-energy-blocked" : ""}`.trim()}
+                          >
+                                <input
+                                  type="checkbox"
+                                  aria-label={energyType}
+                                  checked={checked}
+                                  disabled={disabled}
+                                  onChange={() => toggleBuilderEnergy(energyType)}
+                                />
+                            <span>{energyType}</span>
+                            {required ? <small>required</small> : blocked ? <small>override</small> : null}
+                          </label>
+                        );
+                      })}
+                    </div>
+                    <label className={`toggle-field ${characterBuilderForm.gmOverride ? "toggle-active" : ""}`.trim()}>
+                      <input
+                        type="checkbox"
+                        checked={characterBuilderForm.gmOverride}
+                        onChange={(event) => setCharacterBuilderForm((current) => ({ ...current, gmOverride: event.target.checked }))}
+                      />
+                      <span>GM override</span>
+                    </label>
+                    <label className="field">
+                      <span>Main art</span>
+                      <select
+                        value={characterBuilderForm.mainArt}
+                        onChange={(event) => setCharacterBuilderForm((current) => ({ ...current, mainArt: event.target.value }))}
+                      >
+                        {(builderClass?.mainArtOptions || []).map((energyType) => (
+                          <option key={energyType} value={energyType} disabled={!characterBuilderForm.energyTypes.includes(energyType)}>
+                            {energyType}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="builder-card">
+                    <div className="builder-card-title">Deck upgrades</div>
+                    <div className="builder-upgrade-grid">
+                      {characterBuilderForm.energyTypes.map((energyType) => (
+                        <div className="builder-upgrade-row" key={energyType}>
+                          <strong>{energyType}</strong>
+                          {BUILDER_UPGRADE_KEYS.map(({ key, label }) => (
+                            <label className="builder-upgrade-field" key={key}>
+                              <span>{label}</span>
+                              <input
+                                type="number"
+                                min="0"
+                                max="2"
+                                value={characterBuilderForm.deckUpgrades?.[energyType]?.[key] || 0}
+                                onChange={(event) => updateBuilderUpgrade(energyType, key, event.target.value)}
+                              />
+                            </label>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                    <label className="field">
+                      <span>Class improvement</span>
+                      <select
+                        value={characterBuilderForm.classImprovementTarget}
+                        onChange={(event) => setCharacterBuilderForm((current) => ({ ...current, classImprovementTarget: event.target.value }))}
+                      >
+                        {BUILDER_UPGRADE_KEYS.map(({ key, label }) => (
+                          <option key={key} value={key} disabled={!builderClassTargetOptions.some((option) => option.key === key)}>
+                            {characterBuilderForm.mainArt} {label} to 3
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="field-grid">
+                    <label className="field">
+                      <span>Gear</span>
+                      <select
+                        value={characterBuilderForm.gearPresetId}
+                        onChange={(event) => setCharacterBuilderForm((current) => ({ ...current, gearPresetId: event.target.value }))}
+                      >
+                        {(builderClass?.gearPresets || []).map((preset) => (
+                          <option key={preset.id} value={preset.id}>
+                            {preset.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className={`toggle-field ${characterBuilderForm.physicalCards ? "toggle-active" : ""}`.trim()}>
+                      <input
+                        type="checkbox"
+                        checked={characterBuilderForm.physicalCards}
+                        onChange={(event) => setCharacterBuilderForm((current) => ({ ...current, physicalCards: event.target.checked }))}
+                      />
+                      <span>Physical cards when spawned</span>
+                    </label>
+                  </div>
+
+                  <div className="builder-review">
+                    <div>
+                      <span>Class</span>
+                      <strong>{builderClass?.name || "-"}</strong>
+                    </div>
+                    <div>
+                      <span>Ancestry</span>
+                      <strong>{builderAncestry?.name || "-"}</strong>
+                    </div>
+                    <div>
+                      <span>Art</span>
+                      <strong>{characterBuilderForm.art?.label || "Anonymous"}</strong>
+                    </div>
+                    <div>
+                      <span>Energies</span>
+                      <strong>{characterBuilderForm.energyTypes.join(", ") || "-"}</strong>
+                    </div>
+                    <div>
+                      <span>Deck</span>
+                      <strong>20 cards</strong>
+                    </div>
+                    <div className="builder-review-wide">
+                      <span>Gear</span>
+                      <strong>{(builderClass?.gearPresets || []).find((preset) => preset.id === characterBuilderForm.gearPresetId)?.items?.join(", ") || "-"}</strong>
+                    </div>
+                  </div>
+
+                  {builderErrors.length ? (
+                    <div className="error-banner">
+                      {builderErrors.slice(0, 3).join(" ")}
+                    </div>
+                  ) : null}
+
+                  <div className="modal-actions">
+                    <button className="primary-button" type="submit" disabled={busy || !builderCanSave}>
+                      Save character
+                    </button>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={busy || !savedCharacters.length}
+                      onClick={() => savedCharacters[0] && handleSpawnSavedCharacter(savedCharacters[0].id, characterBuilderForm.physicalCards)}
+                    >
+                      Spawn latest
+                    </button>
+                  </div>
+                </form>
+              </div>
             </div>
           )}
 
@@ -5136,10 +5808,10 @@ function App() {
           </div>
           <div className="modal-actions">
             <button className="primary-button" type="button" onClick={() => handleResolveSearch(true)} disabled={busy}>
-              Willpower inzetten
+              {searchWillpowerLabel(pendingSearch)}
             </button>
             <button className="secondary-button" type="button" onClick={() => handleResolveSearch(false)} disabled={busy}>
-              Overslaan
+              {searchNoWillpowerLabel(pendingSearch)}
             </button>
           </div>
         </div>

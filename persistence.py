@@ -171,6 +171,8 @@ def enemy_to_dict(e: EnemyInstance) -> Dict[str, Any]:
     d.setdefault("physical_wounds", int(getattr(e, "physical_wounds", 0)))
     d.setdefault("opportunity_attack_used_round", int(getattr(e, "opportunity_attack_used_round", 0)))
     d.setdefault("melee_weapon", dict(getattr(e, "melee_weapon", {}) or {}))
+    d.setdefault("character_profile", dict(getattr(e, "character_profile", {}) or {}))
+    d.setdefault("card_library", dict(getattr(e, "card_library", {}) or {}))
     d.setdefault("loot_rolled", getattr(e, "loot_rolled", False))
     d["rolled_loot"] = _normalize_loot(getattr(e, "rolled_loot", None))
     d.setdefault("loot_taken_by", getattr(e, "loot_taken_by", None))
@@ -227,6 +229,8 @@ def enemy_from_dict(d: Dict[str, Any]) -> EnemyInstance:
         physical_wounds=max(0, int(d.get("physical_wounds", 0) or 0)),
         opportunity_attack_used_round=max(0, int(d.get("opportunity_attack_used_round", 0) or 0)),
         melee_weapon=dict(d.get("melee_weapon", {}) or {}),
+        character_profile=dict(d.get("character_profile", {}) or {}),
+        card_library=dict(d.get("card_library", {}) or {}),
         statuses=dict(d.get("statuses", {})),
     )
 

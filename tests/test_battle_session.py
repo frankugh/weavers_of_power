@@ -1,11 +1,13 @@
 ﻿from __future__ import annotations
 
+from collections import Counter
 import tempfile
 import unittest
 from pathlib import Path
 
 from battle_session import BattleSession, BattleSessionContext
 from engine.combat import WOUND_CARD_ID, apply_attack
+from engine.character_builder import build_character_profile
 from engine.loader import load_decks, load_enemies
 from engine.models import Card, Effect
 from persistence import load_save_payload, save_current
@@ -30,6 +32,146 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(snapshot["combatLog"], [])
         self.assertEqual(snapshot["order"], [])
         self.assertEqual(snapshot["room"], {"columns": 10, "rows": 7})
+
+    def test_character_builder_catalog_and_generated_deck_rules(self) -> None:
+        catalog = self.context.character_catalog_payload()
+        class_ids = [entry["id"] for entry in catalog["classes"]]
+        ancestry_ids = [entry["id"] for entry in catalog["ancestries"]]
+        self.assertEqual(len(class_ids), len(set(class_ids)))
+        self.assertEqual(len(ancestry_ids), len(set(ancestry_ids)))
+        art_paths = {entry["imagePath"] for entry in catalog["characterArt"]["options"]}
+        self.assertIn("Playing_Characters/dark_mage_elf_female.png", art_paths)
+        self.assertIn("Playing_Characters/druid_human_female.png", art_paths)
+        self.assertNotIn("Playing_Characters/darkmage_elf_female.png", art_paths)
+        self.assertNotIn("Playing_Characters/duid_human_female.png", art_paths)
+
+        profile = build_character_profile(catalog, {
+            "name": "Mira",
+            "classId": "fighter",
+            "ancestryId": "halfling",
+            "energyTypes": ["Martial", "Elemental", "Light"],
+            "mainArt": "Martial",
+            "deckUpgrades": {
+                "Martial": {"success_1": 1, "success_2": 1},
+                "Elemental": {"success_1": 1, "success_2": 1},
+                "Light": {"success_1": 1, "success_2": 1},
+            },
+            "classImprovementTarget": "success_1",
+        }, character_id="mira")
+
+        cards = profile["generatedDeck"]["cards"]
+        self.assertEqual(len(cards), 20)
+        self.assertEqual(Counter(card["outcome"] for card in cards), {"success": 8, "fate": 6, "fail": 6})
+        class_card = next(card for card in cards if card["energyType"] == "Class")
+        ancestry_card = next(card for card in cards if card["energyType"] == "Ancestry")
+        martial_cards = [card for card in cards if card["energyType"] == "Martial"]
+        self.assertNotIn("extraDraw", class_card)
+        self.assertEqual(ancestry_card["extraDraw"], 1)
+        self.assertEqual(ancestry_card["instruction"], "Draw 1. You may Disengage without spending an action this turn.")
+        self.assertIn("Disengage without spending an action", ancestry_card["instruction"])
+        self.assertEqual([card["energyAmount"] for card in martial_cards], [3, 2, 1, 1])
+
+    def test_character_builder_rejects_forbidden_energy_without_override(self) -> None:
+        request = {
+            "name": "Mira",
+            "classId": "cleric",
+            "ancestryId": "human",
+            "energyTypes": ["Martial", "Light", "Shadow"],
+            "mainArt": "Light",
+            "deckUpgrades": {
+                "Martial": {"success_1": 1, "success_2": 1},
+                "Light": {"success_1": 1, "success_2": 1},
+                "Shadow": {"success_1": 1, "success_2": 1},
+            },
+            "classImprovementTarget": "success_1",
+        }
+
+        with self.assertRaisesRegex(ValueError, "GM override"):
+            self.context.create_character_profile(request)
+
+        created = self.context.create_character_profile({**request, "gmOverride": True})
+        self.assertEqual(created["character"]["classId"], "cleric")
+
+    def test_saved_character_can_spawn_with_generated_card_library(self) -> None:
+        created = self.context.create_character_profile({
+            "name": "Mira",
+            "classId": "fighter",
+            "ancestryId": "halfling",
+            "energyTypes": ["Martial", "Elemental", "Light"],
+            "mainArt": "Martial",
+            "deckUpgrades": {
+                "Martial": {"success_1": 1, "success_2": 1},
+                "Elemental": {"success_1": 1, "success_2": 1},
+                "Light": {"success_1": 1, "success_2": 1},
+            },
+            "classImprovementTarget": "success_1",
+        })
+        character_id = created["character"]["id"]
+        session = self.context.create_session("character-spawn")
+
+        session.add_player_from_character(character_id)
+        player = session.state.enemies[session.selected_id]
+
+        self.assertEqual(player.name, "Mira")
+        self.assertEqual(player.character_profile["className"], "Fighter")
+        self.assertEqual(len(player.card_library), 20)
+        ancestry_card_id = next(card_id for card_id, card in player.card_library.items() if card["energyType"] == "Ancestry")
+        self.assertIn("Disengage without spending an action", session.card_to_effect_text(ancestry_card_id))
+
+    def test_character_profile_saves_and_spawns_selected_art(self) -> None:
+        created = self.context.create_character_profile({
+            "name": "Mira",
+            "classId": "fighter",
+            "ancestryId": "human",
+            "energyTypes": ["Martial", "Elemental", "Light"],
+            "mainArt": "Martial",
+            "deckUpgrades": {
+                "Martial": {"success_1": 1, "success_2": 1},
+                "Elemental": {"success_1": 1, "success_2": 1},
+                "Light": {"success_1": 1, "success_2": 1},
+            },
+            "classImprovementTarget": "success_1",
+            "art": {
+                "source": "catalog",
+                "imagePath": "Playing_Characters/fighter_human_female.png",
+                "label": "Female",
+            },
+        })
+        character_id = created["character"]["id"]
+        self.assertEqual(created["character"]["art"]["imageUrl"], "/images/Playing_Characters/fighter_human_female.png")
+
+        profile = self.context.load_character_profile(character_id)
+        self.assertEqual(profile["art"]["imagePath"], "Playing_Characters/fighter_human_female.png")
+
+        session = self.context.create_session("character-art-spawn")
+        session.add_player_from_character(character_id)
+        player = session.state.enemies[session.selected_id]
+
+        self.assertEqual(player.image, "Playing_Characters/fighter_human_female.png")
+        self.assertEqual(session.snapshot()["enemies"][0]["image_url"], "/images/Playing_Characters/fighter_human_female.png")
+
+    def test_character_profile_rejects_invalid_art_paths(self) -> None:
+        request = {
+            "name": "Mira",
+            "classId": "fighter",
+            "ancestryId": "human",
+            "energyTypes": ["Martial", "Elemental", "Light"],
+            "mainArt": "Martial",
+            "deckUpgrades": {
+                "Martial": {"success_1": 1, "success_2": 1},
+                "Elemental": {"success_1": 1, "success_2": 1},
+                "Light": {"success_1": 1, "success_2": 1},
+            },
+            "classImprovementTarget": "success_1",
+        }
+
+        with self.assertRaisesRegex(ValueError, "path is invalid"):
+            self.context.create_character_profile({**request, "art": {"source": "catalog", "imagePath": "../anonymous.png"}})
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            self.context.create_character_profile({
+                **request,
+                "art": {"source": "catalog", "imagePath": "Playing_Characters/missing.png"},
+            })
 
     def test_added_units_are_auto_placed_on_the_battle_map(self) -> None:
         session = self.context.create_session("map-placement")
@@ -2051,7 +2193,7 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(player.deck_state.discard_pile, [WOUND_CARD_ID, "hf_martial_success_2"])
         self.assertEqual(session.visible_draw_for(player), [])
 
-    def test_strengthen_allows_overflow_and_draw_bonus_triggers_at_turn_start(self) -> None:
+    def test_strengthen_allows_overflow_without_draw_bonus_at_turn_start(self) -> None:
         session = self.context.create_session("strengthen-overflow")
         session.add_player(name="Mira", toughness=4, power=1)
         player = session.state.enemies[session.selected_id]
@@ -2070,14 +2212,15 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(player.toughness_current, 6)
         self.assertEqual(player.draw_bonus_pending, 0)
 
-        # At start of Draw of Power: temporary expires, +1 draw bonus
+        # At start of Draw of Power: temporary expires without extra draw
         player.deck_state.draw_pile = ["hf_martial_success_2", "hf_elemental_success_2a"]
         player.deck_state.discard_pile = []
         player.deck_state.hand = []
         session.draw_turn()
         self.assertEqual(player.toughness_current, 4)
-        self.assertEqual(player.draw_bonus_pending, 0)  # consumed by draw
-        self.assertEqual(len(player.deck_state.hand), 2)  # base 1 + 1 bonus
+        self.assertEqual(player.draw_bonus_pending, 0)
+        self.assertEqual(len(player.deck_state.hand), 1)
+        self.assertIn("Mira temporary toughness expired.", session.combat_log)
 
     def test_guard_action_adds_guard_and_counts_as_action(self) -> None:
         session = self.context.create_session("guard-action")
@@ -2671,12 +2814,12 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(player.movement, 6)
         self.assertEqual(player.initiative_modifier, 2)
         self.assertEqual(player.core_deck_id, "human_fighter_lvl1")
-        self.assertEqual(len(player.deck_state.draw_pile), 26)
+        self.assertEqual(len(player.deck_state.draw_pile), 20)
 
         reloaded = self.context.load_session("player-fighter-default")
         restored = next(e for e in reloaded.state.enemies.values() if reloaded.is_player(e))
         self.assertEqual(restored.core_deck_id, "human_fighter_lvl1")
-        self.assertEqual(len(restored.deck_state.draw_pile), 26)
+        self.assertEqual(len(restored.deck_state.draw_pile), 20)
 
     def test_player_can_use_selected_player_deck(self) -> None:
         session = self.context.create_session("player-wizard-deck")
