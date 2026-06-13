@@ -45,6 +45,7 @@ from engine.runtime_models import DeckState, DungeonState, DungeonWall, EnemyIns
 from persistence import (
     _atomic_write_json,
     dungeon_state_from_dict,
+    dungeon_state_to_dict,
     dungeon_state_to_map_template,
     enemy_to_dict,
     grapple_to_dict,
@@ -58,6 +59,8 @@ LOG_LIMIT = 30
 UNDO_LIMIT = 20
 ROOM_DEFAULT_COLUMNS = 10
 ROOM_DEFAULT_ROWS = 7
+SCENARIO_DEFAULT_ARENA_COLUMNS = 40
+SCENARIO_DEFAULT_ARENA_ROWS = 40
 PLAYER_DECK_ID = "human_fighter_lvl1"
 HUMAN_FIGHTER_DEFAULTS = {
     "toughness": 4,
@@ -228,6 +231,170 @@ def now_stamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+SCENARIO_NODE_TYPES = {"scene", "combat"}
+LEGACY_SCENARIO_SCENE_TYPES = {"start", "story", "event"}
+
+
+def _coerce_number(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_scenario_position(raw: object) -> dict:
+    if not isinstance(raw, dict):
+        return {"x": 0, "y": 0}
+    return {
+        "x": _coerce_number(raw.get("x"), 0),
+        "y": _coerce_number(raw.get("y"), 0),
+    }
+
+
+def _normalize_scenario_phase(raw: object, index: int) -> dict:
+    phase = copy.deepcopy(raw) if isinstance(raw, dict) else {}
+    phase_id = str(phase.get("id") or f"phase_{index + 1}").strip() or f"phase_{index + 1}"
+    phase["id"] = phase_id
+    phase["label"] = str(phase.get("label") or ("Default" if index == 0 else phase_id))
+    phase["text"] = str(phase.get("text") or "")
+    phase["imageRef"] = phase.get("imageRef") or None
+    if "actions" in phase and not isinstance(phase.get("actions"), list):
+        phase["actions"] = []
+    return phase
+
+
+def _normalize_scenario_node(raw: object, index: int) -> dict:
+    node = copy.deepcopy(raw) if isinstance(raw, dict) else {}
+    node_id = str(node.get("id") or f"node_{index + 1}").strip() or f"node_{index + 1}"
+    node_type = str(node.get("type") or "story").strip().lower()
+    if node_type in LEGACY_SCENARIO_SCENE_TYPES:
+        node_type = "scene"
+    if node_type not in SCENARIO_NODE_TYPES:
+        node_type = "scene"
+    phases_raw = node.get("phases") if isinstance(node.get("phases"), list) else []
+    phases = [_normalize_scenario_phase(phase, i) for i, phase in enumerate(phases_raw)]
+    if not phases:
+        phases = [_normalize_scenario_phase({"id": "phase_default", "label": "Default"}, 0)]
+    phase_ids = {phase["id"] for phase in phases}
+    default_phase_id = str(node.get("defaultPhaseId") or phases[0]["id"])
+    if default_phase_id not in phase_ids:
+        default_phase_id = phases[0]["id"]
+
+    normalized = node
+    normalized["id"] = node_id
+    normalized["type"] = node_type
+    normalized["label"] = str(node.get("label") or ("Scene" if node_type == "scene" else "Combat"))
+    normalized["position"] = _coerce_scenario_position(node.get("position"))
+    normalized["phases"] = phases
+    normalized["defaultPhaseId"] = default_phase_id
+
+    if node_type == "combat":
+        combat_raw = node.get("combat") if isinstance(node.get("combat"), dict) else {}
+        enemies: list[dict] = []
+        for entry_raw in combat_raw.get("enemies") or []:
+            if not isinstance(entry_raw, dict):
+                continue
+            template_id = str(entry_raw.get("templateId") or "").strip()
+            if not template_id:
+                continue
+            try:
+                count = max(1, min(20, int(entry_raw.get("count", 1) or 1)))
+            except (TypeError, ValueError):
+                count = 1
+            enemy_entry = copy.deepcopy(entry_raw)
+            enemy_entry["templateId"] = template_id
+            enemy_entry["count"] = count
+            enemies.append(enemy_entry)
+        map_ref = combat_raw.get("mapRef")
+        normalized["combat"] = {
+            **copy.deepcopy(combat_raw),
+            "enemies": enemies,
+            "mapRef": str(map_ref).strip() if map_ref else None,
+        }
+    else:
+        normalized["combat"] = None
+    return normalized
+
+
+def normalize_scenario_definition(raw: object, *, scenario_id: str | None = None, name: str | None = None) -> dict:
+    data = copy.deepcopy(raw) if isinstance(raw, dict) else {}
+    sid = str(scenario_id or data.get("id") or f"scenario_{now_stamp()}").strip()
+    if not sid:
+        sid = f"scenario_{now_stamp()}"
+    scenario_name = str(name or data.get("name") or "New Scenario").strip() or "New Scenario"
+
+    nodes_raw = data.get("nodes") if isinstance(data.get("nodes"), list) else []
+    nodes = [_normalize_scenario_node(node, i) for i, node in enumerate(nodes_raw)]
+    if not nodes:
+        nodes = [_normalize_scenario_node({
+            "id": "start",
+            "type": "scene",
+            "label": "Start",
+            "position": {"x": 80, "y": 80},
+            "defaultPhaseId": "phase_default",
+            "phases": [{"id": "phase_default", "label": "Default", "text": ""}],
+        }, 0)]
+
+    used_ids: set[str] = set()
+    for i, node in enumerate(nodes):
+        base_id = node["id"]
+        node_id = base_id
+        suffix = 2
+        while node_id in used_ids:
+            node_id = f"{base_id}_{suffix}"
+            suffix += 1
+        if node_id != node["id"]:
+            node["id"] = node_id
+        used_ids.add(node_id)
+
+    node_ids = {node["id"] for node in nodes}
+    start_node_id = str(data.get("startNodeId") or "").strip()
+    if start_node_id not in node_ids:
+        legacy_start_id = next(
+            (
+                str(raw_node.get("id"))
+                for raw_node in nodes_raw
+                if isinstance(raw_node, dict) and str(raw_node.get("type") or "").strip().lower() == "start"
+            ),
+            None,
+        )
+        start_node_id = legacy_start_id if legacy_start_id in node_ids else nodes[0]["id"]
+
+    edges_raw = data.get("edges") if isinstance(data.get("edges"), list) else []
+    edges: list[dict] = []
+    used_edge_ids: set[str] = set()
+    for i, raw_edge in enumerate(edges_raw):
+        if not isinstance(raw_edge, dict):
+            continue
+        edge_from = str(raw_edge.get("from") or "").strip()
+        edge_to = str(raw_edge.get("to") or "").strip()
+        if edge_from not in node_ids or edge_to not in node_ids:
+            continue
+        edge = copy.deepcopy(raw_edge)
+        base_edge_id = str(edge.get("id") or f"edge_{i + 1}").strip() or f"edge_{i + 1}"
+        edge_id = base_edge_id
+        suffix = 2
+        while edge_id in used_edge_ids:
+            edge_id = f"{base_edge_id}_{suffix}"
+            suffix += 1
+        used_edge_ids.add(edge_id)
+        edge["id"] = edge_id
+        edge["from"] = edge_from
+        edge["to"] = edge_to
+        edge["label"] = str(edge.get("label") or "")
+        condition = edge.get("condition")
+        edge["condition"] = copy.deepcopy(condition) if isinstance(condition, dict) else None
+        edges.append(edge)
+
+    normalized = data
+    normalized["id"] = sid
+    normalized["name"] = scenario_name
+    normalized["startNodeId"] = start_node_id
+    normalized["nodes"] = nodes
+    normalized["edges"] = edges
+    return normalized
+
+
 @dataclass(frozen=True)
 class QuickAttackStep:
     card_id: str
@@ -275,6 +442,8 @@ class BattleSessionContext:
     creatures_workbook: Optional[Path] = None
     character_catalog_path: Optional[Path] = None
     images_dir: Optional[Path] = None
+    map_templates_dir: Optional[Path] = None
+    scenarios_dir: Optional[Path] = None
     save_version: int = 3
 
     def __post_init__(self) -> None:
@@ -298,16 +467,26 @@ class BattleSessionContext:
         self.enemies_dir = Path(self.enemies_dir) if self.enemies_dir else (self.root / "data" / "enemies")
         self.images_dir = Path(self.images_dir) if self.images_dir else (self.root / "images")
         self.saves_dir = Path(self.saves_dir) if self.saves_dir else (self.root / "saves")
+        self.map_templates_dir = (
+            Path(self.map_templates_dir)
+            if self.map_templates_dir
+            else (self.root / "data" / "map_templates")
+        )
+        self.scenarios_dir = (
+            Path(self.scenarios_dir)
+            if self.scenarios_dir
+            else (self.root / "data" / "scenarios")
+        )
         self.manual_dir = self.saves_dir / "manual"
         self.character_dir = self.saves_dir / "characters"
         self.creature_workbook_backup_dir = self.saves_dir / BACKUP_DIR_NAME
         self._creature_workbook_lock = threading.Lock()
 
-        self.map_templates_dir = self.root / "data" / "map_templates"
         self.saves_dir.mkdir(parents=True, exist_ok=True)
         self.manual_dir.mkdir(parents=True, exist_ok=True)
         self.character_dir.mkdir(parents=True, exist_ok=True)
         self.map_templates_dir.mkdir(parents=True, exist_ok=True)
+        self.scenarios_dir.mkdir(parents=True, exist_ok=True)
 
         self.decks = load_decks(self.decks_dir)
         self.player_decks = load_decks(self.player_decks_dir) if self.player_decks_dir.exists() else {}
@@ -385,6 +564,16 @@ class BattleSessionContext:
             raise ValueError(f"Map template '{template_id}' not found")
         path.unlink()
 
+    def write_map_template(self, template_id: str, template_data: dict) -> dict:
+        path = self._resolve_map_template_path(template_id)
+        if not path.exists():
+            raise ValueError(f"Map template '{template_id}' not found")
+        data = copy.deepcopy(template_data) if isinstance(template_data, dict) else {}
+        data["name"] = str(data.get("name") or template_id)
+        data["saved_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        _atomic_write_json(path, data)
+        return {"id": path.stem, "filename": path.name, "name": data["name"], "savedAt": data["saved_at"]}
+
     def _resolve_map_template_path(self, template_id: str) -> Path:
         import re as _re
         if not _re.match(r'^[\w\-]+$', template_id):
@@ -392,6 +581,115 @@ class BattleSessionContext:
         path = (self.map_templates_dir / f"{template_id}.json").resolve()
         if not str(path).startswith(str(self.map_templates_dir.resolve())):
             raise ValueError("Invalid template path")
+        return path
+
+    def list_scenarios(self) -> list[dict]:
+        entries = []
+        for path in sorted(self.scenarios_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                scenario = normalize_scenario_definition(data, scenario_id=path.stem)
+            except Exception:
+                continue
+            entries.append({
+                "id": path.stem,
+                "filename": path.name,
+                "name": scenario.get("name", path.stem),
+                "startNodeId": scenario.get("startNodeId"),
+                "nodeCount": len(scenario.get("nodes") or []),
+                "edgeCount": len(scenario.get("edges") or []),
+                "savedAt": scenario.get("saved_at") or scenario.get("savedAt"),
+            })
+        return entries
+
+    def create_scenario(self, name: str) -> dict:
+        scenario_name = str(name or "New Scenario").strip() or "New Scenario"
+        stamp = now_stamp()
+        base = f"scenario_{stamp}"
+        scenario_id = base
+        for suffix in range(2, 1000):
+            if not (self.scenarios_dir / f"{scenario_id}.json").exists():
+                break
+            scenario_id = f"{base}_{suffix}"
+        scenario = normalize_scenario_definition({
+            "id": scenario_id,
+            "name": scenario_name,
+            "startNodeId": "start",
+            "nodes": [{
+                "id": "start",
+                "type": "start",
+                "label": "Start",
+                "position": {"x": 100, "y": 100},
+                "defaultPhaseId": "phase_default",
+                "phases": [{"id": "phase_default", "label": "Default", "text": ""}],
+            }],
+            "edges": [],
+        }, scenario_id=scenario_id, name=scenario_name)
+        scenario["saved_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        _atomic_write_json(self._resolve_scenario_path(scenario_id), scenario)
+        return scenario
+
+    def duplicate_scenario(self, scenario_id: str, name: str | None = None) -> dict:
+        source = self.get_scenario(scenario_id)
+        if source is None:
+            raise ValueError(f"Scenario '{scenario_id}' not found")
+        duplicate_name = str(name or f"{source.get('name', scenario_id)} Copy").strip() or "Scenario Copy"
+        stamp = now_stamp()
+        base = f"scenario_{safe_filename(duplicate_name)}_{stamp}"
+        duplicate_id = base
+        for suffix in range(2, 1000):
+            if not (self.scenarios_dir / f"{duplicate_id}.json").exists():
+                break
+            duplicate_id = f"{base}_{suffix}"
+        duplicate = normalize_scenario_definition(source, scenario_id=duplicate_id, name=duplicate_name)
+        duplicate["saved_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        _atomic_write_json(self._resolve_scenario_path(duplicate_id), duplicate)
+        return duplicate
+
+    def rename_scenario(self, scenario_id: str, name: str) -> dict:
+        scenario = self.get_scenario(scenario_id)
+        if scenario is None:
+            raise ValueError(f"Scenario '{scenario_id}' not found")
+        scenario["name"] = str(name or scenario_id).strip() or scenario_id
+        return self.save_scenario(scenario_id, scenario)
+
+    def get_scenario(self, scenario_id: str) -> Optional[dict]:
+        try:
+            path = self._resolve_scenario_path(scenario_id)
+        except ValueError:
+            return None
+        if not path.exists():
+            return None
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            return normalize_scenario_definition(data, scenario_id=path.stem)
+        except Exception:
+            return None
+
+    def save_scenario(self, scenario_id: str, definition: dict) -> dict:
+        path = self._resolve_scenario_path(scenario_id)
+        if not path.exists():
+            raise ValueError(f"Scenario '{scenario_id}' not found")
+        scenario = normalize_scenario_definition(definition, scenario_id=path.stem)
+        scenario["saved_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        _atomic_write_json(path, scenario)
+        return scenario
+
+    def delete_scenario(self, scenario_id: str) -> None:
+        path = self._resolve_scenario_path(scenario_id)
+        if not path.exists():
+            raise ValueError(f"Scenario '{scenario_id}' not found")
+        path.unlink()
+
+    def _resolve_scenario_path(self, scenario_id: str) -> Path:
+        import re as _re
+        if not _re.match(r'^[\w\-]+$', scenario_id):
+            raise ValueError("Invalid scenario id")
+        path = (self.scenarios_dir / f"{scenario_id}.json").resolve()
+        if not str(path).startswith(str(self.scenarios_dir.resolve())):
+            raise ValueError("Invalid scenario path")
         return path
 
     def character_art_options(self) -> list[dict]:
@@ -680,6 +978,8 @@ class BattleSession:
     pending_search: Optional[dict] = None
     pending_opportunity: Optional[dict] = None
     active_save_filename: Optional[str] = None
+    scenario_definition: Optional[dict] = None
+    scenario_runtime: dict = field(default_factory=dict)
     turn_skip_notice: list = field(default_factory=list)
     undo_stack: list[dict] = field(default_factory=list)
     redo_stack: list[dict] = field(default_factory=list)
@@ -700,6 +1000,8 @@ class BattleSession:
         self.pending_opportunity = None
         self.undo_stack = []
         self.redo_stack = []
+        self.scenario_definition = None
+        self.scenario_runtime = {}
         position_payload_present = any(
             "grid_x" in enemy_raw or "grid_y" in enemy_raw for enemy_raw in payload.get("enemies", []) or []
         )
@@ -766,6 +1068,7 @@ class BattleSession:
         self.pending_opportunity = copy.deepcopy(po_raw) if isinstance(po_raw, dict) else None
         active_save = payload.get("active_save_filename")
         self.active_save_filename = str(active_save) if active_save else None
+        self._load_scenario_state(payload.get("scenario"))
         if load_undo_stack:
             self.undo_stack = [dict(entry) for entry in payload.get("undo_stack", [])][-UNDO_LIMIT:]
             self.redo_stack = [dict(entry) for entry in payload.get("redo_stack", [])][-UNDO_LIMIT:]
@@ -783,6 +1086,7 @@ class BattleSession:
         self._cleanup_grapples(add_log=False)
 
     def _build_payload(self, *, include_undo_stack: bool = True) -> dict:
+        self._persist_active_scenario_map_instance()
         payload = make_save_payload(
             version=self.context.save_version,
             sid=self.sid,
@@ -808,6 +1112,8 @@ class BattleSession:
         if self.pending_opportunity is not None:
             payload["pending_opportunity"] = copy.deepcopy(self.pending_opportunity)
         payload["active_save_filename"] = self.active_save_filename
+        if self.scenario_definition is not None or self.scenario_runtime:
+            payload["scenario"] = self._scenario_save_payload()
         return payload
 
     def undo_payload(self) -> dict:
@@ -836,6 +1142,7 @@ class BattleSession:
             else 1 if not self.encounter_started
             else None
         )
+        scenario_snapshot = self._scenario_snapshot()
         return {
             "sid": self.sid,
             "round": self.round,
@@ -862,6 +1169,8 @@ class BattleSession:
             "redoDepth": len(self.redo_stack),
             "dungeon": self._dungeon_snapshot(),
             "activeSave": self.active_save_snapshot(),
+            "scenario": scenario_snapshot,
+            "scenarioRun": scenario_snapshot.get("scenarioRun"),
             "pendingSearch": {
                 "entityId": self.pending_search["entity_id"],
                 "roomId": self.pending_search["room_id"],
@@ -872,6 +1181,359 @@ class BattleSession:
                 "fateCount": self.pending_search["fate_count"],
             } if self.pending_search is not None else None,
         }
+
+    def _scenario_snapshot(self) -> dict:
+        runtime = copy.deepcopy(self.scenario_runtime) if isinstance(self.scenario_runtime, dict) else {}
+        runtime.pop("mapInstances", None)
+        source_id = self._scenario_source_id(runtime)
+        source_name = self._scenario_source_name(runtime, source_id)
+        source_missing = bool(source_id and self.context.get_scenario(source_id) is None)
+        run = {
+            "active": bool(self.scenario_definition is not None and source_id),
+            "sourceScenarioId": source_id,
+            "sourceScenarioName": source_name,
+            "sourceTemplateMissing": source_missing,
+            "currentNodeId": runtime.get("currentNodeId"),
+        }
+        return {
+            "definition": copy.deepcopy(self.scenario_definition) if self.scenario_definition is not None else None,
+            "runtime": runtime,
+            "scenarioRun": run,
+            "sourceScenarioId": source_id,
+            "sourceScenarioName": source_name,
+            "sourceTemplateMissing": source_missing,
+        }
+
+    def _scenario_save_payload(self) -> dict:
+        return {
+            "definition": copy.deepcopy(self.scenario_definition) if self.scenario_definition is not None else None,
+            "runtime": copy.deepcopy(self.scenario_runtime) if isinstance(self.scenario_runtime, dict) else {},
+        }
+
+    def _scenario_source_id(self, runtime: Optional[dict] = None) -> Optional[str]:
+        runtime = runtime if isinstance(runtime, dict) else self.scenario_runtime
+        source_id = str(
+            (runtime or {}).get("sourceScenarioId")
+            or (runtime or {}).get("scenarioId")
+            or (self.scenario_definition or {}).get("id")
+            or ""
+        ).strip()
+        return source_id or None
+
+    def _scenario_source_name(self, runtime: Optional[dict] = None, source_id: Optional[str] = None) -> Optional[str]:
+        runtime = runtime if isinstance(runtime, dict) else self.scenario_runtime
+        name = str((runtime or {}).get("sourceScenarioName") or (self.scenario_definition or {}).get("name") or "").strip()
+        if name:
+            return name
+        if source_id:
+            source = self.context.get_scenario(source_id)
+            if source:
+                return str(source.get("name") or source_id)
+        return source_id
+
+    def _load_scenario_state(self, raw: object) -> None:
+        if not isinstance(raw, dict):
+            self.scenario_definition = None
+            self.scenario_runtime = {}
+            return
+        definition_raw = raw.get("definition")
+        runtime_raw = raw.get("runtime")
+        if isinstance(definition_raw, dict):
+            self.scenario_definition = normalize_scenario_definition(definition_raw)
+        else:
+            self.scenario_definition = None
+        self.scenario_runtime = self._normalize_scenario_runtime(runtime_raw)
+
+    def _normalize_scenario_runtime(self, raw: object) -> dict:
+        if not isinstance(raw, dict):
+            return {}
+        runtime = copy.deepcopy(raw)
+        source_id = str(
+            runtime.get("sourceScenarioId")
+            or runtime.get("scenarioId")
+            or (self.scenario_definition or {}).get("id")
+            or ""
+        ).strip()
+        if not source_id:
+            return {}
+        source_name = str(runtime.get("sourceScenarioName") or (self.scenario_definition or {}).get("name") or source_id).strip()
+        node_ids = {node["id"] for node in (self.scenario_definition or {}).get("nodes", [])}
+        start_node_id = (self.scenario_definition or {}).get("startNodeId")
+        current_node_id = str(runtime.get("currentNodeId") or start_node_id or "").strip()
+        if node_ids and current_node_id not in node_ids:
+            current_node_id = str(start_node_id or next(iter(node_ids)))
+        visited = [
+            str(node_id)
+            for node_id in runtime.get("visitedNodeIds", [])
+            if not node_ids or str(node_id) in node_ids
+        ]
+        if current_node_id and current_node_id not in visited:
+            visited.append(current_node_id)
+        raw_node_states = runtime.get("nodeStates") if isinstance(runtime.get("nodeStates"), dict) else {}
+        node_states: dict[str, dict] = {}
+        for node_id, state_raw in raw_node_states.items():
+            if node_ids and node_id not in node_ids:
+                continue
+            node_states[str(node_id)] = self._normalize_scenario_node_state(str(node_id), state_raw)
+        runtime["scenarioId"] = source_id
+        runtime["sourceScenarioId"] = source_id
+        runtime["sourceScenarioName"] = source_name or source_id
+        runtime["currentNodeId"] = current_node_id
+        runtime["visitedNodeIds"] = visited
+        runtime["nodeStates"] = node_states
+        runtime["mapInstances"] = runtime.get("mapInstances") if isinstance(runtime.get("mapInstances"), dict) else {}
+        runtime["flags"] = runtime.get("flags") if isinstance(runtime.get("flags"), dict) else {}
+        runtime["activeMapNodeId"] = runtime.get("activeMapNodeId") or None
+        if current_node_id and current_node_id not in node_states:
+            node_states[current_node_id] = self._normalize_scenario_node_state(current_node_id, {})
+        return runtime
+
+    def _normalize_scenario_node_state(self, node_id: str, raw: object) -> dict:
+        state = copy.deepcopy(raw) if isinstance(raw, dict) else {}
+        node = self._scenario_node(node_id)
+        phases = node.get("phases") if node else []
+        phase_ids = {phase["id"] for phase in phases}
+        default_phase_id = node.get("defaultPhaseId") if node else None
+        phase_id = str(state.get("phaseId") or state.get("phase") or default_phase_id or (phases[0]["id"] if phases else "phase_default"))
+        if phase_ids and phase_id not in phase_ids:
+            phase_id = str(default_phase_id or phases[0]["id"])
+        try:
+            visit_count = max(0, int(state.get("visitCount", 0) or 0))
+        except (TypeError, ValueError):
+            visit_count = 0
+        resolved = state.get("resolvedEventIds") if isinstance(state.get("resolvedEventIds"), list) else []
+        flags = state.get("flags") if isinstance(state.get("flags"), dict) else {}
+        normalized = state
+        normalized["phaseId"] = phase_id
+        normalized.pop("phase", None)
+        normalized["visitCount"] = visit_count
+        normalized["resolvedEventIds"] = [str(event_id) for event_id in resolved]
+        normalized["flags"] = copy.deepcopy(flags)
+        normalized["encounterOutcome"] = state.get("encounterOutcome") or None
+        normalized["mapInstanceId"] = state.get("mapInstanceId") or None
+        if "spawnedEntityIds" in state and isinstance(state["spawnedEntityIds"], list):
+            normalized["spawnedEntityIds"] = [str(iid) for iid in state["spawnedEntityIds"]]
+        return normalized
+
+    def _scenario_node(self, node_id: str) -> Optional[dict]:
+        if not self.scenario_definition:
+            return None
+        for node in self.scenario_definition.get("nodes") or []:
+            if node.get("id") == node_id:
+                return node
+        return None
+
+    def _ensure_scenario_attached(self) -> None:
+        if not self.scenario_definition or not self.scenario_runtime.get("scenarioId"):
+            raise BattleSessionError("No scenario run active")
+
+    def _ensure_scenario_node_state(self, node_id: str) -> dict:
+        self._ensure_scenario_attached()
+        if self._scenario_node(node_id) is None:
+            raise BattleSessionError(f"Scenario node '{node_id}' not found")
+        states = self.scenario_runtime.setdefault("nodeStates", {})
+        state = states.get(node_id)
+        if not isinstance(state, dict):
+            state = {}
+        state = self._normalize_scenario_node_state(node_id, state)
+        states[node_id] = state
+        return state
+
+    def _persist_active_scenario_map_instance(self) -> None:
+        if not self.scenario_runtime or self.dungeon is None:
+            return
+        active_node_id = self.scenario_runtime.get("activeMapNodeId")
+        if not active_node_id:
+            return
+        node_states = self.scenario_runtime.setdefault("nodeStates", {})
+        node_state = node_states.get(active_node_id)
+        if not isinstance(node_state, dict):
+            return
+        instance_id = node_state.get("mapInstanceId")
+        if not instance_id:
+            return
+        instances = self.scenario_runtime.setdefault("mapInstances", {})
+        instance = instances.get(instance_id) if isinstance(instances.get(instance_id), dict) else {}
+        instance["id"] = instance_id
+        instance["nodeId"] = active_node_id
+        instance["dungeon"] = dungeon_state_to_dict(self.dungeon)
+        instance["updatedAt"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        instances[instance_id] = instance
+
+    def attach_scenario(self, scenario_id: str) -> None:
+        definition = self.context.get_scenario(scenario_id)
+        if definition is None:
+            raise BattleSessionError(f"Scenario '{scenario_id}' not found")
+        self._persist_active_scenario_map_instance()
+        self.scenario_definition = copy.deepcopy(definition)
+        start_node_id = definition.get("startNodeId")
+        self.scenario_runtime = {
+            "scenarioId": definition["id"],
+            "sourceScenarioId": definition["id"],
+            "sourceScenarioName": definition.get("name", definition["id"]),
+            "currentNodeId": start_node_id,
+            "visitedNodeIds": [start_node_id] if start_node_id else [],
+            "nodeStates": {},
+            "flags": {},
+            "mapInstances": {},
+            "activeMapNodeId": None,
+        }
+        if start_node_id:
+            state = self._ensure_scenario_node_state(start_node_id)
+            state["visitCount"] = 1
+        self._add_log(f"Scenario run started: {definition.get('name', definition['id'])}")
+        self.autosave()
+
+    def start_scenario_run(self, scenario_id: str) -> None:
+        self.attach_scenario(scenario_id)
+
+    def detach_scenario(self) -> None:
+        self._persist_active_scenario_map_instance()
+        self.scenario_definition = None
+        self.scenario_runtime = {}
+        self._add_log("Scenario run cleared.")
+        self.autosave()
+
+    def update_scenario_run_definition(self, definition: dict) -> None:
+        self._ensure_scenario_attached()
+        source_id = self._scenario_source_id()
+        if not source_id:
+            raise BattleSessionError("No source scenario template for active run")
+        definition_id = str(definition.get("id") or "").strip() if isinstance(definition, dict) else ""
+        if definition_id and definition_id != source_id:
+            raise BattleSessionError("Template does not match the active scenario run")
+        normalized = normalize_scenario_definition(definition, scenario_id=source_id)
+        self._persist_active_scenario_map_instance()
+        current_runtime = copy.deepcopy(self.scenario_runtime)
+        current_runtime["scenarioId"] = source_id
+        current_runtime["sourceScenarioId"] = source_id
+        current_runtime["sourceScenarioName"] = normalized.get("name", source_id)
+        self.scenario_definition = normalized
+        self.scenario_runtime = self._normalize_scenario_runtime(current_runtime)
+        self._add_log(f"Scenario run updated from template: {normalized.get('name', source_id)}")
+        self.autosave()
+
+    def navigate_scenario_node(self, node_id: str) -> None:
+        self._ensure_scenario_attached()
+        node = self._scenario_node(node_id)
+        if node is None:
+            raise BattleSessionError(f"Scenario node '{node_id}' not found")
+        state = self._ensure_scenario_node_state(node_id)
+        state["visitCount"] = int(state.get("visitCount", 0) or 0) + 1
+        self.scenario_runtime["currentNodeId"] = node_id
+        visited = self.scenario_runtime.setdefault("visitedNodeIds", [])
+        if node_id not in visited:
+            visited.append(node_id)
+        self._add_log(f"Scenario node: {node.get('label', node_id)}")
+        self.autosave()
+
+    def set_scenario_node_phase(self, node_id: str, phase_id: str) -> None:
+        self._ensure_scenario_attached()
+        node = self._scenario_node(node_id)
+        if node is None:
+            raise BattleSessionError(f"Scenario node '{node_id}' not found")
+        phase_ids = {phase["id"] for phase in (node.get("phases") or [])}
+        if phase_id not in phase_ids:
+            raise BattleSessionError(f"Scenario phase '{phase_id}' not found")
+        state = self._ensure_scenario_node_state(node_id)
+        state["phaseId"] = phase_id
+        self.autosave()
+
+    def resolve_scenario_event(
+        self,
+        node_id: str,
+        event_id: str,
+        *,
+        set_phase: str | None = None,
+        flags: Optional[dict] = None,
+    ) -> None:
+        state = self._ensure_scenario_node_state(node_id)
+        resolved = state.setdefault("resolvedEventIds", [])
+        event_key = str(event_id or "").strip()
+        if event_key and event_key not in resolved:
+            resolved.append(event_key)
+        if flags:
+            node_flags = state.setdefault("flags", {})
+            runtime_flags = self.scenario_runtime.setdefault("flags", {})
+            for key, value in flags.items():
+                key_str = str(key)
+                node_flags[key_str] = value
+                runtime_flags[key_str] = value
+        if set_phase:
+            self.set_scenario_node_phase(node_id, set_phase)
+        else:
+            self.autosave()
+
+    def start_scenario_combat(self, node_id: str) -> None:
+        self._ensure_scenario_attached()
+        node = self._scenario_node(node_id)
+        if node is None:
+            raise BattleSessionError(f"Scenario node '{node_id}' not found")
+        if node.get("type") != "combat":
+            raise BattleSessionError("Scenario node is not a combat node")
+
+        self._persist_active_scenario_map_instance()
+        state = self._ensure_scenario_node_state(node_id)
+        combat = node.get("combat") if isinstance(node.get("combat"), dict) else {}
+        map_ref = combat.get("mapRef")
+        instance_id = state.get("mapInstanceId") or f"{node_id}_{uuid_short()}"
+        instances = self.scenario_runtime.setdefault("mapInstances", {})
+        existing = instances.get(instance_id) if isinstance(instances.get(instance_id), dict) else None
+
+        if existing and isinstance(existing.get("dungeon"), dict):
+            self.dungeon = dungeon_state_from_dict(existing["dungeon"])
+        else:
+            if map_ref:
+                template = self.context.get_map_template(str(map_ref))
+                if template is None:
+                    raise BattleSessionError(f"Map template '{map_ref}' not found")
+                self.dungeon = dungeon_state_from_dict(template)
+            else:
+                self.dungeon = migrate_to_dungeon(SCENARIO_DEFAULT_ARENA_COLUMNS, SCENARIO_DEFAULT_ARENA_ROWS, [])
+            existing = {
+                "id": instance_id,
+                "nodeId": node_id,
+                "sourceMapRef": str(map_ref) if map_ref else None,
+                "createdAt": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                "dungeon": dungeon_state_to_dict(self.dungeon),
+            }
+            instances[instance_id] = existing
+            state["mapInstanceId"] = instance_id
+
+        self.scenario_runtime["activeMapNodeId"] = node_id
+        dungeon_analyze(self.dungeon, list(self.state.enemies.values()))
+
+        if not state.get("spawnedEntityIds"):
+            spawned_ids: list[str] = []
+            for entry in combat.get("enemies") or []:
+                if not isinstance(entry, dict):
+                    continue
+                template_id = str(entry.get("templateId") or "").strip()
+                if not template_id:
+                    continue
+                try:
+                    count = max(1, min(20, int(entry.get("count", 1) or 1)))
+                except (TypeError, ValueError):
+                    count = 1
+                for _ in range(count):
+                    before = set(self.state.enemies)
+                    self.add_enemy_from_template(template_id)
+                    spawned_ids.extend([iid for iid in self.state.enemies if iid not in before])
+            if spawned_ids:
+                state["spawnedEntityIds"] = spawned_ids
+
+        state["mapInstanceId"] = instance_id
+        self._persist_active_scenario_map_instance()
+
+        can_start = any(
+            (entity := self.state.enemies.get(instance_id)) is not None and self._can_take_turn(entity)
+            for instance_id in self.order
+        )
+        if not state.get("encounterOutcome") and not self.encounter_started and self.active_turn_id is None and can_start:
+            self.start_encounter()
+        else:
+            self._add_log(f"Scenario combat ready: {node.get('label', node_id)}")
+            self.autosave()
 
     def list_manual_saves(self) -> list[dict]:
         entries: list[dict] = []
@@ -3512,6 +4174,14 @@ class BattleSession:
     def end_combat(self) -> None:
         if not self.encounter_started and self.active_turn_id is None and not self.pending_new_round:
             raise BattleSessionError("No active combat to end.")
+        active_scenario_map_node_id = self.scenario_runtime.get("activeMapNodeId") if self.scenario_runtime else None
+        scenario_outcome = None
+        if active_scenario_map_node_id:
+            scenario_outcome = (
+                "ended"
+                if any(not self.is_player(entity) and not self.is_down(entity) for entity in self.state.enemies.values())
+                else "won"
+            )
         self.encounter_started = False
         self.active_turn_id = None
         self.turn_in_progress = False
@@ -3523,6 +4193,13 @@ class BattleSession:
         self.round = 1
         if self.dungeon:
             self.dungeon.pending_encounter_room_ids.clear()
+        if active_scenario_map_node_id:
+            try:
+                node_state = self._ensure_scenario_node_state(str(active_scenario_map_node_id))
+                node_state["encounterOutcome"] = scenario_outcome or "ended"
+                self._persist_active_scenario_map_instance()
+            except BattleSessionError:
+                pass
         self._add_log("Combat ended.")
         self.autosave()
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { requestJson } from "./api.js";
 import BattleMapSurface from "./BattleMapSurface.jsx";
+import ScenarioView from "./ScenarioView.jsx";
 import { pickSearchFlavour } from "./roomSearchFlavour.js";
 
 const ATTACK_MODIFIERS = [
@@ -34,6 +35,7 @@ const TEMPLATE_AVAILABILITY_FILTERS = [
 ];
 const APP_VIEWS = {
   BATTLE: "battle",
+  SCENARIO: "scenario",
   SIM: "sim",
 };
 const COMBAT_SIM_MODES = [
@@ -3265,6 +3267,18 @@ function App() {
               <span className="pill pill-muted">No positioning</span>
               <span className="pill pill-muted">Initiative once</span>
             </>
+          ) : activeView === APP_VIEWS.SCENARIO ? (
+            <>
+              <span className="pill pill-turn">Scenario</span>
+              <span className="pill pill-muted">
+                {snapshot?.scenarioRun?.active || snapshot?.scenario?.scenarioRun?.active
+                  ? `Run: ${snapshot?.scenarioRun?.sourceTemplateMissing || snapshot?.scenario?.scenarioRun?.sourceTemplateMissing
+                    ? "Source template deleted"
+                    : snapshot?.scenarioRun?.sourceScenarioName || snapshot?.scenario?.scenarioRun?.sourceScenarioName || snapshot?.scenario?.definition?.name || "Scenario"}`
+                  : "No run"}
+              </span>
+              <span className="pill pill-muted">sid {snapshot.sid}</span>
+            </>
           ) : (
             <>
               <span className="pill">Round {snapshot.round}</span>
@@ -3284,6 +3298,18 @@ function App() {
         <div className="menu-actions">
           <div className="view-switch" role="group" aria-label="App view">
             <button
+              className={`menu-button ${activeView === APP_VIEWS.SCENARIO ? "menu-button-active" : ""}`.trim()}
+              type="button"
+              onClick={() => {
+                setActiveView(APP_VIEWS.SCENARIO);
+                setModal(null);
+                setUnitContextMenu(null);
+              }}
+              disabled={busy}
+            >
+              Scenario
+            </button>
+            <button
               className={`menu-button ${activeView === APP_VIEWS.BATTLE ? "menu-button-active" : ""}`.trim()}
               type="button"
               onClick={() => {
@@ -3292,7 +3318,7 @@ function App() {
               }}
               disabled={busy}
             >
-              Battle Map
+              Map
             </button>
             <button
               className={`menu-button ${activeView === APP_VIEWS.SIM ? "menu-button-active" : ""}`.trim()}
@@ -3369,6 +3395,21 @@ function App() {
 
       {activeView === APP_VIEWS.SIM ? (
         <CombatSimView meta={meta} onMetaUpdate={setMeta} />
+      ) : activeView === APP_VIEWS.SCENARIO ? (
+        <ScenarioView
+          snapshot={snapshot}
+          busy={busy}
+          setBusy={setBusy}
+          setError={setError}
+          setNotice={setNotice}
+          setSnapshot={setSnapshot}
+          meta={meta}
+          onOpenCombat={() => {
+            setActiveView(APP_VIEWS.BATTLE);
+            setModal(null);
+            setUnitContextMenu(null);
+          }}
+        />
       ) : (
       <main className="main-grid">
         <section className="stage-column">

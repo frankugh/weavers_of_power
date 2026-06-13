@@ -588,6 +588,109 @@ describe("App", () => {
     expect(window.localStorage.getItem("weavers-display-brightness")).toBe("145");
   });
 
+  it("opens the scenario library, creates a template, and starts a run", async () => {
+    const user = userEvent.setup();
+    const scenarioDefinition = {
+      id: "scenario_1",
+      name: "API Scenario",
+      startNodeId: "start",
+      nodes: [
+        {
+          id: "start",
+          type: "scene",
+          label: "Start",
+          position: { x: 100, y: 100 },
+          defaultPhaseId: "phase_default",
+          phases: [{ id: "phase_default", label: "Default", text: "Opening text" }],
+        },
+      ],
+      edges: [],
+    };
+    const attachedSnapshot = buildSnapshot({
+      scenario: {
+        definition: scenarioDefinition,
+        runtime: {
+          scenarioId: "scenario_1",
+          currentNodeId: "start",
+          visitedNodeIds: ["start"],
+          nodeStates: {
+            start: {
+              phaseId: "phase_default",
+              visitCount: 1,
+              resolvedEventIds: [],
+              flags: {},
+              encounterOutcome: null,
+              mapInstanceId: null,
+            },
+          },
+          activeMapNodeId: null,
+          sourceScenarioId: "scenario_1",
+          sourceScenarioName: "API Scenario",
+        },
+        scenarioRun: {
+          active: true,
+          sourceScenarioId: "scenario_1",
+          sourceScenarioName: "API Scenario",
+          sourceTemplateMissing: false,
+          currentNodeId: "start",
+        },
+      },
+      scenarioRun: {
+        active: true,
+        sourceScenarioId: "scenario_1",
+        sourceScenarioName: "API Scenario",
+        sourceTemplateMissing: false,
+        currentNodeId: "start",
+      },
+    });
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/scenarios" && (!requestOptions?.method || requestOptions.method === "GET")) {
+          return jsonResponse({ scenarios: [] });
+        }
+        if (url === "/api/map-templates" && (!requestOptions?.method || requestOptions.method === "GET")) {
+          return jsonResponse({ templates: [] });
+        }
+        if (url === "/api/scenarios" && requestOptions?.method === "POST") {
+          return jsonResponse({
+            scenario: scenarioDefinition,
+            scenarios: [{ id: "scenario_1", name: "API Scenario", nodeCount: 1 }],
+          });
+        }
+        if (url === "/api/battle/sessions/sid-123/scenario/start-run" && requestOptions?.method === "POST") {
+          return jsonResponse(attachedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await screen.findByText("Weave Forge");
+    const viewSwitch = screen.getByRole("group", { name: "App view" });
+    expect(within(viewSwitch).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "Scenario",
+      "Map",
+      "Combat Sim",
+    ]);
+    await user.click(screen.getByRole("button", { name: "Scenario" }));
+
+    await screen.findByText("Scenario Library");
+    expect(screen.queryByText(/Attach/i)).not.toBeInTheDocument();
+    await user.clear(screen.getByPlaceholderText("Scenario name"));
+    await user.type(screen.getByPlaceholderText("Scenario name"), "API Scenario");
+    await user.click(screen.getByRole("button", { name: "Create Template" }));
+
+    await screen.findByText("Edit Template");
+    expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Start Run" }));
+
+    await screen.findByText("Opening text");
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/battle/sessions/sid-123/scenario/start-run",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("renders initiative add controls and keeps main panel plus roster images visible", async () => {
     const goblin = buildEnemy();
     const bandit = buildEnemy({

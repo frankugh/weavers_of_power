@@ -20,7 +20,12 @@ class BattleSessionTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.saves_dir = Path(self.temp_dir.name) / "saves"
-        self.context = BattleSessionContext(root=PROJECT_ROOT, saves_dir=self.saves_dir)
+        self.context = BattleSessionContext(
+            root=PROJECT_ROOT,
+            saves_dir=self.saves_dir,
+            map_templates_dir=Path(self.temp_dir.name) / "map_templates",
+            scenarios_dir=Path(self.temp_dir.name) / "scenarios",
+        )
 
     def test_create_session_has_expected_defaults(self) -> None:
         session = self.context.create_session("session-defaults")
@@ -32,6 +37,218 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(snapshot["combatLog"], [])
         self.assertEqual(snapshot["order"], [])
         self.assertEqual(snapshot["room"], {"columns": 10, "rows": 7})
+
+    def test_scenario_runtime_navigation_phase_and_event_state_persist(self) -> None:
+        created = self.context.create_scenario("Scenario Runtime")
+        scenario_id = created["id"]
+        definition = {
+            "id": scenario_id,
+            "name": "Scenario Runtime",
+            "startNodeId": "start",
+            "nodes": [
+                {
+                    "id": "start",
+                    "type": "start",
+                    "label": "Start",
+                    "position": {"x": 10, "y": 10},
+                    "defaultPhaseId": "phase_default",
+                    "phases": [{"id": "phase_default", "label": "Default", "text": "Start text"}],
+                },
+                {
+                    "id": "trap",
+                    "type": "event",
+                    "label": "Trap",
+                    "position": {"x": 220, "y": 10},
+                    "defaultPhaseId": "hidden",
+                    "phases": [
+                        {"id": "hidden", "label": "Hidden", "text": "A quiet hall."},
+                        {"id": "sprung", "label": "Sprung", "text": "The trap fires."},
+                    ],
+                },
+            ],
+            "edges": [{"id": "edge_start_trap", "from": "start", "to": "trap", "label": "Investigate"}],
+        }
+        self.context.save_scenario(scenario_id, definition)
+        session = self.context.create_session("scenario-runtime")
+
+        saved_definition = self.context.get_scenario(scenario_id)
+        self.assertEqual([node["type"] for node in saved_definition["nodes"]], ["scene", "scene"])
+
+        session.start_scenario_run(scenario_id)
+        session.navigate_scenario_node("trap")
+        session.set_scenario_node_phase("trap", "sprung")
+        session.resolve_scenario_event("trap", "trap_check", flags={"trapResolved": True})
+
+        snapshot = session.snapshot()["scenario"]
+        self.assertEqual(snapshot["runtime"]["scenarioId"], scenario_id)
+        self.assertTrue(snapshot["scenarioRun"]["active"])
+        self.assertEqual(snapshot["scenarioRun"]["sourceScenarioId"], scenario_id)
+        self.assertEqual(snapshot["scenarioRun"]["sourceScenarioName"], "Scenario Runtime")
+        self.assertFalse(snapshot["scenarioRun"]["sourceTemplateMissing"])
+        self.assertEqual(snapshot["runtime"]["currentNodeId"], "trap")
+        self.assertEqual(snapshot["runtime"]["visitedNodeIds"], ["start", "trap"])
+        trap_state = snapshot["runtime"]["nodeStates"]["trap"]
+        self.assertEqual(trap_state["phaseId"], "sprung")
+        self.assertEqual(trap_state["visitCount"], 1)
+        self.assertIn("trap_check", trap_state["resolvedEventIds"])
+        self.assertTrue(trap_state["flags"]["trapResolved"])
+
+        payload = load_save_payload(self.context.current_path("scenario-runtime"))
+        reloaded = BattleSession(context=self.context, sid="scenario-runtime")
+        reloaded.load_from_payload(payload)
+
+        reloaded_state = reloaded.snapshot()["scenario"]["runtime"]["nodeStates"]["trap"]
+        self.assertEqual(reloaded.snapshot()["scenario"]["runtime"]["currentNodeId"], "trap")
+        self.assertEqual(reloaded_state["phaseId"], "sprung")
+        self.assertIn("trap_check", reloaded_state["resolvedEventIds"])
+
+    def test_scenario_template_update_refreshes_active_run_without_runtime_loss(self) -> None:
+        created = self.context.create_scenario("Editable Template")
+        scenario_id = created["id"]
+        definition = {
+            "id": scenario_id,
+            "name": "Editable Template",
+            "startNodeId": "start",
+            "nodes": [
+                {
+                    "id": "start",
+                    "type": "scene",
+                    "label": "Start",
+                    "position": {"x": 10, "y": 10},
+                    "defaultPhaseId": "phase_default",
+                    "phases": [{"id": "phase_default", "label": "Default", "text": "Old"}],
+                },
+                {
+                    "id": "room",
+                    "type": "scene",
+                    "label": "Room",
+                    "position": {"x": 200, "y": 10},
+                    "defaultPhaseId": "calm",
+                    "phases": [
+                        {"id": "calm", "label": "Calm", "text": "Quiet."},
+                        {"id": "alert", "label": "Alert", "text": "Danger."},
+                    ],
+                },
+            ],
+            "edges": [{"id": "edge_start_room", "from": "start", "to": "room", "label": "Enter"}],
+        }
+        self.context.save_scenario(scenario_id, definition)
+        session = self.context.create_session("scenario-template-update")
+        session.start_scenario_run(scenario_id)
+        session.navigate_scenario_node("room")
+        session.set_scenario_node_phase("room", "alert")
+        session.resolve_scenario_event("room", "searched", flags={"searched": True})
+
+        updated_definition = {
+            **definition,
+            "name": "Editable Template V2",
+            "nodes": [
+                definition["nodes"][0],
+                {
+                    **definition["nodes"][1],
+                    "label": "Updated Room",
+                    "phases": [
+                        {"id": "calm", "label": "Calm", "text": "Quiet."},
+                        {"id": "alert", "label": "Alert", "text": "Updated danger."},
+                    ],
+                },
+            ],
+        }
+        saved = self.context.save_scenario(scenario_id, updated_definition)
+        session.update_scenario_run_definition(saved)
+
+        snapshot = session.snapshot()["scenario"]
+        self.assertEqual(snapshot["definition"]["name"], "Editable Template V2")
+        self.assertEqual(snapshot["definition"]["nodes"][1]["label"], "Updated Room")
+        self.assertEqual(snapshot["runtime"]["currentNodeId"], "room")
+        room_state = snapshot["runtime"]["nodeStates"]["room"]
+        self.assertEqual(room_state["phaseId"], "alert")
+        self.assertEqual(room_state["visitCount"], 1)
+        self.assertIn("searched", room_state["resolvedEventIds"])
+        self.assertTrue(room_state["flags"]["searched"])
+
+    def test_deleting_source_template_keeps_active_run_and_marks_missing_source(self) -> None:
+        created = self.context.create_scenario("Disposable Template")
+        scenario_id = created["id"]
+        session = self.context.create_session("scenario-deleted-source")
+        session.start_scenario_run(scenario_id)
+
+        self.context.delete_scenario(scenario_id)
+        snapshot = session.snapshot()["scenario"]
+
+        self.assertTrue(snapshot["scenarioRun"]["active"])
+        self.assertEqual(snapshot["scenarioRun"]["sourceScenarioId"], scenario_id)
+        self.assertTrue(snapshot["scenarioRun"]["sourceTemplateMissing"])
+        self.assertIsNotNone(snapshot["definition"])
+
+    def test_scenario_combat_nodes_clone_map_templates_and_reuse_runtime_instances(self) -> None:
+        template = {
+            "name": "Door Template",
+            "tiles": {
+                "0,0": {"tile_type": "floor"},
+                "1,0": {"tile_type": "floor"},
+            },
+            "walls": {
+                "0,0,e": {"wall_type": "door", "door_open": False},
+            },
+            "rooms": [],
+            "fog_of_war_enabled": False,
+        }
+        template_id = self.context.save_map_template("Door Template", template)["id"]
+        created = self.context.create_scenario("Combat Maps")
+        scenario_id = created["id"]
+        self.context.save_scenario(scenario_id, {
+            "id": scenario_id,
+            "name": "Combat Maps",
+            "startNodeId": "start",
+            "nodes": [
+                {
+                    "id": "start",
+                    "type": "start",
+                    "label": "Start",
+                    "position": {"x": 0, "y": 0},
+                    "phases": [{"id": "phase_default", "label": "Default", "text": ""}],
+                    "defaultPhaseId": "phase_default",
+                },
+                {
+                    "id": "fight_a",
+                    "type": "combat",
+                    "label": "Fight A",
+                    "position": {"x": 200, "y": 0},
+                    "phases": [{"id": "phase_default", "label": "Default", "text": ""}],
+                    "defaultPhaseId": "phase_default",
+                    "combat": {"enemies": [], "mapRef": template_id},
+                },
+                {
+                    "id": "fight_b",
+                    "type": "combat",
+                    "label": "Fight B",
+                    "position": {"x": 400, "y": 0},
+                    "phases": [{"id": "phase_default", "label": "Default", "text": ""}],
+                    "defaultPhaseId": "phase_default",
+                    "combat": {"enemies": [], "mapRef": None},
+                },
+            ],
+            "edges": [],
+        })
+        session = self.context.create_session("scenario-combat-maps")
+        session.start_scenario_run(scenario_id)
+
+        session.start_scenario_combat("fight_a")
+        self.assertIn("0,0,e", session.dungeon.walls)
+        self.assertFalse(session.dungeon.walls["0,0,e"].door_open)
+        session.dungeon.walls["0,0,e"].door_open = True
+        session.autosave()
+        fight_a_instance = session.scenario_runtime["nodeStates"]["fight_a"]["mapInstanceId"]
+
+        session.start_scenario_combat("fight_b")
+        self.assertGreaterEqual(len(session.dungeon.tiles), 1600)
+        fight_b_instance = session.scenario_runtime["nodeStates"]["fight_b"]["mapInstanceId"]
+        self.assertNotEqual(fight_a_instance, fight_b_instance)
+
+        session.start_scenario_combat("fight_a")
+        self.assertTrue(session.dungeon.walls["0,0,e"].door_open)
+        self.assertFalse(self.context.get_map_template(template_id)["walls"]["0,0,e"]["door_open"])
 
     def test_character_builder_catalog_and_generated_deck_rules(self) -> None:
         catalog = self.context.character_catalog_payload()
@@ -3161,7 +3378,12 @@ class WallEdgeDoorTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         saves_dir = Path(self.temp_dir.name) / "saves"
-        self.context = BattleSessionContext(root=PROJECT_ROOT, saves_dir=saves_dir)
+        self.context = BattleSessionContext(
+            root=PROJECT_ROOT,
+            saves_dir=saves_dir,
+            map_templates_dir=Path(self.temp_dir.name) / "map_templates",
+            scenarios_dir=Path(self.temp_dir.name) / "scenarios",
+        )
 
     def _make_dungeon(self, sid: str, cells: list) -> "BattleSession":
         session = self.context.create_session(sid)

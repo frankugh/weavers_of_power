@@ -22,7 +22,12 @@ class BattleApiTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         saves_dir = Path(self.temp_dir.name) / "saves"
-        self.context = BattleSessionContext(root=PROJECT_ROOT, saves_dir=saves_dir)
+        self.context = BattleSessionContext(
+            root=PROJECT_ROOT,
+            saves_dir=saves_dir,
+            map_templates_dir=Path(self.temp_dir.name) / "map_templates",
+            scenarios_dir=Path(self.temp_dir.name) / "scenarios",
+        )
         app = FastAPI()
         register_battle_api(app, self.context)
         self.client = TestClient(app)
@@ -31,7 +36,13 @@ class BattleApiTests(unittest.TestCase):
         workbook_path = Path(self.temp_dir.name) / "denizens_creature_database.xlsx"
         shutil.copy2(PROJECT_ROOT / "data" / "denizens_creature_database.xlsx", workbook_path)
         saves_dir = Path(self.temp_dir.name) / "workbook_saves"
-        context = BattleSessionContext(root=PROJECT_ROOT, saves_dir=saves_dir, creatures_workbook=workbook_path)
+        context = BattleSessionContext(
+            root=PROJECT_ROOT,
+            saves_dir=saves_dir,
+            creatures_workbook=workbook_path,
+            map_templates_dir=Path(self.temp_dir.name) / "workbook_map_templates",
+            scenarios_dir=Path(self.temp_dir.name) / "workbook_scenarios",
+        )
         app = FastAPI()
         register_battle_api(app, context)
         return TestClient(app), context, workbook_path
@@ -84,6 +95,137 @@ class BattleApiTests(unittest.TestCase):
         self.assertIn("coverageStatus", templates_by_id["C_GOBLIN"]["simActions"][0])
         self.assertEqual(templates_by_id["C_WOLF"]["category"], "Changelings")
 
+    def test_scenario_and_map_template_api_supports_play_runtime(self) -> None:
+        map_response = self.client.post(
+            "/api/map-templates",
+            json={
+                "name": "API Map",
+                "template": {
+                    "tiles": {"0,0": {"tile_type": "floor"}, "1,0": {"tile_type": "floor"}},
+                    "walls": {},
+                    "rooms": [],
+                    "fog_of_war_enabled": False,
+                },
+            },
+        )
+        self.assertEqual(map_response.status_code, 200)
+        map_id = map_response.json()["template"]["id"]
+
+        loaded_map = self.client.get(f"/api/map-templates/{map_id}")
+        self.assertEqual(loaded_map.status_code, 200)
+        self.assertIn("0,0", loaded_map.json()["template"]["tiles"])
+
+        updated_map = self.client.put(
+            f"/api/map-templates/{map_id}",
+            json={
+                "name": "API Map Updated",
+                "template": {
+                    "tiles": {"0,0": {"tile_type": "floor"}},
+                    "walls": {},
+                    "rooms": [],
+                    "fog_of_war_enabled": False,
+                },
+            },
+        )
+        self.assertEqual(updated_map.status_code, 200)
+        self.assertEqual(updated_map.json()["template"]["name"], "API Map Updated")
+
+        created = self.client.post("/api/scenarios", json={"name": "API Scenario"})
+        self.assertEqual(created.status_code, 200)
+        scenario_id = created.json()["scenario"]["id"]
+        definition = {
+            "id": scenario_id,
+            "name": "API Scenario",
+            "startNodeId": "start",
+            "nodes": [
+                {
+                    "id": "start",
+                    "type": "start",
+                    "label": "Start",
+                    "position": {"x": 0, "y": 0},
+                    "defaultPhaseId": "phase_default",
+                    "phases": [{"id": "phase_default", "label": "Default", "text": "Start"}],
+                },
+                {
+                    "id": "event",
+                    "type": "event",
+                    "label": "Event",
+                    "position": {"x": 180, "y": 0},
+                    "defaultPhaseId": "phase_a",
+                    "phases": [
+                        {"id": "phase_a", "label": "A", "text": "A"},
+                        {"id": "phase_b", "label": "B", "text": "B"},
+                    ],
+                },
+                {
+                    "id": "combat",
+                    "type": "combat",
+                    "label": "Combat",
+                    "position": {"x": 360, "y": 0},
+                    "defaultPhaseId": "phase_default",
+                    "phases": [{"id": "phase_default", "label": "Default", "text": ""}],
+                    "combat": {"mapRef": map_id, "enemies": []},
+                },
+            ],
+            "edges": [
+                {"id": "edge_start_event", "from": "start", "to": "event", "label": "Investigate"},
+                {"id": "edge_event_combat", "from": "event", "to": "combat", "label": "Fight"},
+            ],
+        }
+        saved = self.client.put(f"/api/scenarios/{scenario_id}", json={"definition": definition})
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.json()["scenario"]["edges"][0]["label"], "Investigate")
+
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        started = self.client.post(
+            f"/api/battle/sessions/{sid}/scenario/start-run",
+            json={"scenarioId": scenario_id},
+        )
+        self.assertEqual(started.status_code, 200)
+        self.assertEqual(started.json()["scenario"]["runtime"]["currentNodeId"], "start")
+        self.assertEqual(started.json()["scenarioRun"]["sourceScenarioId"], scenario_id)
+        self.assertEqual(started.json()["scenario"]["definition"]["nodes"][0]["type"], "scene")
+
+        navigated = self.client.post(
+            f"/api/battle/sessions/{sid}/scenario/navigate",
+            json={"nodeId": "event"},
+        )
+        self.assertEqual(navigated.status_code, 200)
+        self.assertEqual(navigated.json()["scenario"]["runtime"]["currentNodeId"], "event")
+        self.assertEqual(navigated.json()["scenario"]["runtime"]["nodeStates"]["event"]["visitCount"], 1)
+
+        phased = self.client.post(
+            f"/api/battle/sessions/{sid}/scenario/nodes/event/phase",
+            json={"phaseId": "phase_b"},
+        )
+        self.assertEqual(phased.status_code, 200)
+        self.assertEqual(phased.json()["scenario"]["runtime"]["nodeStates"]["event"]["phaseId"], "phase_b")
+
+        updated_definition = {
+            **definition,
+            "name": "API Scenario Updated",
+            "nodes": [
+                definition["nodes"][0],
+                {**definition["nodes"][1], "label": "Updated Event"},
+                definition["nodes"][2],
+            ],
+        }
+        updated_run = self.client.put(
+            f"/api/battle/sessions/{sid}/scenario/templates/{scenario_id}",
+            json={"definition": updated_definition},
+        )
+        self.assertEqual(updated_run.status_code, 200)
+        self.assertEqual(updated_run.json()["scenarioTemplate"]["name"], "API Scenario Updated")
+        self.assertEqual(updated_run.json()["scenario"]["definition"]["nodes"][1]["label"], "Updated Event")
+        self.assertEqual(updated_run.json()["scenario"]["runtime"]["currentNodeId"], "event")
+        self.assertEqual(updated_run.json()["scenario"]["runtime"]["nodeStates"]["event"]["phaseId"], "phase_b")
+
+        combat = self.client.post(f"/api/battle/sessions/{sid}/scenario/nodes/combat/start-combat")
+        self.assertEqual(combat.status_code, 200)
+        combat_state = combat.json()["scenario"]["runtime"]["nodeStates"]["combat"]
+        self.assertIsNotNone(combat_state["mapInstanceId"])
+        self.assertIn("0,0", combat.json()["dungeon"]["tiles"])
+
     def test_character_builder_catalog_endpoint_returns_classes_and_ancestries(self) -> None:
         response = self.client.get("/api/battle/character-builder/catalog")
 
@@ -105,7 +247,13 @@ class BattleApiTests(unittest.TestCase):
     def test_character_art_upload_endpoint_stores_custom_images(self) -> None:
         images_dir = Path(self.temp_dir.name) / "images"
         saves_dir = Path(self.temp_dir.name) / "upload_saves"
-        context = BattleSessionContext(root=PROJECT_ROOT, saves_dir=saves_dir, images_dir=images_dir)
+        context = BattleSessionContext(
+            root=PROJECT_ROOT,
+            saves_dir=saves_dir,
+            images_dir=images_dir,
+            map_templates_dir=Path(self.temp_dir.name) / "upload_map_templates",
+            scenarios_dir=Path(self.temp_dir.name) / "upload_scenarios",
+        )
         app = FastAPI()
         register_battle_api(app, context)
         client = TestClient(app)

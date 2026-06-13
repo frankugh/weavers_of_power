@@ -4936,6 +4936,733 @@ button.draw-card:hover {
   font-size: 0.74rem;
 }
 
+.scenario-view {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  height: 100%;
+  gap: 10px;
+  color: var(--text);
+  filter: brightness(var(--display-brightness, 1));
+}
+
+.scenario-empty {
+  display: grid;
+  place-items: center;
+}
+
+.scenario-empty-content {
+  display: grid;
+  gap: 14px;
+  width: min(560px, 94vw);
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow-md);
+}
+
+.scenario-empty-title,
+.scenario-title,
+.scenario-event-title {
+  color: var(--accent-bright);
+  font-weight: 800;
+}
+
+.scenario-empty-title {
+  font-family: "Cormorant Garamond", serif;
+  font-size: 1.8rem;
+}
+
+.scenario-create-form,
+.scenario-toolbar,
+.scenario-combat-meta,
+.scenario-exits,
+.scenario-enemy-add-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.scenario-create-form input {
+  min-width: min(260px, 100%);
+  flex: 1;
+}
+
+.scenario-toolbar {
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(18, 13, 9, 0.92);
+  box-shadow: var(--shadow-md);
+}
+
+.scenario-title {
+  margin-right: 4px;
+  font-size: 1rem;
+}
+
+.scenario-picker,
+.scenario-picker-dropdown {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(11, 8, 6, 0.94);
+}
+
+.scenario-picker {
+  padding: 10px;
+}
+
+.scenario-picker-dropdown {
+  position: absolute;
+  top: 54px;
+  right: 12px;
+  z-index: 20;
+  width: min(360px, 90vw);
+  box-shadow: var(--shadow-lg);
+}
+
+.scenario-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+  gap: 10px;
+  min-height: 0;
+}
+
+.scenario-viewport,
+.scenario-event-panel {
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(10, 8, 6, 0.9);
+  box-shadow: var(--shadow-md);
+}
+
+.scenario-viewport {
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+}
+
+.scenario-viewport:active {
+  cursor: grabbing;
+}
+
+.scenario-canvas {
+  position: relative;
+  min-width: 800px;
+  min-height: 500px;
+  background:
+    linear-gradient(rgba(255, 244, 216, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 244, 216, 0.055) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.scenario-node {
+  position: absolute;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  align-items: center;
+  justify-items: center;
+  padding: 8px 10px;
+  border: 2px solid rgba(255, 244, 216, 0.25);
+  background: rgba(39, 48, 62, 0.94);
+  color: #f7ead2;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.32);
+  user-select: none;
+  cursor: pointer;
+}
+
+.scenario-node-story {
+  border-radius: 8px;
+  border-color: rgba(96, 165, 250, 0.75);
+  background: linear-gradient(180deg, rgba(30, 64, 120, 0.96), rgba(22, 42, 78, 0.96));
+}
+
+.scenario-node-event {
+  clip-path: polygon(12% 0, 88% 0, 100% 50%, 88% 100%, 12% 100%, 0 50%);
+  border-color: rgba(234, 179, 8, 0.8);
+  background: linear-gradient(180deg, rgba(132, 98, 18, 0.96), rgba(88, 67, 18, 0.96));
+}
+
+.scenario-node-combat {
+  clip-path: polygon(18% 0, 82% 0, 100% 18%, 100% 82%, 82% 100%, 18% 100%, 0 82%, 0 18%);
+  border-color: rgba(239, 68, 68, 0.8);
+  background: linear-gradient(180deg, rgba(127, 35, 35, 0.98), rgba(77, 24, 24, 0.98));
+}
+
+.scenario-node-start {
+  border-radius: 18px;
+  border-color: rgba(74, 222, 128, 0.75);
+  background: linear-gradient(180deg, rgba(28, 98, 64, 0.98), rgba(20, 68, 45, 0.98));
+}
+
+.scenario-node-current {
+  box-shadow:
+    0 0 0 3px rgba(240, 207, 133, 0.55),
+    0 14px 30px rgba(0, 0, 0, 0.42);
+}
+
+.scenario-node-selected {
+  outline: 2px solid rgba(255, 244, 216, 0.8);
+  outline-offset: 3px;
+}
+
+.scenario-node-visited:not(.scenario-node-current) {
+  filter: saturate(0.82);
+}
+
+.scenario-node-type-badge,
+.scenario-node-type-pill,
+.scenario-exits-label {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.66rem;
+  color: rgba(255, 244, 216, 0.76);
+}
+
+.scenario-node-label {
+  max-width: 100%;
+  overflow: hidden;
+  font-weight: 800;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scenario-edge-label {
+  paint-order: stroke;
+  stroke: rgba(8, 6, 4, 0.9);
+  stroke-width: 3px;
+}
+
+.scenario-event-panel {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  overflow: auto;
+  padding: 14px;
+}
+
+.scenario-event-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.scenario-event-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scenario-node-type-pill {
+  padding: 4px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.scenario-phase-selector,
+.scenario-phases-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.scenario-phase-btn,
+.scenario-phase-tab,
+.scenario-phase-add-btn,
+.scenario-exit-btn {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 244, 216, 0.055);
+  color: var(--text);
+  padding: 7px 10px;
+}
+
+.scenario-phase-btn.active,
+.scenario-phase-tab.active,
+.scenario-exit-btn:hover {
+  border-color: var(--accent);
+  background: rgba(216, 182, 106, 0.18);
+}
+
+.scenario-event-text {
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.scenario-event-text-empty {
+  padding: 10px 0;
+}
+
+.scenario-combat-section,
+.scenario-phases-editor,
+.scenario-combat-editor,
+.scenario-enemies-list {
+  display: grid;
+  gap: 10px;
+}
+
+.scenario-combat-section {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.scenario-encounter-outcome {
+  color: var(--accent-bright);
+  font-size: 0.82rem;
+}
+
+.scenario-exits {
+  align-items: stretch;
+}
+
+.scenario-exit-btn {
+  min-width: 92px;
+  text-align: left;
+}
+
+.scenario-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(0, 0, 0, 0.58);
+}
+
+.scenario-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(720px, 96vw);
+  max-height: 90vh;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: rgba(20, 14, 10, 0.98);
+  box-shadow: var(--shadow-lg);
+}
+
+.scenario-modal-header,
+.scenario-modal-footer,
+.scenario-enemy-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.scenario-modal-header,
+.scenario-modal-footer {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.scenario-modal-footer {
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+  justify-content: flex-start;
+}
+
+.scenario-modal-body {
+  display: grid;
+  gap: 12px;
+  overflow: auto;
+  padding: 14px;
+}
+
+.scenario-phase-edit {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.scenario-phase-edit textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.scenario-enemy-row {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 244, 216, 0.04);
+}
+
+.scenario-library-view {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.scenario-library-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  gap: 10px;
+  min-height: 0;
+}
+
+.scenario-library-panel,
+.scenario-run-card {
+  min-height: 0;
+}
+
+.scenario-template-list {
+  margin-top: 12px;
+}
+
+.scenario-template-row {
+  align-items: center;
+}
+
+.scenario-template-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.scenario-template-actions .icon-button {
+  flex: 0 0 auto;
+}
+
+.scenario-icon-delete {
+  color: var(--tone-bad);
+}
+
+.scenario-icon-delete:hover:not(:disabled) {
+  border-color: rgba(217, 95, 80, 0.5);
+  background: rgba(217, 95, 80, 0.1);
+}
+
+.scenario-title-input {
+  min-width: 180px;
+  max-width: min(320px, 32vw);
+  height: 32px;
+}
+
+.scenario-toolbar-divider {
+  width: 1px;
+  height: 28px;
+  background: var(--line);
+}
+
+.scenario-dirty-badge,
+.scenario-source-warning,
+.scenario-start-inline,
+.scenario-start-badge {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(216, 182, 106, 0.12);
+  color: var(--accent-bright);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.scenario-source-warning {
+  border-color: rgba(217, 95, 80, 0.55);
+  background: rgba(217, 95, 80, 0.12);
+  color: var(--tone-bad);
+}
+
+.scenario-node {
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  background: rgba(27, 22, 17, 0.96);
+  color: var(--text);
+  clip-path: none;
+  overflow: hidden;
+  text-align: center;
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.scenario-node:hover {
+  border-color: rgba(240, 207, 133, 0.62);
+}
+
+.scenario-node-scene,
+.scenario-node-combat,
+.scenario-node-story,
+.scenario-node-event,
+.scenario-node-start {
+  border-radius: 8px;
+  background: rgba(27, 22, 17, 0.96);
+  clip-path: none;
+}
+
+.scenario-node-scene {
+  border-color: rgba(91, 157, 170, 0.45);
+}
+
+.scenario-node-combat {
+  border-color: rgba(203, 107, 84, 0.5);
+}
+
+.scenario-node-top-strip {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 4px;
+  background: rgba(91, 157, 170, 0.7);
+}
+
+.scenario-node-combat .scenario-node-top-strip {
+  background: rgba(203, 107, 84, 0.75);
+}
+
+.scenario-node-start-marker {
+  box-shadow:
+    inset 0 0 0 1px rgba(105, 174, 113, 0.5),
+    0 10px 24px rgba(0, 0, 0, 0.28);
+}
+
+.scenario-node-current {
+  border-color: rgba(240, 207, 133, 0.85);
+  box-shadow:
+    0 0 0 2px rgba(240, 207, 133, 0.36),
+    0 12px 26px rgba(0, 0, 0, 0.38);
+}
+
+.scenario-node-selected {
+  outline: 2px solid rgba(255, 244, 216, 0.58);
+  outline-offset: 3px;
+}
+
+.scenario-node-type-badge {
+  align-self: end;
+  letter-spacing: 0;
+}
+
+.scenario-start-badge {
+  position: absolute;
+  right: 7px;
+  bottom: 6px;
+  padding: 2px 6px;
+  font-size: 0.62rem;
+}
+
+.scenario-edge-delete {
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.scenario-edge-delete circle {
+  fill: rgba(20, 14, 10, 0.95);
+  stroke: rgba(217, 95, 80, 0.75);
+  stroke-width: 1.5;
+}
+
+.scenario-edge-delete text {
+  fill: rgba(255, 224, 214, 0.95);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.scenario-event-header {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.scenario-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scenario-edge-edit-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  width: 100%;
+}
+
+.scenario-edge-edit-row input {
+  min-width: 0;
+}
+
+.scenario-node-editor-modal {
+  width: min(980px, 96vw);
+}
+
+.scenario-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.scenario-start-toggle {
+  align-self: center;
+  margin-bottom: 2px;
+}
+
+.scenario-phase-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+}
+
+.scenario-map-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.scenario-enemy-picker {
+  display: grid;
+  gap: 10px;
+}
+
+.scenario-selected-enemy-list {
+  display: grid;
+  gap: 8px;
+}
+
+.scenario-selected-enemy-list-compact {
+  gap: 5px;
+}
+
+.scenario-selected-enemy {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 244, 216, 0.045);
+}
+
+.scenario-selected-enemy-list-compact .scenario-selected-enemy {
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  padding: 5px;
+}
+
+.scenario-selected-enemy img,
+.scenario-enemy-fallback {
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  object-fit: cover;
+  background: rgba(0, 0, 0, 0.24);
+}
+
+.scenario-selected-enemy-list-compact img,
+.scenario-selected-enemy-list-compact .scenario-enemy-fallback {
+  width: 30px;
+  height: 30px;
+}
+
+.scenario-selected-enemy-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.scenario-selected-enemy-copy strong,
+.scenario-selected-enemy-copy span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scenario-selected-enemy-copy span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.scenario-count-stepper {
+  display: grid;
+  grid-template-columns: 26px 44px 26px;
+  align-items: center;
+  gap: 4px;
+}
+
+.scenario-count-stepper button,
+.template-availability-tabs button {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(255, 244, 216, 0.06);
+  color: var(--text);
+}
+
+.scenario-count-stepper input {
+  height: 28px;
+  min-width: 0;
+  text-align: center;
+}
+
+.template-browser-controls,
+.scenario-template-browser-controls {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(120px, 170px) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.template-availability-tabs {
+  display: flex;
+  gap: 5px;
+}
+
+.template-availability-tabs button {
+  min-height: 30px;
+  padding: 0 8px;
+}
+
+.template-availability-tabs button.active {
+  border-color: var(--accent);
+  background: rgba(216, 182, 106, 0.16);
+}
+
+.scenario-premade-grid {
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.scenario-confirm-modal {
+  width: min(460px, 94vw);
+}
+
+.scenario-confirm-copy {
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.scenario-empty .scenario-empty-content {
+  border-radius: 10px;
+}
+
+@media (max-width: 1000px) {
+  .scenario-main {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(360px, 1fr) auto;
+  }
+
+  .scenario-library-layout,
+  .scenario-editor-grid,
+  .scenario-map-picker,
+  .template-browser-controls,
+  .scenario-template-browser-controls {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 900px) {
   .combat-team-grid,
   .combat-unit-grid,

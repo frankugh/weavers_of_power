@@ -180,6 +180,58 @@ class SaveMapTemplateRequest(BaseModel):
     name: str = "map template"
 
 
+class MapTemplateDefinitionRequest(BaseModel):
+    name: str = "map template"
+    template: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScenarioCreateRequest(BaseModel):
+    name: str = "New Scenario"
+
+
+class ScenarioSaveRequest(BaseModel):
+    definition: dict[str, Any]
+
+
+class ScenarioRenameRequest(BaseModel):
+    name: str
+
+
+class ScenarioDuplicateRequest(BaseModel):
+    name: Optional[str] = None
+
+
+class ScenarioAttachRequest(BaseModel):
+    scenarioId: str
+
+
+class ScenarioNavigateRequest(BaseModel):
+    nodeId: str
+
+
+class ScenarioPhaseRequest(BaseModel):
+    phaseId: str
+
+
+class ScenarioEventResolveRequest(BaseModel):
+    eventId: str = "event"
+    setPhase: Optional[str] = None
+    flags: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScenarioNodeRequest(BaseModel):
+    node: dict[str, Any]
+
+
+class ScenarioNodePositionRequest(BaseModel):
+    x: float
+    y: float
+
+
+class ScenarioEdgeRequest(BaseModel):
+    edge: dict[str, Any]
+
+
 class DungeonTilesRequest(BaseModel):
     tileType: str
     cells: list[list[int]]
@@ -331,6 +383,18 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
         if isinstance(mutation_result, dict):
             payload.update(mutation_result)
         return payload
+
+    def load_scenario_or_404(scenario_id: str) -> dict:
+        scenario = context.get_scenario(scenario_id)
+        if scenario is None:
+            raise HTTPException(status_code=404, detail=f"Scenario '{scenario_id}' not found")
+        return scenario
+
+    def save_scenario_or_400(scenario_id: str, definition: dict) -> dict:
+        try:
+            return context.save_scenario(scenario_id, definition)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @api_app.get("/api/battle/meta")
     def battle_meta():
@@ -774,9 +838,213 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def resolve_suspect(sid: str, request: SearchResolveRequest):
         return run_mutation(sid, lambda session: session.resolve_suspect_interaction(request.useWillpower), undoable=False)
 
+    @api_app.get("/api/scenarios")
+    def list_scenarios():
+        return {"scenarios": context.list_scenarios()}
+
+    @api_app.post("/api/scenarios")
+    def create_scenario(request: ScenarioCreateRequest):
+        scenario = context.create_scenario(request.name)
+        return {"scenario": scenario, "scenarios": context.list_scenarios()}
+
+    @api_app.get("/api/scenarios/{scenario_id}")
+    def get_scenario(scenario_id: str):
+        return {"scenario": load_scenario_or_404(scenario_id)}
+
+    @api_app.put("/api/scenarios/{scenario_id}")
+    def save_scenario(scenario_id: str, request: ScenarioSaveRequest):
+        scenario = save_scenario_or_400(scenario_id, request.definition)
+        return {"scenario": scenario, "scenarios": context.list_scenarios()}
+
+    @api_app.post("/api/scenarios/{scenario_id}/rename")
+    def rename_scenario(scenario_id: str, request: ScenarioRenameRequest):
+        try:
+            scenario = context.rename_scenario(scenario_id, request.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"scenario": scenario, "scenarios": context.list_scenarios()}
+
+    @api_app.post("/api/scenarios/{scenario_id}/duplicate")
+    def duplicate_scenario(scenario_id: str, request: ScenarioDuplicateRequest):
+        try:
+            scenario = context.duplicate_scenario(scenario_id, request.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"scenario": scenario, "scenarios": context.list_scenarios()}
+
+    @api_app.delete("/api/scenarios/{scenario_id}")
+    def delete_scenario(scenario_id: str):
+        try:
+            context.delete_scenario(scenario_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"scenarios": context.list_scenarios()}
+
+    @api_app.post("/api/scenarios/{scenario_id}/nodes")
+    def create_scenario_node(scenario_id: str, request: ScenarioNodeRequest):
+        scenario = load_scenario_or_404(scenario_id)
+        node = dict(request.node)
+        if not node.get("id"):
+            node["id"] = f"node_{random.randint(100000, 999999)}"
+        scenario["nodes"] = [*scenario.get("nodes", []), node]
+        scenario = save_scenario_or_400(scenario_id, scenario)
+        return {"scenario": scenario}
+
+    @api_app.put("/api/scenarios/{scenario_id}/nodes/{node_id}")
+    def update_scenario_node(scenario_id: str, node_id: str, request: ScenarioNodeRequest):
+        scenario = load_scenario_or_404(scenario_id)
+        nodes = scenario.get("nodes", [])
+        if not any(node.get("id") == node_id for node in nodes):
+            raise HTTPException(status_code=404, detail=f"Scenario node '{node_id}' not found")
+        scenario["nodes"] = [
+            {**dict(request.node), "id": node_id} if node.get("id") == node_id else node
+            for node in nodes
+        ]
+        scenario = save_scenario_or_400(scenario_id, scenario)
+        return {"scenario": scenario}
+
+    @api_app.patch("/api/scenarios/{scenario_id}/nodes/{node_id}/position")
+    def update_scenario_node_position(scenario_id: str, node_id: str, request: ScenarioNodePositionRequest):
+        scenario = load_scenario_or_404(scenario_id)
+        nodes = scenario.get("nodes", [])
+        if not any(node.get("id") == node_id for node in nodes):
+            raise HTTPException(status_code=404, detail=f"Scenario node '{node_id}' not found")
+        scenario["nodes"] = [
+            {**node, "position": {"x": request.x, "y": request.y}} if node.get("id") == node_id else node
+            for node in nodes
+        ]
+        scenario = save_scenario_or_400(scenario_id, scenario)
+        return {"scenario": scenario}
+
+    @api_app.delete("/api/scenarios/{scenario_id}/nodes/{node_id}")
+    def delete_scenario_node(scenario_id: str, node_id: str):
+        scenario = load_scenario_or_404(scenario_id)
+        nodes = [node for node in scenario.get("nodes", []) if node.get("id") != node_id]
+        if len(nodes) == len(scenario.get("nodes", [])):
+            raise HTTPException(status_code=404, detail=f"Scenario node '{node_id}' not found")
+        scenario["nodes"] = nodes
+        scenario["edges"] = [
+            edge for edge in scenario.get("edges", [])
+            if edge.get("from") != node_id and edge.get("to") != node_id
+        ]
+        if scenario.get("startNodeId") == node_id and nodes:
+            scenario["startNodeId"] = nodes[0].get("id")
+        scenario = save_scenario_or_400(scenario_id, scenario)
+        return {"scenario": scenario}
+
+    @api_app.post("/api/scenarios/{scenario_id}/edges")
+    def create_scenario_edge(scenario_id: str, request: ScenarioEdgeRequest):
+        scenario = load_scenario_or_404(scenario_id)
+        edge = dict(request.edge)
+        if not edge.get("id"):
+            edge["id"] = f"edge_{random.randint(100000, 999999)}"
+        scenario["edges"] = [*scenario.get("edges", []), edge]
+        scenario = save_scenario_or_400(scenario_id, scenario)
+        return {"scenario": scenario}
+
+    @api_app.put("/api/scenarios/{scenario_id}/edges/{edge_id}")
+    def update_scenario_edge(scenario_id: str, edge_id: str, request: ScenarioEdgeRequest):
+        scenario = load_scenario_or_404(scenario_id)
+        edges = scenario.get("edges", [])
+        if not any(edge.get("id") == edge_id for edge in edges):
+            raise HTTPException(status_code=404, detail=f"Scenario edge '{edge_id}' not found")
+        scenario["edges"] = [
+            {**dict(request.edge), "id": edge_id} if edge.get("id") == edge_id else edge
+            for edge in edges
+        ]
+        scenario = save_scenario_or_400(scenario_id, scenario)
+        return {"scenario": scenario}
+
+    @api_app.delete("/api/scenarios/{scenario_id}/edges/{edge_id}")
+    def delete_scenario_edge(scenario_id: str, edge_id: str):
+        scenario = load_scenario_or_404(scenario_id)
+        edges = [edge for edge in scenario.get("edges", []) if edge.get("id") != edge_id]
+        if len(edges) == len(scenario.get("edges", [])):
+            raise HTTPException(status_code=404, detail=f"Scenario edge '{edge_id}' not found")
+        scenario["edges"] = edges
+        scenario = save_scenario_or_400(scenario_id, scenario)
+        return {"scenario": scenario}
+
+    @api_app.post("/api/battle/sessions/{sid}/scenario/attach")
+    def attach_scenario_to_session(sid: str, request: ScenarioAttachRequest):
+        return run_mutation(sid, lambda session: session.start_scenario_run(request.scenarioId))
+
+    @api_app.post("/api/battle/sessions/{sid}/scenario/start-run")
+    def start_scenario_run(sid: str, request: ScenarioAttachRequest):
+        return run_mutation(sid, lambda session: session.start_scenario_run(request.scenarioId))
+
+    @api_app.put("/api/battle/sessions/{sid}/scenario/templates/{scenario_id}")
+    def save_scenario_template_and_update_active_run(sid: str, scenario_id: str, request: ScenarioSaveRequest):
+        session = load_session_or_400(sid)
+        if session._scenario_source_id() != scenario_id:
+            raise HTTPException(status_code=400, detail="Template does not match the active scenario run")
+        before_payload = session.undo_payload()
+        try:
+            scenario = save_scenario_or_400(scenario_id, request.definition)
+            session.update_scenario_run_definition(scenario)
+        except BattleSessionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        after_payload = session.undo_payload()
+        if before_payload != after_payload:
+            session.remember_undo_state(before_payload)
+            session.autosave()
+        payload = session.snapshot()
+        payload.update({"scenarioTemplate": scenario, "scenarios": context.list_scenarios()})
+        return payload
+
+    @api_app.post("/api/battle/sessions/{sid}/scenario/detach")
+    def detach_scenario_from_session(sid: str):
+        return run_mutation(sid, lambda session: session.detach_scenario())
+
+    @api_app.post("/api/battle/sessions/{sid}/scenario/navigate")
+    def navigate_scenario(sid: str, request: ScenarioNavigateRequest):
+        return run_mutation(sid, lambda session: session.navigate_scenario_node(request.nodeId))
+
+    @api_app.post("/api/battle/sessions/{sid}/scenario/nodes/{node_id}/phase")
+    def set_scenario_phase(sid: str, node_id: str, request: ScenarioPhaseRequest):
+        return run_mutation(sid, lambda session: session.set_scenario_node_phase(node_id, request.phaseId))
+
+    @api_app.post("/api/battle/sessions/{sid}/scenario/nodes/{node_id}/events/resolve")
+    def resolve_scenario_event(sid: str, node_id: str, request: ScenarioEventResolveRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.resolve_scenario_event(
+                node_id,
+                request.eventId,
+                set_phase=request.setPhase,
+                flags=request.flags,
+            ),
+        )
+
+    @api_app.post("/api/battle/sessions/{sid}/scenario/nodes/{node_id}/start-combat")
+    def start_scenario_combat(sid: str, node_id: str):
+        return run_mutation(sid, lambda session: session.start_scenario_combat(node_id))
+
     @api_app.get("/api/map-templates")
     def list_map_templates():
         return {"templates": context.list_map_templates()}
+
+    @api_app.post("/api/map-templates")
+    def create_map_template(request: MapTemplateDefinitionRequest):
+        result = context.save_map_template(request.name, dict(request.template))
+        template = context.get_map_template(result["id"]) or {}
+        return {"template": {**template, "id": result["id"]}, "templates": context.list_map_templates()}
+
+    @api_app.get("/api/map-templates/{template_id}")
+    def get_map_template(template_id: str):
+        template = context.get_map_template(template_id)
+        if template is None:
+            raise HTTPException(status_code=404, detail=f"Map template '{template_id}' not found")
+        return {"template": {**template, "id": template_id}}
+
+    @api_app.put("/api/map-templates/{template_id}")
+    def save_map_template(template_id: str, request: MapTemplateDefinitionRequest):
+        try:
+            result = context.write_map_template(template_id, {**dict(request.template), "name": request.name})
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        template = context.get_map_template(result["id"]) or {}
+        return {"template": {**template, "id": result["id"]}, "templates": context.list_map_templates()}
 
     @api_app.post("/api/battle/sessions/{sid}/dungeon/save-as-template")
     def save_dungeon_as_map_template(sid: str, request: SaveMapTemplateRequest):
