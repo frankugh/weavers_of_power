@@ -104,20 +104,128 @@ function Confirm-FrontendBuild {
     return ($answer -eq "" -or $answer -match "^(j|ja|y|yes)$")
 }
 
+function Ensure-FrontendBuild {
+    $frontendState = Get-FrontendBuildState
+    if (Confirm-FrontendBuild $frontendState) {
+        Invoke-FrontendBuild
+    }
+    elseif ($frontendState -eq "missing") {
+        Write-Warning "Start zonder frontend build; de web UI toont pas iets nuttigs na een build."
+    }
+    elseif ($frontendState -eq "stale") {
+        Write-Warning "Start met bestaande frontend build; recente frontend source-wijzigingen zitten daar mogelijk niet in."
+    }
+}
+
+function Start-WeaversServer {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PythonPath
+    )
+
+    $appPath = Join-Path $Root "app.py"
+    Write-Host "Weavers of Power starten op http://127.0.0.1:8080"
+    Write-Host "Druk op 'r' om te herstarten of 'q' om te stoppen."
+    return Start-Process -FilePath $PythonPath -ArgumentList @($appPath) -WorkingDirectory $Root -NoNewWindow -PassThru
+}
+
+function Stop-WeaversServer {
+    param(
+        [System.Diagnostics.Process]$Process
+    )
+
+    if ($null -eq $Process -or $Process.HasExited) {
+        return
+    }
+
+    Write-Host "Server stoppen..."
+    try {
+        $Process.CloseMainWindow() | Out-Null
+    }
+    catch {
+        # Console processes often do not have a main window.
+    }
+
+    Start-Sleep -Milliseconds 700
+    if (-not $Process.HasExited) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+    }
+    try {
+        $Process.WaitForExit(5000) | Out-Null
+    }
+    catch {
+        # If the process already disappeared, there is nothing left to wait for.
+    }
+}
+
+function Test-ConsoleKeyAvailable {
+    try {
+        return [Console]::KeyAvailable
+    }
+    catch {
+        return $false
+    }
+}
+
 $python = Resolve-ProjectPython
 Write-Host "Python: $python"
 
-$frontendState = Get-FrontendBuildState
-if (Confirm-FrontendBuild $frontendState) {
-    Invoke-FrontendBuild
+Ensure-FrontendBuild
+
+$server = $null
+$exitCode = 0
+
+try {
+    while ($true) {
+        $restartRequested = $false
+        $stopRequested = $false
+        $server = Start-WeaversServer $python
+
+        while (-not $server.HasExited) {
+            Start-Sleep -Milliseconds 200
+            if (-not (Test-ConsoleKeyAvailable)) {
+                continue
+            }
+
+            $key = [Console]::ReadKey($true)
+            if ($key.KeyChar -eq 'r' -or $key.KeyChar -eq 'R') {
+                Write-Host ""
+                $answer = Read-Host "Server opnieuw opstarten? [J/n]"
+                if ($answer -eq "" -or $answer -match "^(j|ja|y|yes)$") {
+                    $restartRequested = $true
+                    Stop-WeaversServer $server
+                    Ensure-FrontendBuild
+                    break
+                }
+                Write-Host "Herstart geannuleerd."
+            }
+            elseif ($key.KeyChar -eq 'q' -or $key.KeyChar -eq 'Q') {
+                Write-Host ""
+                $answer = Read-Host "Server stoppen? [J/n]"
+                if ($answer -eq "" -or $answer -match "^(j|ja|y|yes)$") {
+                    $stopRequested = $true
+                    Stop-WeaversServer $server
+                    break
+                }
+                Write-Host "Stop geannuleerd."
+            }
+        }
+
+        if ($restartRequested) {
+            continue
+        }
+
+        if ($stopRequested) {
+            $exitCode = 0
+            break
+        }
+
+        $exitCode = $server.ExitCode
+        break
+    }
 }
-elseif ($frontendState -eq "missing") {
-    Write-Warning "Start zonder frontend build; de web UI toont pas iets nuttigs na een build."
-}
-elseif ($frontendState -eq "stale") {
-    Write-Warning "Start met bestaande frontend build; recente frontend source-wijzigingen zitten daar mogelijk niet in."
+finally {
+    Stop-WeaversServer $server
 }
 
-Write-Host "Weavers of Power starten op http://127.0.0.1:8080"
-& $python (Join-Path $Root "app.py")
-exit $LASTEXITCODE
+exit $exitCode

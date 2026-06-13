@@ -289,6 +289,8 @@ class DungeonSecretDoorDcRequest(BaseModel):
 class SearchResolveRequest(BaseModel):
     useWillpower: bool = False
     partyWalk: bool = False
+    successes: Optional[int] = Field(default=None, ge=0)
+    fate: Optional[int] = Field(default=None, ge=0)
 
 
 class InteractSuspectRequest(BaseModel):
@@ -835,7 +837,12 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def resolve_room_search(sid: str, request: SearchResolveRequest):
         return run_mutation(
             sid,
-            lambda session: session.resolve_room_search(request.useWillpower, party_walk=request.partyWalk),
+            lambda session: session.resolve_room_search(
+                request.useWillpower,
+                party_walk=request.partyWalk,
+                manual_successes=request.successes,
+                manual_fate=request.fate,
+            ),
             undoable=False,
         )
 
@@ -845,7 +852,15 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
 
     @api_app.post("/api/battle/sessions/{sid}/dungeon/suspects/resolve")
     def resolve_suspect(sid: str, request: SearchResolveRequest):
-        return run_mutation(sid, lambda session: session.resolve_suspect_interaction(request.useWillpower), undoable=False)
+        return run_mutation(
+            sid,
+            lambda session: session.resolve_suspect_interaction(
+                request.useWillpower,
+                manual_successes=request.successes,
+                manual_fate=request.fate,
+            ),
+            undoable=False,
+        )
 
     @api_app.get("/api/scenarios")
     def list_scenarios():

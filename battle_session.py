@@ -1193,6 +1193,15 @@ class BattleSession:
             else None
         )
         scenario_snapshot = self._scenario_snapshot()
+        pending_search_phase = None
+        if self.pending_search is not None:
+            pending_search_phase = self.pending_search.get("phase")
+            if pending_search_phase is None:
+                pending_search_phase = (
+                    "manual"
+                    if self.pending_search.get("searcher_physical_cards") and self.pending_search.get("success_count") is None
+                    else "resolve"
+                )
         return {
             "sid": self.sid,
             "round": self.round,
@@ -1228,6 +1237,8 @@ class BattleSession:
                 "roomId": self.pending_search["room_id"],
                 "kind": self.pending_search.get("kind", "search"),
                 "edgeKey": self.pending_search.get("edge_key"),
+                "phase": pending_search_phase,
+                "searcherPhysicalCards": bool(self.pending_search.get("searcher_physical_cards")),
                 "hasFate": self.pending_search["has_fate"],
                 "successCount": self.pending_search["success_count"],
                 "fateCount": self.pending_search["fate_count"],
@@ -1602,15 +1613,16 @@ class BattleSession:
         dungeon_analyze(self.dungeon, list(self.state.enemies.values()))
         self._persist_active_scenario_map_instance()
 
-        can_start = any(
-            (entity := self.state.enemies.get(instance_id)) is not None and self._can_take_turn(entity)
-            for instance_id in self.order
-        )
-        if not state.get("encounterOutcome") and not self.encounter_started and self.active_turn_id is None and can_start:
-            self.start_encounter()
-        else:
-            self._add_log(f"Scenario combat ready: {node.get('label', node_id)}")
-            self.autosave()
+        self.encounter_started = False
+        self.active_turn_id = None
+        self.turn_in_progress = False
+        self.pending_new_round = False
+        self.initiative_rolled_round = None
+        self.movement_state = None
+        self.pending_opportunity = None
+        self.turn_skip_notice = []
+        self._add_log(f"Scenario encounter loaded: {node.get('label', node_id)}")
+        self.autosave()
 
     def list_manual_saves(self) -> list[dict]:
         entries: list[dict] = []
@@ -2689,6 +2701,35 @@ class BattleSession:
             or self.pending_new_round
         )
 
+    @staticmethod
+    def _manual_search_count(value, label: str) -> int:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError) as exc:
+            raise BattleSessionError(f"{label} must be a whole number.") from exc
+
+    def _resolve_pending_search_counts(
+        self,
+        pending_search: dict,
+        *,
+        manual_successes: Optional[int] = None,
+        manual_fate: Optional[int] = None,
+    ) -> tuple[int, int]:
+        if pending_search.get("searcher_physical_cards") and pending_search.get("success_count") is None:
+            if manual_successes is None:
+                raise BattleSessionError("Physical-card searches need manual successes.")
+            success_count = self._manual_search_count(manual_successes, "Manual search successes")
+            fate_count = self._manual_search_count(manual_fate or 0, "Manual search fate")
+            pending_search["success_count"] = success_count
+            pending_search["fate_count"] = fate_count
+            pending_search["has_fate"] = fate_count > 0
+            pending_search["phase"] = "willpower" if fate_count > 0 else "resolve"
+            return success_count, fate_count
+        return (
+            self._manual_search_count(pending_search.get("success_count", 0), "Search successes"),
+            self._manual_search_count(pending_search.get("fate_count", 0), "Search fate"),
+        )
+
     def start_room_search(self) -> dict:
         entity = self._require_selected_entity()
         if not self.is_player(entity):
@@ -2713,33 +2754,48 @@ class BattleSession:
 
         self.dungeon.searched_room_ids.append(room_id)
 
-        result = self._draw_additional_for_player(entity, 3)
-        drawn = list(result.drawn)
-        self._append_visible_draw_group(entity, drawn)
-
-        summary = self._player_draw_summary(drawn)
-        drawn_text = ", ".join(self.card_to_effect_text(cid) for cid in drawn)
-        self._add_log(f"{entity.name} searches the room: {drawn_text}")
+        uses_physical_cards = self._uses_physical_cards(entity)
+        drawn: list[str] = []
+        summary = None
+        if uses_physical_cards:
+            self._add_log(f"{entity.name} searches the room with physical cards; waiting for result.")
+        else:
+            result = self._draw_additional_for_player(entity, 3)
+            drawn = list(result.drawn)
+            self._append_visible_draw_group(entity, drawn)
+            summary = self._player_draw_summary(drawn)
+            drawn_text = ", ".join(self.card_to_effect_text(cid) for cid in drawn)
+            self._add_log(f"{entity.name} searches the room: {drawn_text}")
 
         self.pending_search = {
             "kind": "search",
             "entity_id": entity.instance_id,
             "room_id": room_id,
             "drawn_card_ids": drawn,
-            "success_count": summary["outcomes"]["success"],
-            "fate_count": summary["outcomes"]["fate"],
-            "has_fate": summary["outcomes"]["fate"] > 0,
+            "success_count": None if uses_physical_cards else summary["outcomes"]["success"],
+            "fate_count": None if uses_physical_cards else summary["outcomes"]["fate"],
+            "has_fate": False if uses_physical_cards else summary["outcomes"]["fate"] > 0,
+            "searcher_physical_cards": uses_physical_cards,
+            "phase": "manual" if uses_physical_cards else ("willpower" if summary["outcomes"]["fate"] > 0 else "resolve"),
         }
         self.autosave()
         return {
             "searchStarted": {
                 "drawnCardIds": drawn,
                 "summary": summary,
-                "hasFate": summary["outcomes"]["fate"] > 0,
+                "hasFate": False if uses_physical_cards else summary["outcomes"]["fate"] > 0,
+                "searcherPhysicalCards": uses_physical_cards,
             }
         }
 
-    def resolve_room_search(self, use_willpower: bool, party_walk: bool = False) -> dict:
+    def resolve_room_search(
+        self,
+        use_willpower: bool,
+        party_walk: bool = False,
+        *,
+        manual_successes: Optional[int] = None,
+        manual_fate: Optional[int] = None,
+    ) -> dict:
         if self.pending_search is None:
             raise BattleSessionError("No pending search to resolve.")
         ps = self.pending_search
@@ -2748,7 +2804,12 @@ class BattleSession:
             self.pending_search = None
             raise BattleSessionError("Search entity no longer exists.")
 
-        score = ps["success_count"] + (ps["fate_count"] if use_willpower else 0)
+        success_count, fate_count = self._resolve_pending_search_counts(
+            ps,
+            manual_successes=manual_successes,
+            manual_fate=manual_fate,
+        )
+        score = success_count + (fate_count if use_willpower else 0)
         room_id = ps["room_id"]
         party_walk = bool(party_walk)
 
@@ -2879,10 +2940,14 @@ class BattleSession:
         if combat_active:
             self._charge_action(entity)
 
-        result = self._draw_additional_for_player(entity, 3)
-        drawn = list(result.drawn)
-        self._append_visible_draw_group(entity, drawn)
-        summary = self._player_draw_summary(drawn)
+        uses_physical_cards = self._uses_physical_cards(entity)
+        drawn: list[str] = []
+        summary = None
+        if not uses_physical_cards:
+            result = self._draw_additional_for_player(entity, 3)
+            drawn = list(result.drawn)
+            self._append_visible_draw_group(entity, drawn)
+            summary = self._player_draw_summary(drawn)
 
         if suspect["kind"] == "secret":
             wall = self.dungeon.walls.get(edge_key)
@@ -2890,9 +2955,11 @@ class BattleSession:
         else:
             dc = suspect.get("false_dc", 1)
 
-        drawn_text = ", ".join(self.card_to_effect_text(cid) for cid in drawn)
-
-        self._add_log(f"{entity.name} investigates a suspect marker: {drawn_text}")
+        if uses_physical_cards:
+            self._add_log(f"{entity.name} investigates a suspect marker with physical cards; waiting for result.")
+        else:
+            drawn_text = ", ".join(self.card_to_effect_text(cid) for cid in drawn)
+            self._add_log(f"{entity.name} investigates a suspect marker: {drawn_text}")
         self.pending_search = {
             "kind": "suspect",
             "entity_id": entity.instance_id,
@@ -2901,9 +2968,11 @@ class BattleSession:
             "suspect_kind": suspect.get("kind", "false"),
             "dc": dc,
             "drawn_card_ids": drawn,
-            "success_count": summary["outcomes"]["success"],
-            "fate_count": summary["outcomes"]["fate"],
-            "has_fate": summary["outcomes"]["fate"] > 0,
+            "success_count": None if uses_physical_cards else summary["outcomes"]["success"],
+            "fate_count": None if uses_physical_cards else summary["outcomes"]["fate"],
+            "has_fate": False if uses_physical_cards else summary["outcomes"]["fate"] > 0,
+            "searcher_physical_cards": uses_physical_cards,
+            "phase": "manual" if uses_physical_cards else ("willpower" if summary["outcomes"]["fate"] > 0 else "resolve"),
         }
         self.autosave()
         return {
@@ -2913,11 +2982,18 @@ class BattleSession:
                 "dc": dc,
                 "drawnCardIds": drawn,
                 "summary": summary,
-                "hasFate": summary["outcomes"]["fate"] > 0,
+                "hasFate": False if uses_physical_cards else summary["outcomes"]["fate"] > 0,
+                "searcherPhysicalCards": uses_physical_cards,
             }
         }
 
-    def resolve_suspect_interaction(self, use_willpower: bool) -> dict:
+    def resolve_suspect_interaction(
+        self,
+        use_willpower: bool,
+        *,
+        manual_successes: Optional[int] = None,
+        manual_fate: Optional[int] = None,
+    ) -> dict:
         if self.pending_search is None or self.pending_search.get("kind") != "suspect":
             raise BattleSessionError("No pending suspect interaction to resolve.")
         ps = self.pending_search
@@ -2929,11 +3005,16 @@ class BattleSession:
         edge_key = ps["edge_key"]
         suspect_kind = ps.get("suspect_kind", "false")
         dc = int(ps.get("dc", 1))
-        score = ps["success_count"] + (ps["fate_count"] if use_willpower else 0)
+        success_count, fate_count = self._resolve_pending_search_counts(
+            ps,
+            manual_successes=manual_successes,
+            manual_fate=manual_fate,
+        )
+        score = success_count + (fate_count if use_willpower else 0)
         suspect = next((s for s in self.dungeon.secret_suspects if s["edge_key"] == edge_key), None)
         drawn = list(ps.get("drawn_card_ids", []))
-        summary = self._player_draw_summary(drawn)
-        drawn_text = ", ".join(self.card_to_effect_text(cid) for cid in drawn)
+        summary = self._player_draw_summary(drawn) if drawn else None
+        drawn_text = ", ".join(self.card_to_effect_text(cid) for cid in drawn) if drawn else f"{success_count} manual success{'es' if success_count != 1 else ''}"
 
         if score > 0 and score >= dc:
             if suspect_kind == "secret":

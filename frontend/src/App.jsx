@@ -827,6 +827,10 @@ function searchWillpowerLabel(pendingSearch) {
   return `Willpower inzetten voor ${successCountLabel(successes + fate)}`;
 }
 
+function searchNeedsManualResult(pendingSearch) {
+  return Boolean(pendingSearch?.searcherPhysicalCards && pendingSearch?.successCount == null);
+}
+
 function opportunityWillpowerLabel(pendingOpportunity) {
   const successes = Number(pendingOpportunity?.successCount || 0);
   const fate = Number(pendingOpportunity?.fateCount || 0);
@@ -1031,6 +1035,7 @@ function App() {
   const [pendingWoundRemove, setPendingWoundRemove] = useState(null);
   const [opportunityResolution, setOpportunityResolution] = useState(null);
   const [opportunityManual, setOpportunityManual] = useState({ successes: 0, fate: 0 });
+  const [manualSearchSuccesses, setManualSearchSuccesses] = useState(0);
   const [customForm, setCustomForm] = useState({
     name: "Custom",
     toughness: 10,
@@ -1228,10 +1233,23 @@ function App() {
   }, [activeView, snapshot?.pendingNewRound]);
 
   useEffect(() => {
-    if (activeView === APP_VIEWS.BATTLE && snapshot?.pendingSearch?.hasFate) {
+    if (activeView !== APP_VIEWS.BATTLE || !snapshot?.pendingSearch) {
+      return;
+    }
+    if (searchNeedsManualResult(snapshot.pendingSearch)) {
+      setModal("search-manual");
+    } else if (snapshot.pendingSearch.hasFate) {
       setModal("search-resolve");
     }
-  }, [activeView, snapshot?.pendingSearch?.hasFate]);
+  }, [
+    activeView,
+    snapshot?.pendingSearch?.entityId,
+    snapshot?.pendingSearch?.edgeKey,
+    snapshot?.pendingSearch?.phase,
+    snapshot?.pendingSearch?.searcherPhysicalCards,
+    snapshot?.pendingSearch?.hasFate,
+    snapshot?.pendingSearch?.successCount,
+  ]);
 
   useEffect(() => {
     if (activeView !== APP_VIEWS.BATTLE || !snapshot?.pendingOpportunity) {
@@ -1726,6 +1744,7 @@ function App() {
     setPendingWoundRemove(null);
     setOpportunityResolution(null);
     setOpportunityManual({ successes: 0, fate: 0 });
+    setManualSearchSuccesses(0);
   }
 
   function showDrawReveal(payload, kind) {
@@ -1868,7 +1887,7 @@ function App() {
     });
   }
 
-  // ── PC picker (which PCs spawn on Start / Start Combat) ───────────────────
+  // ── PC picker (which PCs spawn on Start / Load Encounter) ─────────────────
   function openPcPicker(onConfirm) {
     setPcPickerSelection([]);
     setPcPickerTab("premade");
@@ -2101,7 +2120,10 @@ function App() {
     );
     if (!payload) return;
     showDrawReveal(payload, "draw");
-    if (payload.pendingSearch?.hasFate) {
+    if (searchNeedsManualResult(payload.pendingSearch)) {
+      setManualSearchSuccesses(0);
+      setModal("search-manual");
+    } else if (payload.pendingSearch?.hasFate) {
       setModal("search-resolve");
     } else {
       const resolved = await applySnapshotRequest(
@@ -2112,19 +2134,27 @@ function App() {
     }
   }
 
-  async function handleResolveSearch(useWillpower) {
+  async function handleResolveSearch(useWillpower, manualResult = {}) {
     const resolvePath = pendingSearch?.kind === "suspect"
       ? "dungeon/suspects/resolve"
       : "dungeon/search/resolve";
     const body = pendingSearch?.kind === "suspect"
       ? { useWillpower }
       : { useWillpower, partyWalk: mapMode === MAP_MODES.PARTY_WALK };
+    if (manualResult.successes != null) {
+      body.successes = Math.max(0, Number(manualResult.successes || 0));
+      body.fate = Math.max(0, Number(manualResult.fate || 0));
+    }
     closeModal();
     const resolved = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/${resolvePath}`, {
       method: "POST",
       body: JSON.stringify(body),
     });
     showSearchFlavour(resolved);
+  }
+
+  function handleResolveManualSearch(successes = manualSearchSuccesses) {
+    handleResolveSearch(false, { successes, fate: 0 });
   }
 
   function handleOpportunityPayload(payload) {
@@ -2170,7 +2200,10 @@ function App() {
     });
     if (!payload) return;
     showDrawReveal(payload, "draw");
-    if (payload.pendingSearch?.hasFate) {
+    if (searchNeedsManualResult(payload.pendingSearch)) {
+      setManualSearchSuccesses(0);
+      setModal("search-manual");
+    } else if (payload.pendingSearch?.hasFate) {
       setModal("search-resolve");
     } else {
       const resolved = await applySnapshotRequest(
@@ -3309,19 +3342,20 @@ function App() {
   }
 
   async function openSaveMapTemplateModal() {
+    await fetchMapTemplates();
     setMapTemplateName(snapshot?.activeMapTemplate?.name || "map template");
     setModal("save-map-template");
   }
 
-  async function openMapTemplateLibrary() {
+  async function openLoadMapTemplateModal() {
     await fetchMapTemplates();
-    setModal("map-template-library");
+    setModal("load-map-template");
   }
 
-  async function handleSaveActiveMapTemplate() {
+  async function handleSaveMapClick() {
     const templateId = snapshot?.activeMapTemplate?.id;
     if (!templateId || snapshot?.activeMapTemplate?.missing) {
-      openSaveMapTemplateModal();
+      await openSaveMapTemplateModal();
       return;
     }
     const payload = await applySnapshotRequest(
@@ -3331,7 +3365,6 @@ function App() {
     );
     if (payload) {
       await fetchMapTemplates();
-      closeModal();
     }
   }
 
@@ -3341,6 +3374,18 @@ function App() {
       `/api/battle/sessions/${snapshot.sid}/dungeon/save-as-template`,
       { method: "POST", body: JSON.stringify({ name: mapTemplateName }) },
       "Map template saved",
+    );
+    if (payload) {
+      await fetchMapTemplates();
+      closeModal();
+    }
+  }
+
+  async function handleOverwriteMapTemplate(templateId) {
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/dungeon/save-template/${encodeURIComponent(templateId)}`,
+      { method: "POST" },
+      "Map template updated",
     );
     if (payload) {
       await fetchMapTemplates();
@@ -3537,11 +3582,33 @@ function App() {
                   <button
                     className="menu-button"
                     type="button"
-                    onClick={openMapTemplateLibrary}
-                    disabled={busy}
-                    title="Save, save as, or load map templates"
+                    onClick={handleSaveMapClick}
+                    disabled={busy || !snapshot.dungeon}
+                    title={
+                      snapshot?.activeMapTemplate && !snapshot.activeMapTemplate.missing
+                        ? `Overwrite ${snapshot.activeMapTemplate.name}`
+                        : "Create a new saved map"
+                    }
                   >
-                    Templates
+                    Save Map
+                  </button>
+                  <button
+                    className="menu-button"
+                    type="button"
+                    onClick={openSaveMapTemplateModal}
+                    disabled={busy || !snapshot.dungeon}
+                    title="Create a new saved map or overwrite an existing one"
+                  >
+                    Save As
+                  </button>
+                  <button
+                    className="menu-button"
+                    type="button"
+                    onClick={openLoadMapTemplateModal}
+                    disabled={busy}
+                    title="Load a saved map"
+                  >
+                    Load Map
                   </button>
                   <button
                     className="menu-button start-play-button"
@@ -6062,92 +6129,14 @@ function App() {
       </ModalShell>
 
       <ModalShell
-        open={modal === "map-template-library"}
-        title="Map Templates"
-        subtitle="Save this map as a reusable template, overwrite the current template, or load another template."
-        onClose={closeModal}
-      >
-        <div className="map-template-library">
-          <div className={`map-template-current ${snapshot?.activeMapTemplate?.missing ? "map-template-current-missing" : ""}`.trim()}>
-            <div>
-              <div className="form-section-title">Current Template</div>
-              {snapshot?.activeMapTemplate ? (
-                <>
-                  <strong>{snapshot.activeMapTemplate.name}</strong>
-                  <span>
-                    {snapshot.activeMapTemplate.missing
-                      ? "Source template missing. Use Save As to create a new template."
-                      : snapshot.activeMapTemplate.savedAt || snapshot.activeMapTemplate.filename}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <strong>No template loaded</strong>
-                  <span>Use Save As to create one, or load an existing template below.</span>
-                </>
-              )}
-            </div>
-          </div>
-
-          <div className="modal-actions map-template-actions">
-            <button
-              className="primary-button"
-              type="button"
-              onClick={handleSaveActiveMapTemplate}
-              disabled={busy || !snapshot?.dungeon || !snapshot?.activeMapTemplate || snapshot?.activeMapTemplate?.missing}
-              title={!snapshot?.activeMapTemplate ? "Load or Save As a template first" : "Overwrite the current map template"}
-            >
-              Save
-            </button>
-            <button className="secondary-button" type="button" onClick={openSaveMapTemplateModal} disabled={busy || !snapshot?.dungeon}>
-              Save As
-            </button>
-          </div>
-
-          <div className="form-section-title">Load Template</div>
-          <div className="save-list">
-            {mapTemplates.length ? (
-              mapTemplates.map((t) => (
-                <div className="save-row" key={t.id}>
-                  <div className="save-slot-info">
-                    <span className="save-slot-title">
-                      <span>{t.name}</span>
-                      {snapshot?.activeMapTemplate?.id === t.id && !snapshot?.activeMapTemplate?.missing ? (
-                        <span className="save-active-badge">Current</span>
-                      ) : null}
-                    </span>
-                    <span className="save-slot-meta">{t.savedAt || t.filename}</span>
-                  </div>
-                  <button className="small-button" type="button" onClick={() => handleLoadMapTemplate(t.id)} disabled={busy}>
-                    Load
-                  </button>
-                  <button
-                    className="save-delete-button"
-                    type="button"
-                    aria-label={`Delete template ${t.name}`}
-                    onClick={() => handleDeleteMapTemplate(t.id)}
-                    disabled={busy}
-                  >
-                    <TrashIcon />
-                  </button>
-                </div>
-              ))
-            ) : (
-              <div className="subtle-copy">No map templates saved yet.</div>
-            )}
-          </div>
-        </div>
-      </ModalShell>
-
-      <ModalShell
         open={modal === "save-map-template"}
-        title="Save map as new template"
-        subtitle="Create a reusable map template from the current dungeon layout."
+        title="Save map"
+        subtitle="Create a new saved map or overwrite an existing one."
         onClose={closeModal}
       >
         <form className="modal-form" onSubmit={handleSaveMapTemplateSubmit}>
           <label className="field">
-            <span>Template name</span>
+            <span>New map name</span>
             <input
               type="text"
               value={mapTemplateName}
@@ -6157,19 +6146,47 @@ function App() {
           </label>
           <div className="modal-actions">
             <button className="primary-button" type="submit" disabled={busy}>
-              Save As
+              Create new map
             </button>
             <button className="secondary-button" type="button" onClick={closeModal}>
               Cancel
             </button>
           </div>
         </form>
+        <div className="form-section">
+          <div className="form-section-title">Overwrite existing map</div>
+          <div className="save-list">
+            {mapTemplates.length ? (
+              mapTemplates.map((t) => (
+                <div
+                  className={`save-row ${snapshot?.activeMapTemplate?.id === t.id && !snapshot?.activeMapTemplate?.missing ? "save-row-active" : ""}`.trim()}
+                  key={t.id}
+                >
+                  <div className="save-slot-info">
+                    <span className="save-slot-title">
+                      <span>{t.name}</span>
+                      {snapshot?.activeMapTemplate?.id === t.id && !snapshot?.activeMapTemplate?.missing ? (
+                        <span className="save-active-badge">Current</span>
+                      ) : null}
+                    </span>
+                    <span className="save-slot-meta">{t.savedAt || t.filename}</span>
+                  </div>
+                  <button className="small-button" type="button" onClick={() => handleOverwriteMapTemplate(t.id)} disabled={busy}>
+                    Overwrite
+                  </button>
+                </div>
+              ))
+            ) : (
+              <div className="subtle-copy">No saved maps to overwrite.</div>
+            )}
+          </div>
+        </div>
       </ModalShell>
 
       <ModalShell
         open={modal === "load-map-template"}
-        title="Load map template"
-        subtitle="Replace the current dungeon with a saved map template. Runtime state (revealed rooms, doors) will reset."
+        title="Load map"
+        subtitle="Replace the current map with a saved map. Runtime state (revealed rooms, doors) will reset."
         onClose={closeModal}
       >
         <div className="save-list">
@@ -6447,6 +6464,55 @@ function App() {
             <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
               Annuleer
             </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "search-manual" && Boolean(pendingSearch)}
+        title={pendingSearch?.kind === "suspect" ? "Investigate result" : "Search result"}
+        subtitle="Physical cards"
+        onClose={closeModal}
+        closeOnOutsideClick={false}
+      >
+        <div className="panel-body">
+          <div className="subtle-copy">
+            Voer het aantal getrokken successen in voor deze fysieke kaartactie.
+          </div>
+          <div className="draw-exact-row">
+            <div className="draw-exact-presets">
+              {[0, 1, 2, 3].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  className="primary-button draw-exact-preset-btn"
+                  onClick={() => handleResolveManualSearch(n)}
+                  disabled={busy}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <span className="draw-exact-sep" aria-hidden="true" />
+            <form
+              className="draw-exact-custom"
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleResolveManualSearch();
+              }}
+            >
+              <input
+                className="draw-exact-input"
+                type="number"
+                min="0"
+                max="99"
+                value={manualSearchSuccesses}
+                onChange={(e) => setManualSearchSuccesses(Number(e.target.value))}
+              />
+              <button className="primary-button" type="submit" disabled={busy}>
+                Resolve
+              </button>
+            </form>
           </div>
         </div>
       </ModalShell>

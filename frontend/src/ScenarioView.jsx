@@ -512,7 +512,7 @@ function EventPanel({
           ) : null}
           {!editable ? (
             <button className="primary-button" type="button" onClick={() => onStartCombat(node.id)} disabled={busy}>
-              {nodeState?.mapInstanceId ? "Open Combat" : "Start Combat"}
+              {nodeState?.mapInstanceId ? "Open Encounter" : "Load Encounter"}
             </button>
           ) : null}
           {nodeState?.encounterOutcome ? <div className="scenario-encounter-outcome">Outcome: {nodeState.encounterOutcome}</div> : null}
@@ -1253,7 +1253,7 @@ export default function ScenarioView({
       const payload = await runSessionRequest(
         `/api/battle/sessions/${snapshot.sid}/scenario/nodes/${encodeURIComponent(nodeId)}/start-combat`,
         { method: "POST", body: JSON.stringify({ players: players || [] }) },
-        "Combat started",
+        "Encounter loaded",
       );
       if (payload) onOpenCombat();
     };

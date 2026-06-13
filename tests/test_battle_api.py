@@ -225,6 +225,8 @@ class BattleApiTests(unittest.TestCase):
         combat_state = combat.json()["scenario"]["runtime"]["nodeStates"]["combat"]
         self.assertIsNotNone(combat_state["mapInstanceId"])
         self.assertIn("0,0", combat.json()["dungeon"]["tiles"])
+        self.assertFalse(combat.json()["encounterStarted"])
+        self.assertIsNone(combat.json()["activeTurnId"])
 
     def test_character_builder_catalog_endpoint_returns_classes_and_ancestries(self) -> None:
         response = self.client.get("/api/battle/character-builder/catalog")
@@ -761,6 +763,35 @@ class BattleApiTests(unittest.TestCase):
         self.assertTrue(resolved["partyWalk"])
         self.assertEqual(resolved["edgeKeys"], ["0,0,e"])
         self.assertEqual(set(resolved["movedEntityIds"]), set(ids))
+
+    def test_physical_room_search_resolve_accepts_manual_successes(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        session = self.context.load_session(sid)
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[0, 0], [0, 1], [1, 0]])
+        session.edit_dungeon_walls("secret_door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.dungeon.walls["0,0,e"].secret_dc = 2
+        session.add_player(name="Mira", physical_cards=True)
+        player = session.state.enemies[session.selected_id]
+        player.grid_x, player.grid_y = 0, 1
+        player.room_id = session._room_id_for_position(0, 1)
+        session.autosave()
+
+        started = self.client.post(f"/api/battle/sessions/{sid}/dungeon/search/start").json()
+
+        self.assertTrue(started["pendingSearch"]["searcherPhysicalCards"])
+        self.assertIsNone(started["pendingSearch"]["successCount"])
+
+        response = self.client.post(
+            f"/api/battle/sessions/{sid}/dungeon/search/resolve",
+            json={"useWillpower": False, "successes": 2},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        resolved = response.json()["searchResolved"]
+        self.assertEqual(resolved["outcome"], "discovered")
+        self.assertEqual(resolved["edgeKey"], "0,0,e")
 
     def test_start_encounter_endpoint_activates_highest_initiative_unit(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]

@@ -2046,6 +2046,71 @@ describe("App", () => {
     expect(screen.queryByRole("heading", { name: "Meer dan 2 acties" })).not.toBeInTheDocument();
   });
 
+  it("asks physical-card characters for manual Search Room successes", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      physical_cards: true,
+      grid_x: 0,
+      grid_y: 0,
+    });
+    const dungeon = buildDungeon({ currentPcRoomIds: ["room-1"] });
+    const resolveCalls = [];
+
+    renderWithSnapshot(buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1"],
+      enemies: [player],
+      dungeon,
+    }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/dungeon/search/start" && requestOptions?.method === "POST") {
+          return jsonResponse(buildSnapshot({
+            selectedId: "player-1",
+            order: ["player-1"],
+            enemies: [player],
+            dungeon,
+            pendingSearch: {
+              kind: "search",
+              entityId: "player-1",
+              roomId: "room-1",
+              phase: "manual",
+              searcherPhysicalCards: true,
+              hasFate: false,
+              successCount: null,
+              fateCount: null,
+            },
+          }));
+        }
+        if (url === "/api/battle/sessions/sid-123/dungeon/search/resolve" && requestOptions?.method === "POST") {
+          resolveCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse(buildSnapshot({
+            selectedId: "player-1",
+            order: ["player-1"],
+            enemies: [player],
+            dungeon,
+            pendingSearch: null,
+          }));
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Player 1");
+    await user.click(screen.getByRole("button", { name: "Search Room" }));
+
+    expect(await screen.findByText("Voer het aantal getrokken successen in voor deze fysieke kaartactie.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "2" }));
+
+    await waitFor(() => {
+      expect(resolveCalls).toEqual([{ useWillpower: false, partyWalk: false, successes: 2, fate: 0 }]);
+    });
+  });
+
   it("resolves Search Room with partyWalk true when Party Walk mode is on", async () => {
     const user = userEvent.setup();
     const player = buildEnemy({
@@ -6278,7 +6343,7 @@ describe("App", () => {
     });
   });
 
-  it("opens visible map template save and load actions from Map Edit", async () => {
+  it("shows direct map save, save as, and load actions in Map Edit", async () => {
     const user = userEvent.setup();
     const dungeon = buildDungeon();
 
@@ -6293,21 +6358,26 @@ describe("App", () => {
 
     await user.click(await screen.findByRole("button", { name: "Map Edit" }));
 
-    expect(screen.queryByRole("button", { name: "Save Template" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Templates" }));
-
-    expect(screen.getByText("Map Templates")).toBeInTheDocument();
-    expect(screen.getByText("No template loaded")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    expect(screen.getByText("Crypt")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Templates" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save Map" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save As" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load Map" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Save As" }));
 
-    expect(screen.getByText("Save map as new template")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save As" })).toBeInTheDocument();
+    expect(screen.getByText("Save map")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create new map" })).toBeInTheDocument();
+    expect(screen.getByText("Overwrite existing map")).toBeInTheDocument();
+    expect(screen.getByText("Crypt")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Load Map" }));
+
+    expect(screen.getByText("Load map")).toBeInTheDocument();
+    expect(screen.getByText("Crypt")).toBeInTheDocument();
   });
 
-  it("saves the active map template directly from the Map Templates modal", async () => {
+  it("saves the active map directly from the Map Edit toolbar", async () => {
     const user = userEvent.setup();
     const dungeon = buildDungeon();
     const saveCalls = [];
@@ -6346,8 +6416,7 @@ describe("App", () => {
     });
 
     await user.click(await screen.findByRole("button", { name: "Map Edit" }));
-    await user.click(screen.getByRole("button", { name: "Templates" }));
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save Map" }));
 
     await waitFor(() => {
       expect(saveCalls).toEqual(["/api/battle/sessions/sid-123/dungeon/save-template/crypt"]);

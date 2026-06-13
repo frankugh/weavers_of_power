@@ -236,6 +236,8 @@ class BattleSessionTests(unittest.TestCase):
 
         session.start_scenario_combat("fight_a")
         self.assertIn("0,0,e", session.dungeon.walls)
+        self.assertFalse(session.encounter_started)
+        self.assertIsNone(session.active_turn_id)
         self.assertFalse(session.dungeon.walls["0,0,e"].door_open)
         session.dungeon.walls["0,0,e"].door_open = True
         session.autosave()
@@ -243,6 +245,8 @@ class BattleSessionTests(unittest.TestCase):
 
         session.start_scenario_combat("fight_b")
         self.assertGreaterEqual(len(session.dungeon.tiles), 1600)
+        self.assertFalse(session.encounter_started)
+        self.assertIsNone(session.active_turn_id)
         fight_b_instance = session.scenario_runtime["nodeStates"]["fight_b"]["mapInstanceId"]
         self.assertNotEqual(fight_a_instance, fight_b_instance)
 
@@ -3797,6 +3801,58 @@ class WallEdgeDoorTests(unittest.TestCase):
         self.assertEqual(result["searchResolved"]["outcome"], "discovered")
         self.assertEqual((player.grid_x, player.grid_y), (1, 0))
         self.assertEqual((blocker.grid_x, blocker.grid_y), (2, 0))
+
+    def test_physical_room_search_waits_for_manual_successes(self) -> None:
+        session = self._make_dungeon("physical-search", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("secret_door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.dungeon.walls["0,0,e"].secret_dc = 1
+
+        session.add_player(name="Mira", physical_cards=True)
+        player = session.state.enemies[session.selected_id]
+        player.grid_x, player.grid_y = 0, 0
+        player.room_id = session._room_id_for_position(0, 0)
+        player.deck_state.draw_pile = ["hf_void_fail", "hf_void_fail", "hf_void_fail"]
+
+        started = session.start_room_search()
+
+        self.assertEqual(started["searchStarted"]["drawnCardIds"], [])
+        self.assertTrue(started["searchStarted"]["searcherPhysicalCards"])
+        self.assertIsNone(session.pending_search["success_count"])
+        self.assertEqual(player.deck_state.draw_pile, ["hf_void_fail", "hf_void_fail", "hf_void_fail"])
+
+        result = session.resolve_room_search(use_willpower=False, manual_successes=1)
+
+        self.assertEqual(result["searchResolved"]["outcome"], "discovered")
+        self.assertTrue(session.dungeon.walls["0,0,e"].secret_discovered)
+
+    def test_physical_suspect_investigation_waits_for_manual_successes(self) -> None:
+        session = self._make_dungeon("physical-suspect", [[0, 0], [1, 0]])
+        session.analyze_dungeon()
+        session.add_player(name="Mira", physical_cards=True)
+        player = session.state.enemies[session.selected_id]
+        player.grid_x, player.grid_y = 0, 0
+        player.room_id = session._room_id_for_position(0, 0)
+        player.deck_state.draw_pile = ["hf_void_fail", "hf_void_fail", "hf_void_fail"]
+        session.dungeon.secret_suspects = [{
+            "room_id": player.room_id,
+            "edge_key": "0,0,e",
+            "kind": "false",
+            "exhausted": False,
+            "false_dc": 1,
+        }]
+
+        started = session.interact_suspect("0,0,e")
+
+        self.assertEqual(started["suspectInteractionStarted"]["drawnCardIds"], [])
+        self.assertTrue(started["suspectInteractionStarted"]["searcherPhysicalCards"])
+        self.assertIsNone(session.pending_search["success_count"])
+        self.assertEqual(player.deck_state.draw_pile, ["hf_void_fail", "hf_void_fail", "hf_void_fail"])
+
+        result = session.resolve_suspect_interaction(use_willpower=False, manual_successes=1)
+
+        self.assertEqual(result["suspectInteraction"]["outcome"], "cleared")
+        self.assertEqual(session.dungeon.secret_suspects, [])
 
     # ------------------------------------------------------------------ persistence
 

@@ -397,45 +397,6 @@ button {
   white-space: nowrap;
 }
 
-.map-template-library {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.map-template-current {
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: rgba(20, 14, 10, 0.5);
-}
-
-.map-template-current strong,
-.map-template-current span {
-  display: block;
-  min-width: 0;
-}
-
-.map-template-current strong {
-  margin-top: 4px;
-  color: var(--text);
-}
-
-.map-template-current span {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 0.82rem;
-  overflow-wrap: anywhere;
-}
-
-.map-template-current-missing {
-  border-color: rgba(209, 106, 87, 0.42);
-}
-
-.map-template-actions {
-  justify-content: flex-start;
-}
-
 .modal-shell-pc-picker {
   width: min(920px, 96vw);
 }
