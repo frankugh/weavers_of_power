@@ -70,7 +70,17 @@ def dungeon_state_to_map_template(ds: DungeonState) -> Dict[str, Any]:
         "linked_doors": {
             key: list(rooms) for key, rooms in getattr(ds, "linked_doors", {}).items()
         },
+        "player_spawn": _normalize_spawn(getattr(ds, "player_spawn", None)),
     }
+
+
+def _normalize_spawn(raw: Any) -> Optional[Dict[str, int]]:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return {"x": int(raw["x"]), "y": int(raw["y"])}
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def dungeon_state_to_dict(ds: DungeonState) -> Dict[str, Any]:
@@ -115,6 +125,7 @@ def dungeon_state_to_dict(ds: DungeonState) -> Dict[str, Any]:
             key: list(rooms)
             for key, rooms in getattr(ds, "linked_doors", {}).items()
         },
+        "player_spawn": _normalize_spawn(getattr(ds, "player_spawn", None)),
         "searched_room_ids": list(getattr(ds, "searched_room_ids", [])),
         "secret_suspects": [dict(s) for s in getattr(ds, "secret_suspects", [])],
     }
@@ -167,6 +178,7 @@ def dungeon_state_from_dict(d: Dict[str, Any]) -> DungeonState:
         },
         searched_room_ids=list(d.get("searched_room_ids") or []),
         secret_suspects=list(d.get("secret_suspects") or []),
+        player_spawn=_normalize_spawn(d.get("player_spawn")),
     )
 
 

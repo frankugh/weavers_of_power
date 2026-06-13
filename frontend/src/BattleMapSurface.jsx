@@ -1245,7 +1245,26 @@ function drawStaticMapLayer(
   drawWallEdges(layers.dungeonWalls, dungeon, renderIndex?.wallChunks, renderIndex, range, cellSize, isGmDungeonMode);
   drawSecretSuspects(renderer.PIXI, layers.secretSuspects, dungeon, renderIndex, range, cellSize, isGmDungeonMode);
   drawDungeonIssues(layers.dungeonIssues, dungeon, range, cellSize);
+  drawPlayerSpawn(layers.playerSpawn, dungeon, cellSize, isGmDungeonMode);
   renderPixi(renderer);
+}
+
+function drawPlayerSpawn(graphics, dungeon, cellSize, isGmDungeonMode) {
+  graphics.clear();
+  const spawn = dungeon?.playerSpawn;
+  if (!spawn || !isGmDungeonMode) return;
+  const x = Number(spawn.x);
+  const y = Number(spawn.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+  const px = x * cellSize;
+  const py = y * cellSize;
+  const inset = Math.max(2, cellSize * 0.12);
+  // green spawn marker: filled cell + ring
+  graphics.beginFill(0x22c55e, 0.22);
+  graphics.drawRoundedRect(px + inset, py + inset, cellSize - inset * 2, cellSize - inset * 2, 4);
+  graphics.endFill();
+  graphics.lineStyle(Math.max(2, cellSize * 0.07), 0x22c55e, 0.95);
+  graphics.drawCircle(px + cellSize / 2, py + cellSize / 2, cellSize * 0.3);
 }
 
 function drawDungeonPreviewLayer(renderer, previewCells, cellSize, dungeon) {
@@ -1442,6 +1461,7 @@ function BattleMapSurface({
   onMoveToCell,
   onTileEdit,
   onWallEdit,
+  onSetPlayerSpawn,
   onSecretDoorClick,
   onUnitContextMenu,
   onUnitDoubleClick,
@@ -1625,6 +1645,7 @@ function BattleMapSurface({
           secretDoorGlow: new PIXI.Graphics(),
           secretSuspects: new PIXI.Container(),
           dungeonIssues: new PIXI.Graphics(),
+          playerSpawn: new PIXI.Graphics(),
           dungeonPreview: new PIXI.Graphics(),
           wallPreview: new PIXI.Graphics(),
           selection: new PIXI.Graphics(),
@@ -1641,6 +1662,7 @@ function BattleMapSurface({
           layers.secretDoorGlow,
           layers.secretSuspects,
           layers.dungeonIssues,
+          layers.playerSpawn,
           layers.dungeonPreview,
           layers.wallPreview,
           layers.selection,
@@ -2376,6 +2398,13 @@ function BattleMapSurface({
       };
       addWallStrokeEdge(firstEdge);
       surfaceRef.current?.setPointerCapture?.(pointerId);
+      return;
+    }
+
+    // In GM Dungeon spawn submode, left click sets the player spawn cell.
+    if (isGmDungeonDrawMode && gmDungeonDrawSubmode === "spawn" && !busy && (isLeftMouse || pointerType === "touch") && cell && onSetPlayerSpawn) {
+      event.preventDefault();
+      onSetPlayerSpawn({ x: cell.x, y: cell.y });
       return;
     }
 

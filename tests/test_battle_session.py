@@ -3820,6 +3820,34 @@ class WallEdgeDoorTests(unittest.TestCase):
         self.assertIn("0,0,e", snap["dungeon"]["walls"])
         self.assertEqual(snap["dungeon"]["walls"]["0,0,e"]["wall_type"], "wall")
 
+    def test_map_template_save_load_and_overwrite_track_active_template(self) -> None:
+        session = self.context.create_session("map-template-active")
+        session.edit_dungeon_tiles("floor", [[-2, 0]])
+
+        saved = session.save_dungeon_as_map_template("Crypt")
+        template_id = saved["id"]
+
+        self.assertEqual(session.snapshot()["activeMapTemplate"]["id"], template_id)
+        self.assertEqual(session.snapshot()["activeMapTemplate"]["name"], "Crypt")
+
+        session.edit_dungeon_tiles("floor", [[3, 3]])
+        overwritten = session.save_dungeon_to_map_template(template_id)
+        template = self.context.get_map_template(template_id)
+
+        self.assertEqual(overwritten["id"], template_id)
+        self.assertIn("3,3", template["tiles"])
+        self.assertEqual(session.snapshot()["activeMapTemplate"]["id"], template_id)
+
+        self.context._sessions.pop("map-template-active", None)
+        reloaded = self.context.load_session("map-template-active")
+        self.assertEqual(reloaded.snapshot()["activeMapTemplate"]["id"], template_id)
+
+        other = self.context.create_session("map-template-load")
+        other.load_map_template_into_dungeon(template_id)
+
+        self.assertEqual(other.snapshot()["activeMapTemplate"]["id"], template_id)
+        self.assertIn("3,3", other.snapshot()["dungeon"]["tiles"])
+
 
 if __name__ == "__main__":
     unittest.main()

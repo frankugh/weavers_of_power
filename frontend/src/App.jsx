@@ -93,6 +93,7 @@ const GM_DUNGEON_INTERACTION_MODES = {
 const GM_DUNGEON_DRAW_SUBMODES = {
   TERRAIN: "terrain",
   WALLS: "walls",
+  SPAWN: "spawn",
 };
 const GM_DUNGEON_WALL_PALETTES = ["wall", "door", "secret_door", "erase"];
 const RECTANGLE_PALETTES = new Set(["floor", "void"]);
@@ -107,6 +108,18 @@ const DRAW_REVEAL_TIMING = {
   holdMs: 3200,
   settleMs: 900,
 };
+const EMPTY_PC_PICKER_CUSTOM = {
+  name: "",
+  playerDeckId: "",
+  toughness: 4,
+  armor: 1,
+  magicArmor: 0,
+  power: 4,
+  movement: 6,
+  baseGuard: 1,
+  initiativeModifier: 2,
+};
+
 const EMPTY_ATTACK_FORM = {
   damage: 1,
   targetMode: "creature",
@@ -995,6 +1008,11 @@ function App() {
   const [saves, setSaves] = useState([]);
   const [mapTemplateName, setMapTemplateName] = useState("map template");
   const [mapTemplates, setMapTemplates] = useState([]);
+  const [pendingGuardAction, setPendingGuardAction] = useState(null);
+  const [pcPicker, setPcPicker] = useState(null);
+  const [pcPickerSelection, setPcPickerSelection] = useState([]);
+  const [pcPickerTab, setPcPickerTab] = useState("premade");
+  const [pcPickerCustom, setPcPickerCustom] = useState(EMPTY_PC_PICKER_CUSTOM);
   const [attackForm, setAttackForm] = useState(EMPTY_ATTACK_FORM);
   const [healForm, setHealForm] = useState(EMPTY_HEAL_FORM);
   const [drawExactCount, setDrawExactCount] = useState(1);
@@ -1784,11 +1802,124 @@ function App() {
   }
 
   function requestNewSession() {
+    if (snapshot?.sessionDirty) {
+      runWithUnsavedGuard(createNewSession);
+      return;
+    }
     if (!sessionHasHistory) {
       createNewSession();
       return;
     }
     setModal("new-session-confirm");
+  }
+
+  // ── Unsaved-changes guard ────────────────────────────────────────────────
+  // Any action that discards/replaces the live session routes through this.
+  // If the session has unsaved changes, ask Save / Continue / Cancel first.
+  function runWithUnsavedGuard(action) {
+    if (!snapshot?.sessionDirty) {
+      return action();
+    }
+    setPendingGuardAction(() => action);
+    setModal("unsaved-guard");
+    return undefined;
+  }
+
+  async function handleGuardContinue() {
+    const action = pendingGuardAction;
+    setPendingGuardAction(null);
+    closeModal();
+    if (action) await action();
+  }
+
+  function handleGuardCancel() {
+    setPendingGuardAction(null);
+    closeModal();
+  }
+
+  async function handleGuardSave() {
+    if (activeSave?.filename) {
+      closeModal();
+      const payload = await applySnapshotRequest(
+        `/api/battle/sessions/${snapshot.sid}/saves/${encodeURIComponent(activeSave.filename)}`,
+        { method: "PUT" },
+        "Session saved",
+      );
+      const action = pendingGuardAction;
+      setPendingGuardAction(null);
+      if (payload && action) await action();
+    } else {
+      // No active save slot yet — route to Save As; the pending action runs
+      // after a successful save (see handleSaveSubmit).
+      await openSaveAsModal();
+    }
+  }
+
+  function handleStartPlay() {
+    openPcPicker(async (players) => {
+      const payload = await applySnapshotRequest(
+        `/api/battle/sessions/${snapshot.sid}/start-play`,
+        { method: "POST", body: JSON.stringify({ players }) },
+        "Play session started",
+      );
+      if (payload) {
+        setMapMode(MAP_MODES.IDLE);
+      }
+    });
+  }
+
+  // ── PC picker (which PCs spawn on Start / Start Combat) ───────────────────
+  function openPcPicker(onConfirm) {
+    setPcPickerSelection([]);
+    setPcPickerTab("premade");
+    setPcPickerCustom({ ...EMPTY_PC_PICKER_CUSTOM, playerDeckId: meta?.playerDecks?.[0]?.id || "" });
+    setPcPicker({ onConfirm });
+    refreshSavedCharacters();
+    setModal("pc-picker");
+  }
+
+  function addPremadePc(character) {
+    setPcPickerSelection((current) => [
+      ...current,
+      { kind: "premade", characterId: character.id, name: character.name },
+    ]);
+  }
+
+  function addCustomPc() {
+    const name = pcPickerCustom.name.trim() || "Player";
+    setPcPickerSelection((current) => [
+      ...current,
+      {
+        kind: "custom",
+        name,
+        playerDeckId: pcPickerCustom.playerDeckId || (meta?.playerDecks?.[0]?.id || ""),
+        toughness: pcPickerCustom.toughness,
+        armor: pcPickerCustom.armor,
+        magicArmor: pcPickerCustom.magicArmor,
+        power: pcPickerCustom.power,
+        movement: pcPickerCustom.movement,
+        baseGuard: pcPickerCustom.baseGuard,
+        initiativeModifier: pcPickerCustom.initiativeModifier,
+      },
+    ]);
+    setPcPickerCustom((current) => ({ ...current, name: "" }));
+  }
+
+  function removePcFromSelection(index) {
+    setPcPickerSelection((current) => current.filter((_, i) => i !== index));
+  }
+
+  async function confirmPcPicker() {
+    const onConfirm = pcPicker?.onConfirm;
+    const players = pcPickerSelection.map(({ kind, ...spec }) => spec);
+    setPcPicker(null);
+    closeModal();
+    if (onConfirm) await onConfirm(players);
+  }
+
+  function cancelPcPicker() {
+    setPcPicker(null);
+    closeModal();
   }
 
   async function handleUndo() {
@@ -1936,6 +2067,14 @@ function App() {
     return applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/walls`, {
       method: "POST",
       body: JSON.stringify(body),
+    });
+  }
+
+  async function submitSetPlayerSpawn(cell) {
+    if (!snapshot?.sid || !cell) return null;
+    return applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/player-spawn`, {
+      method: "POST",
+      body: JSON.stringify({ x: cell.x, y: cell.y }),
     });
   }
 
@@ -3122,6 +3261,9 @@ function App() {
     );
     if (payload) {
       closeModal();
+      const action = pendingGuardAction;
+      setPendingGuardAction(null);
+      if (action) await action();
     }
   }
 
@@ -3138,7 +3280,7 @@ function App() {
     }
   }
 
-  async function handleLoadSubmit(filename) {
+  async function doLoadSession(filename) {
     const payload = await applySnapshotRequest(
       `/api/battle/sessions/${snapshot.sid}/load`,
       {
@@ -3152,6 +3294,11 @@ function App() {
     }
   }
 
+  function handleLoadSubmit(filename) {
+    closeModal();
+    runWithUnsavedGuard(() => doLoadSession(filename));
+  }
+
   async function fetchMapTemplates() {
     try {
       const data = await requestJson("/api/map-templates");
@@ -3162,13 +3309,30 @@ function App() {
   }
 
   async function openSaveMapTemplateModal() {
-    await fetchMapTemplates();
+    setMapTemplateName(snapshot?.activeMapTemplate?.name || "map template");
     setModal("save-map-template");
   }
 
-  async function openLoadMapTemplateModal() {
+  async function openMapTemplateLibrary() {
     await fetchMapTemplates();
-    setModal("load-map-template");
+    setModal("map-template-library");
+  }
+
+  async function handleSaveActiveMapTemplate() {
+    const templateId = snapshot?.activeMapTemplate?.id;
+    if (!templateId || snapshot?.activeMapTemplate?.missing) {
+      openSaveMapTemplateModal();
+      return;
+    }
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/dungeon/save-template/${encodeURIComponent(templateId)}`,
+      { method: "POST" },
+      "Map template saved",
+    );
+    if (payload) {
+      await fetchMapTemplates();
+      closeModal();
+    }
   }
 
   async function handleSaveMapTemplateSubmit(event) {
@@ -3179,6 +3343,7 @@ function App() {
       "Map template saved",
     );
     if (payload) {
+      await fetchMapTemplates();
       closeModal();
     }
   }
@@ -3190,6 +3355,7 @@ function App() {
       "Map template loaded",
     );
     if (payload) {
+      await fetchMapTemplates();
       closeModal();
     }
   }
@@ -3200,6 +3366,15 @@ function App() {
     try {
       const data = await requestJson(`/api/map-templates/${encodeURIComponent(templateId)}`, { method: "DELETE" });
       setMapTemplates(data.templates || []);
+      if (snapshot?.activeMapTemplate?.id === templateId) {
+        setSnapshot((current) => current ? {
+          ...current,
+          activeMapTemplate: {
+            ...current.activeMapTemplate,
+            missing: true,
+          },
+        } : current);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -3357,19 +3532,39 @@ function App() {
               <button className="menu-button" onClick={handleRedo} disabled={busy || !snapshot.canRedo}>
                 Redo
               </button>
-              <button
-                className="menu-button"
-                onClick={handleSaveClick}
-                disabled={busy}
-              >
-                Save
-              </button>
-              <button className="menu-button" onClick={openSaveAsModal} disabled={busy}>
-                Save As
-              </button>
-              <button className="menu-button" onClick={openLoadModal} disabled={busy}>
-                Load
-              </button>
+              {isGmDungeonMode ? (
+                <>
+                  <button
+                    className="menu-button"
+                    type="button"
+                    onClick={openMapTemplateLibrary}
+                    disabled={busy}
+                    title="Save, save as, or load map templates"
+                  >
+                    Templates
+                  </button>
+                  <button
+                    className="menu-button start-play-button"
+                    onClick={handleStartPlay}
+                    disabled={busy}
+                    title="Begin a fresh play session from this map (resets fog, doors and unit positions)"
+                  >
+                    Start
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button className="menu-button" onClick={handleSaveClick} disabled={busy}>
+                    Save Session
+                  </button>
+                  <button className="menu-button" onClick={openSaveAsModal} disabled={busy}>
+                    Save As
+                  </button>
+                  <button className="menu-button" onClick={openLoadModal} disabled={busy}>
+                    Load Session
+                  </button>
+                </>
+              )}
               <button
                 className={`menu-button gm-reposition-button ${isGmRepositionMode ? "gm-reposition-active" : ""}`.trim()}
                 type="button"
@@ -3404,6 +3599,8 @@ function App() {
           setNotice={setNotice}
           setSnapshot={setSnapshot}
           meta={meta}
+          runWithUnsavedGuard={runWithUnsavedGuard}
+          openPcPicker={openPcPicker}
           onOpenCombat={() => {
             setActiveView(APP_VIEWS.BATTLE);
             setModal(null);
@@ -3463,6 +3660,7 @@ function App() {
               onMoveToCell={handleMoveSelectedToCell}
               onTileEdit={submitTileEdit}
               onWallEdit={submitWallEdit}
+              onSetPlayerSpawn={submitSetPlayerSpawn}
               onSecretDoorClick={(key) => {
                 setGmSelectedSecretDoorKey((prev) => (prev === key ? null : key));
                 setGmSecretDcInput(String(dungeon?.walls?.[key]?.secret_dc ?? 2));
@@ -3593,7 +3791,14 @@ function App() {
                       ))}
                     </div>
                     <div className="dungeon-toolbar-sep" />
-                    {gmDungeonDrawSubmode === GM_DUNGEON_DRAW_SUBMODES.TERRAIN ? (
+                    {gmDungeonDrawSubmode === GM_DUNGEON_DRAW_SUBMODES.SPAWN ? (
+                      <>
+                        <span className="subtle-copy dungeon-spawn-hint">
+                          Click a cell to set the player spawn area. Click it again to clear.
+                        </span>
+                        <div className="dungeon-toolbar-sep" />
+                      </>
+                    ) : gmDungeonDrawSubmode === GM_DUNGEON_DRAW_SUBMODES.TERRAIN ? (
                       <>
                         <div className="dungeon-palette">
                           {GM_DUNGEON_PALETTES.map((p) => (
@@ -3680,24 +3885,6 @@ function App() {
                   disabled={busy}
                 >
                   Analyze
-                </button>
-                <button
-                  className="menu-button"
-                  type="button"
-                  onClick={openSaveMapTemplateModal}
-                  disabled={busy || !snapshot.dungeon}
-                  title="Save current map as a reusable template"
-                >
-                  Save as Template
-                </button>
-                <button
-                  className="menu-button"
-                  type="button"
-                  onClick={openLoadMapTemplateModal}
-                  disabled={busy}
-                  title="Load a saved map template into this session"
-                >
-                  Load Template
                 </button>
                 <button
                   className="menu-button dungeon-exit-btn"
@@ -5758,9 +5945,204 @@ function App() {
       </ModalShell>
 
       <ModalShell
+        open={modal === "pc-picker"}
+        title="Which PCs spawn?"
+        subtitle="Add pre-made or custom player characters to spawn at the map's spawn area."
+        onClose={cancelPcPicker}
+        size="wide"
+        className="modal-shell-pc-picker"
+      >
+        <div className="pc-picker">
+          <div className="pc-picker-tabs">
+            <button
+              type="button"
+              className={`add-unit-tab ${pcPickerTab === "premade" ? "add-unit-tab-active" : ""}`.trim()}
+              onClick={() => setPcPickerTab("premade")}
+            >
+              Pre-made
+            </button>
+            <button
+              type="button"
+              className={`add-unit-tab ${pcPickerTab === "custom" ? "add-unit-tab-active" : ""}`.trim()}
+              onClick={() => setPcPickerTab("custom")}
+            >
+              Custom
+            </button>
+          </div>
+
+          <div className="pc-picker-body">
+            <div className="pc-picker-source">
+              {pcPickerTab === "premade" ? (
+                <div className="saved-character-list">
+                  {savedCharacters.map((character) => (
+                    <div className="saved-character-row" key={character.id}>
+                      <div>
+                        <strong>{character.name}</strong>
+                        <span>{[character.className, character.ancestryName].filter(Boolean).join(" / ")}</span>
+                      </div>
+                      <button className="primary-button compact-button" type="button" onClick={() => addPremadePc(character)} disabled={busy}>
+                        Add
+                      </button>
+                    </div>
+                  ))}
+                  {!savedCharacters.length ? <div className="empty-copy">No saved characters yet. Use the Custom tab.</div> : null}
+                </div>
+              ) : (
+                <div className="modal-form">
+                  <label className="field">
+                    <span>Name</span>
+                    <input type="text" value={pcPickerCustom.name} onChange={(e) => setPcPickerCustom((c) => ({ ...c, name: e.target.value }))} placeholder="Player" />
+                  </label>
+                  <label className="field">
+                    <span>Deck</span>
+                    <select value={pcPickerCustom.playerDeckId} onChange={(e) => setPcPickerCustom((c) => ({ ...c, playerDeckId: e.target.value }))}>
+                      {(meta?.playerDecks || []).map((deck) => (
+                        <option key={deck.id} value={deck.id}>{deck.name || deck.id}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="field-grid">
+                    {[
+                      ["toughness", "Toughness"],
+                      ["armor", "Armor"],
+                      ["magicArmor", "Magic armor"],
+                      ["power", "Power"],
+                      ["movement", "Movement"],
+                      ["baseGuard", "Base guard"],
+                    ].map(([key, label]) => (
+                      <label className="field" key={key}>
+                        <span>{label}</span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={pcPickerCustom[key]}
+                          onChange={(e) => setPcPickerCustom((c) => ({ ...c, [key]: Math.max(0, parseInt(e.target.value, 10) || 0) }))}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <button type="button" className="secondary-button" onClick={addCustomPc} disabled={busy}>
+                    Add custom PC
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="pc-picker-selection">
+              <div className="form-section-title">Spawning ({pcPickerSelection.length})</div>
+              {pcPickerSelection.length ? (
+                pcPickerSelection.map((pc, index) => (
+                  <div className="pc-picker-selected-row" key={index}>
+                    <span>{pc.name}{pc.kind === "premade" ? "" : " (custom)"}</span>
+                    <button
+                      type="button"
+                      className="icon-button pc-picker-remove"
+                      onClick={() => removePcFromSelection(index)}
+                      aria-label={`Remove ${pc.name}`}
+                    >
+                      <TrashIcon />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <div className="subtle-copy">No PCs selected. You can start with none and add them later.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="modal-actions">
+            <button className="primary-button" type="button" onClick={confirmPcPicker} disabled={busy}>
+              Start with these PCs
+            </button>
+            <button className="secondary-button" type="button" onClick={cancelPcPicker} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "map-template-library"}
+        title="Map Templates"
+        subtitle="Save this map as a reusable template, overwrite the current template, or load another template."
+        onClose={closeModal}
+      >
+        <div className="map-template-library">
+          <div className={`map-template-current ${snapshot?.activeMapTemplate?.missing ? "map-template-current-missing" : ""}`.trim()}>
+            <div>
+              <div className="form-section-title">Current Template</div>
+              {snapshot?.activeMapTemplate ? (
+                <>
+                  <strong>{snapshot.activeMapTemplate.name}</strong>
+                  <span>
+                    {snapshot.activeMapTemplate.missing
+                      ? "Source template missing. Use Save As to create a new template."
+                      : snapshot.activeMapTemplate.savedAt || snapshot.activeMapTemplate.filename}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <strong>No template loaded</strong>
+                  <span>Use Save As to create one, or load an existing template below.</span>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="modal-actions map-template-actions">
+            <button
+              className="primary-button"
+              type="button"
+              onClick={handleSaveActiveMapTemplate}
+              disabled={busy || !snapshot?.dungeon || !snapshot?.activeMapTemplate || snapshot?.activeMapTemplate?.missing}
+              title={!snapshot?.activeMapTemplate ? "Load or Save As a template first" : "Overwrite the current map template"}
+            >
+              Save
+            </button>
+            <button className="secondary-button" type="button" onClick={openSaveMapTemplateModal} disabled={busy || !snapshot?.dungeon}>
+              Save As
+            </button>
+          </div>
+
+          <div className="form-section-title">Load Template</div>
+          <div className="save-list">
+            {mapTemplates.length ? (
+              mapTemplates.map((t) => (
+                <div className="save-row" key={t.id}>
+                  <div className="save-slot-info">
+                    <span className="save-slot-title">
+                      <span>{t.name}</span>
+                      {snapshot?.activeMapTemplate?.id === t.id && !snapshot?.activeMapTemplate?.missing ? (
+                        <span className="save-active-badge">Current</span>
+                      ) : null}
+                    </span>
+                    <span className="save-slot-meta">{t.savedAt || t.filename}</span>
+                  </div>
+                  <button className="small-button" type="button" onClick={() => handleLoadMapTemplate(t.id)} disabled={busy}>
+                    Load
+                  </button>
+                  <button
+                    className="save-delete-button"
+                    type="button"
+                    aria-label={`Delete template ${t.name}`}
+                    onClick={() => handleDeleteMapTemplate(t.id)}
+                    disabled={busy}
+                  >
+                    <TrashIcon />
+                  </button>
+                </div>
+              ))
+            ) : (
+              <div className="subtle-copy">No map templates saved yet.</div>
+            )}
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
         open={modal === "save-map-template"}
-        title="Save map as template"
-        subtitle="Save the current dungeon layout as a reusable map template."
+        title="Save map as new template"
+        subtitle="Create a reusable map template from the current dungeon layout."
         onClose={closeModal}
       >
         <form className="modal-form" onSubmit={handleSaveMapTemplateSubmit}>
@@ -5775,7 +6157,7 @@ function App() {
           </label>
           <div className="modal-actions">
             <button className="primary-button" type="submit" disabled={busy}>
-              Save template
+              Save As
             </button>
             <button className="secondary-button" type="button" onClick={closeModal}>
               Cancel
@@ -5873,6 +6255,32 @@ function App() {
               Start New Session
             </button>
             <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "unsaved-guard"}
+        title="Unsaved changes"
+        onClose={handleGuardCancel}
+        closeOnOutsideClick={false}
+        showCloseButton={false}
+      >
+        <div className="panel-body modal-form">
+          <div className="subtle-copy">
+            The current session has unsaved changes. Continuing will replace it.
+            {activeSave?.filename ? null : " There is no active session save yet — Save will let you name one."}
+          </div>
+          <div className="modal-actions">
+            <button className="primary-button" type="button" onClick={handleGuardSave} disabled={busy}>
+              Save
+            </button>
+            <button className="secondary-button danger-button" type="button" onClick={handleGuardContinue} disabled={busy}>
+              Continue without saving
+            </button>
+            <button className="secondary-button" type="button" onClick={handleGuardCancel} disabled={busy}>
               Cancel
             </button>
           </div>
@@ -7968,6 +8376,7 @@ function BattleRoom({
   onMoveToCell,
   onTileEdit,
   onWallEdit,
+  onSetPlayerSpawn,
   onSecretDoorClick,
   onUnitContextMenu,
   onUnitDoubleClick,
@@ -8011,6 +8420,7 @@ function BattleRoom({
         onMoveToCell={onMoveToCell}
         onTileEdit={onTileEdit}
         onWallEdit={onWallEdit}
+        onSetPlayerSpawn={onSetPlayerSpawn}
         onSecretDoorClick={onSecretDoorClick}
         onUnitContextMenu={onUnitContextMenu}
         onUnitDoubleClick={onUnitDoubleClick}

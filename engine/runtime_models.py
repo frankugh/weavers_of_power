@@ -52,6 +52,7 @@ class DungeonState:
     linked_doors: dict = field(default_factory=dict)                # "x,y,e"|"x,y,s" → [room_id_a, room_id_b]
     searched_room_ids: list = field(default_factory=list)           # room_ids already searched by party
     secret_suspects: list = field(default_factory=list)             # list of suspect dicts
+    player_spawn: Optional[dict] = None                             # {"x": int, "y": int} player spawn-area cell
 
 
 @dataclass

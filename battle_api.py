@@ -260,6 +260,15 @@ class DungeonSettingsRequest(BaseModel):
     fogOfWarEnabled: bool
 
 
+class DungeonPlayerSpawnRequest(BaseModel):
+    x: int
+    y: int
+
+
+class StartPlayRequest(BaseModel):
+    players: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class DungeonRoomRevealedRequest(BaseModel):
     revealed: bool
 
@@ -1017,8 +1026,9 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
         )
 
     @api_app.post("/api/battle/sessions/{sid}/scenario/nodes/{node_id}/start-combat")
-    def start_scenario_combat(sid: str, node_id: str):
-        return run_mutation(sid, lambda session: session.start_scenario_combat(node_id))
+    def start_scenario_combat(sid: str, node_id: str, request: Optional[StartPlayRequest] = None):
+        players = request.players if request else []
+        return run_mutation(sid, lambda session: session.start_scenario_combat(node_id, players))
 
     @api_app.get("/api/map-templates")
     def list_map_templates():
@@ -1057,9 +1067,29 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
         payload["savedTemplate"] = result
         return payload
 
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/save-template/{template_id}")
+    def save_dungeon_to_map_template(sid: str, template_id: str):
+        session = load_session_or_400(sid)
+        try:
+            result = session.save_dungeon_to_map_template(template_id)
+        except BattleSessionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        payload = session.snapshot()
+        payload["savedTemplate"] = result
+        return payload
+
     @api_app.post("/api/battle/sessions/{sid}/dungeon/load-template/{template_id}")
     def load_map_template(sid: str, template_id: str):
         return run_mutation(sid, lambda session: session.load_map_template_into_dungeon(template_id))
+
+    @api_app.post("/api/battle/sessions/{sid}/start-play")
+    def start_play_from_map(sid: str, request: Optional[StartPlayRequest] = None):
+        players = request.players if request else []
+        return run_mutation(sid, lambda session: session.start_play_from_current_map(players))
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/player-spawn")
+    def set_player_spawn(sid: str, request: DungeonPlayerSpawnRequest):
+        return run_mutation(sid, lambda session: session.set_player_spawn(request.x, request.y))
 
     @api_app.delete("/api/map-templates/{template_id}")
     def delete_map_template(template_id: str):

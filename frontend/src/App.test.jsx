@@ -1331,7 +1331,7 @@ describe("App", () => {
     });
 
     await findMapToken("Goblin 1");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save Session" }));
     expect(await screen.findByText("Save session")).toBeInTheDocument();
 
     const nameInput = screen.getByLabelText("New save name");
@@ -1368,7 +1368,7 @@ describe("App", () => {
     });
 
     await findMapToken("Goblin 1");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save Session" }));
 
     await waitFor(() => expect(putCalled).toBe(true));
     expect(screen.queryByText("Save session")).not.toBeInTheDocument();
@@ -1437,7 +1437,7 @@ describe("App", () => {
     });
 
     await findMapToken("Goblin 1");
-    await user.click(screen.getByRole("button", { name: "Load" }));
+    await user.click(screen.getByRole("button", { name: "Load Session" }));
     expect(await screen.findByText(save.label)).toBeInTheDocument();
     expect(await screen.findByText("Active")).toBeInTheDocument();
 
@@ -6275,6 +6275,115 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(Number(viewport.dataset.cameraX)).not.toBe(beforeX);
+    });
+  });
+
+  it("opens visible map template save and load actions from Map Edit", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon();
+
+    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })] }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/map-templates" && (!requestOptions?.method || requestOptions.method === "GET")) {
+          return jsonResponse({ templates: [{ id: "crypt", name: "Crypt", savedAt: "2026-06-13T12:00:00" }] });
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Map Edit" }));
+
+    expect(screen.queryByRole("button", { name: "Save Template" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Templates" }));
+
+    expect(screen.getByText("Map Templates")).toBeInTheDocument();
+    expect(screen.getByText("No template loaded")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByText("Crypt")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Save As" }));
+
+    expect(screen.getByText("Save map as new template")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save As" })).toBeInTheDocument();
+  });
+
+  it("saves the active map template directly from the Map Templates modal", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon();
+    const saveCalls = [];
+
+    renderWithSnapshot(buildSnapshot({
+      dungeon,
+      activeMapTemplate: {
+        id: "crypt",
+        filename: "crypt.json",
+        name: "Crypt",
+        savedAt: "2026-06-13T12:00:00",
+        missing: false,
+      },
+      enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
+    }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/map-templates" && (!requestOptions?.method || requestOptions.method === "GET")) {
+          return jsonResponse({ templates: [{ id: "crypt", name: "Crypt", savedAt: "2026-06-13T12:00:00" }] });
+        }
+        if (url === "/api/battle/sessions/sid-123/dungeon/save-template/crypt" && requestOptions?.method === "POST") {
+          saveCalls.push(url);
+          return jsonResponse(buildSnapshot({
+            dungeon,
+            activeMapTemplate: {
+              id: "crypt",
+              filename: "crypt.json",
+              name: "Crypt",
+              savedAt: "2026-06-13T12:05:00",
+              missing: false,
+            },
+            enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
+          }));
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Map Edit" }));
+    await user.click(screen.getByRole("button", { name: "Templates" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(saveCalls).toEqual(["/api/battle/sessions/sid-123/dungeon/save-template/crypt"]);
+    });
+    expect(await screen.findByText("Map template saved")).toBeInTheDocument();
+  });
+
+  it("starts play from Map Edit without opening the session save guard", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon();
+    const startCalls = [];
+
+    renderWithSnapshot(buildSnapshot({
+      dungeon,
+      sessionDirty: true,
+      enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
+    }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/start-play" && requestOptions?.method === "POST") {
+          startCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse(buildSnapshot({ dungeon, enemies: [] }));
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Map Edit" }));
+    await user.click(screen.getByRole("button", { name: "Start" }));
+
+    expect(await screen.findByText("Which PCs spawn?")).toBeInTheDocument();
+    expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Start with these PCs" }));
+
+    await waitFor(() => {
+      expect(startCalls).toEqual([{ players: [] }]);
     });
   });
 

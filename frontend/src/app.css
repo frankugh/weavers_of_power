@@ -386,6 +386,136 @@ button {
   color: #f0b1a6;
 }
 
+.start-play-button {
+  border-color: rgba(120, 190, 120, 0.55);
+  color: #c8e6c9;
+  font-weight: 700;
+}
+
+.dungeon-spawn-hint {
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.map-template-library {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.map-template-current {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(20, 14, 10, 0.5);
+}
+
+.map-template-current strong,
+.map-template-current span {
+  display: block;
+  min-width: 0;
+}
+
+.map-template-current strong {
+  margin-top: 4px;
+  color: var(--text);
+}
+
+.map-template-current span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.map-template-current-missing {
+  border-color: rgba(209, 106, 87, 0.42);
+}
+
+.map-template-actions {
+  justify-content: flex-start;
+}
+
+.modal-shell-pc-picker {
+  width: min(920px, 96vw);
+}
+
+.pc-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.pc-picker-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 14px;
+}
+
+.pc-picker-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.pc-picker-source,
+.pc-picker-selection {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(20, 14, 10, 0.5);
+  padding: 12px;
+}
+
+.pc-picker-selection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pc-picker-selected-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(8, 6, 4, 0.34);
+}
+
+.pc-picker-selected-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pc-picker-remove {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-color: rgba(209, 106, 87, 0.34);
+  color: #f0b1a6;
+}
+
+.pc-picker-remove:hover:not(:disabled) {
+  border-color: rgba(209, 106, 87, 0.58);
+  color: #ffd1c9;
+}
+
+@media (max-width: 720px) {
+  .pc-picker-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.scenario-combat-map-note {
+  padding: 6px 8px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+}
+
 .modal-close-x {
   display: flex;
   align-items: center;

@@ -817,8 +817,16 @@ function NodeEditorModal({ node, isStart, mapTemplates, meta, onSave, onDelete, 
                   No saved map templates. Save one from Map Edit first, then refresh this list.
                 </div>
               ) : null}
-              <div className="form-section-title">Enemies</div>
-              <EnemySetupPicker meta={meta} entries={enemyEntries} onChange={setEnemyEntries} />
+              {mapRef ? (
+                <div className="subtle-copy scenario-combat-map-note">
+                  Enemies and their positions come from the chosen map. Players spawn at the map's spawn area.
+                </div>
+              ) : (
+                <>
+                  <div className="form-section-title">Enemies (default arena)</div>
+                  <EnemySetupPicker meta={meta} entries={enemyEntries} onChange={setEnemyEntries} />
+                </>
+              )}
             </div>
           ) : null}
         </div>
@@ -906,6 +914,8 @@ export default function ScenarioView({
   setSnapshot,
   onOpenCombat,
   meta = {},
+  runWithUnsavedGuard,
+  openPcPicker,
 }) {
   const [scenarios, setScenarios] = useState([]);
   const [mapTemplates, setMapTemplates] = useState([]);
@@ -1239,12 +1249,26 @@ export default function ScenarioView({
   }
 
   async function startCombat(nodeId) {
-    const payload = await runSessionRequest(
-      `/api/battle/sessions/${snapshot.sid}/scenario/nodes/${encodeURIComponent(nodeId)}/start-combat`,
-      { method: "POST" },
-      "Combat started",
-    );
-    if (payload) onOpenCombat();
+    const doStart = async (players) => {
+      const payload = await runSessionRequest(
+        `/api/battle/sessions/${snapshot.sid}/scenario/nodes/${encodeURIComponent(nodeId)}/start-combat`,
+        { method: "POST", body: JSON.stringify({ players: players || [] }) },
+        "Combat started",
+      );
+      if (payload) onOpenCombat();
+    };
+    const proceed = () => {
+      if (typeof openPcPicker === "function") {
+        openPcPicker(doStart);
+      } else {
+        doStart([]);
+      }
+    };
+    if (typeof runWithUnsavedGuard === "function") {
+      await runWithUnsavedGuard(proceed);
+    } else {
+      proceed();
+    }
   }
 
   async function openNodeEditor(node) {

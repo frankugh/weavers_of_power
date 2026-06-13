@@ -4,6 +4,7 @@ from collections import Counter
 import copy
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+import hashlib
 import heapq
 import json
 from pathlib import Path
@@ -47,6 +48,7 @@ from persistence import (
     dungeon_state_from_dict,
     dungeon_state_to_dict,
     dungeon_state_to_map_template,
+    enemy_from_dict,
     enemy_to_dict,
     grapple_to_dict,
     load_save_payload,
@@ -978,11 +980,13 @@ class BattleSession:
     pending_search: Optional[dict] = None
     pending_opportunity: Optional[dict] = None
     active_save_filename: Optional[str] = None
+    active_map_template_id: Optional[str] = None
     scenario_definition: Optional[dict] = None
     scenario_runtime: dict = field(default_factory=dict)
     turn_skip_notice: list = field(default_factory=list)
     undo_stack: list[dict] = field(default_factory=list)
     redo_stack: list[dict] = field(default_factory=list)
+    _clean_signature: Optional[str] = field(default=None, repr=False)
     _rng: random.Random = field(default_factory=random.Random, repr=False)
 
     def load_from_payload(self, payload: dict, *, load_undo_stack: bool = True) -> None:
@@ -1068,6 +1072,8 @@ class BattleSession:
         self.pending_opportunity = copy.deepcopy(po_raw) if isinstance(po_raw, dict) else None
         active_save = payload.get("active_save_filename")
         self.active_save_filename = str(active_save) if active_save else None
+        active_map_template = payload.get("active_map_template_id")
+        self.active_map_template_id = str(active_map_template) if active_map_template else None
         self._load_scenario_state(payload.get("scenario"))
         if load_undo_stack:
             self.undo_stack = [dict(entry) for entry in payload.get("undo_stack", [])][-UNDO_LIMIT:]
@@ -1112,6 +1118,7 @@ class BattleSession:
         if self.pending_opportunity is not None:
             payload["pending_opportunity"] = copy.deepcopy(self.pending_opportunity)
         payload["active_save_filename"] = self.active_save_filename
+        payload["active_map_template_id"] = self.active_map_template_id
         if self.scenario_definition is not None or self.scenario_runtime:
             payload["scenario"] = self._scenario_save_payload()
         return payload
@@ -1129,6 +1136,49 @@ class BattleSession:
 
     def autosave(self) -> None:
         save_current(self.context.current_path(self.sid), self._build_payload())
+
+    # ── Dirty / unsaved-changes tracking ──────────────────────────────────────
+
+    _VOLATILE_SIGNATURE_KEYS = frozenset({
+        "saved_at", "savedAt", "updatedAt", "createdAt", "save_slot",
+        "active_save_filename", "active_map_template_id", "selected_id", "combat_log",
+    })
+
+    def _scrub_for_signature(self, value):
+        if isinstance(value, dict):
+            return {
+                key: self._scrub_for_signature(val)
+                for key, val in value.items()
+                if key not in self._VOLATILE_SIGNATURE_KEYS
+            }
+        if isinstance(value, list):
+            return [self._scrub_for_signature(item) for item in value]
+        return value
+
+    def _state_signature(self) -> str:
+        payload = self._build_payload(include_undo_stack=False)
+        scrubbed = self._scrub_for_signature(payload)
+        encoded = json.dumps(scrubbed, sort_keys=True, default=str).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _has_meaningful_content(self) -> bool:
+        if self.state.enemies:
+            return True
+        if self.encounter_started:
+            return True
+        if self.scenario_definition is not None:
+            return True
+        if self.dungeon is not None and self.dungeon.walls:
+            return True
+        return False
+
+    def _mark_clean(self) -> None:
+        self._clean_signature = self._state_signature()
+
+    def session_dirty(self) -> bool:
+        if self._clean_signature is None:
+            return self._has_meaningful_content()
+        return self._state_signature() != self._clean_signature
 
     def snapshot(self) -> dict:
         self._ensure_selected()
@@ -1169,6 +1219,8 @@ class BattleSession:
             "redoDepth": len(self.redo_stack),
             "dungeon": self._dungeon_snapshot(),
             "activeSave": self.active_save_snapshot(),
+            "activeMapTemplate": self.active_map_template_snapshot(),
+            "sessionDirty": self.session_dirty(),
             "scenario": scenario_snapshot,
             "scenarioRun": scenario_snapshot.get("scenarioRun"),
             "pendingSearch": {
@@ -1464,7 +1516,7 @@ class BattleSession:
         else:
             self.autosave()
 
-    def start_scenario_combat(self, node_id: str) -> None:
+    def start_scenario_combat(self, node_id: str, players: Optional[list] = None) -> None:
         self._ensure_scenario_attached()
         node = self._scenario_node(node_id)
         if node is None:
@@ -1480,7 +1532,9 @@ class BattleSession:
         instances = self.scenario_runtime.setdefault("mapInstances", {})
         existing = instances.get(instance_id) if isinstance(instances.get(instance_id), dict) else None
 
-        if existing and isinstance(existing.get("dungeon"), dict):
+        template_units: list = []
+        fresh_instance = not (existing and isinstance(existing.get("dungeon"), dict))
+        if not fresh_instance:
             self.dungeon = dungeon_state_from_dict(existing["dungeon"])
         else:
             if map_ref:
@@ -1488,6 +1542,7 @@ class BattleSession:
                 if template is None:
                     raise BattleSessionError(f"Map template '{map_ref}' not found")
                 self.dungeon = dungeon_state_from_dict(template)
+                template_units = list(template.get("units") or [])
             else:
                 self.dungeon = migrate_to_dungeon(SCENARIO_DEFAULT_ARENA_COLUMNS, SCENARIO_DEFAULT_ARENA_ROWS, [])
             existing = {
@@ -1503,26 +1558,48 @@ class BattleSession:
         self.scenario_runtime["activeMapNodeId"] = node_id
         dungeon_analyze(self.dungeon, list(self.state.enemies.values()))
 
+        # Enemies: either a loaded map (units come from the template, at their
+        # positions) or the default arena (node enemy-list, placed as a group).
         if not state.get("spawnedEntityIds"):
             spawned_ids: list[str] = []
-            for entry in combat.get("enemies") or []:
-                if not isinstance(entry, dict):
-                    continue
-                template_id = str(entry.get("templateId") or "").strip()
-                if not template_id:
-                    continue
-                try:
-                    count = max(1, min(20, int(entry.get("count", 1) or 1)))
-                except (TypeError, ValueError):
-                    count = 1
-                for _ in range(count):
-                    before = set(self.state.enemies)
-                    self.add_enemy_from_template(template_id)
-                    spawned_ids.extend([iid for iid in self.state.enemies if iid not in before])
+            if map_ref:
+                spawned_ids = self._spawn_template_units(template_units)
+            else:
+                for entry in combat.get("enemies") or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    template_id = str(entry.get("templateId") or "").strip()
+                    if not template_id:
+                        continue
+                    try:
+                        count = max(1, min(20, int(entry.get("count", 1) or 1)))
+                    except (TypeError, ValueError):
+                        count = 1
+                    for _ in range(count):
+                        before = set(self.state.enemies)
+                        self.add_enemy_from_template(template_id)
+                        spawned_ids.extend([iid for iid in self.state.enemies if iid not in before])
+                if spawned_ids:
+                    enemy_anchor, _ = self._group_anchors()
+                    self._place_group_around(spawned_ids, enemy_anchor[0], enemy_anchor[1])
             if spawned_ids:
                 state["spawnedEntityIds"] = spawned_ids
 
+        # Players: spawn the chosen PCs once per node, at the map spawn-area
+        # (loaded map) or the default player group (≥2 cells from the enemies).
+        if players and not state.get("spawnedPlayerIds"):
+            player_ids = self._spawn_requested_players(players)
+            if map_ref:
+                sx, sy = self._player_spawn_cell()
+            else:
+                _, player_anchor = self._group_anchors()
+                sx, sy = player_anchor
+            self._place_group_around(player_ids, sx, sy)
+            if player_ids:
+                state["spawnedPlayerIds"] = player_ids
+
         state["mapInstanceId"] = instance_id
+        dungeon_analyze(self.dungeon, list(self.state.enemies.values()))
         self._persist_active_scenario_map_instance()
 
         can_start = any(
@@ -1551,6 +1628,31 @@ class BattleSession:
         if not path.exists() or not path.is_file():
             return None
         return self._manual_save_entry(path)
+
+    def active_map_template_snapshot(self) -> Optional[dict]:
+        if not self.active_map_template_id:
+            return None
+        template_id = self.active_map_template_id
+        entry = next(
+            (item for item in self.context.list_map_templates() if item.get("id") == template_id),
+            None,
+        )
+        template = self.context.get_map_template(template_id)
+        if template is None:
+            return {
+                "id": template_id,
+                "filename": f"{template_id}.json",
+                "name": entry.get("name") if entry else template_id,
+                "savedAt": entry.get("savedAt") if entry else None,
+                "missing": True,
+            }
+        return {
+            "id": template_id,
+            "filename": entry.get("filename") if entry else f"{template_id}.json",
+            "name": template.get("name") or (entry.get("name") if entry else template_id),
+            "savedAt": template.get("saved_at") or (entry.get("savedAt") if entry else None),
+            "missing": False,
+        }
 
     def _manual_save_entry(self, path: Path, payload: Optional[dict] = None) -> dict:
         payload = payload if payload is not None else (load_save_payload(path) or {})
@@ -1874,6 +1976,7 @@ class BattleSession:
             "linkedDoors": linked_doors_out,
             "searchedRoomIds": list(getattr(ds, "searched_room_ids", [])),
             "secretSuspects": list(getattr(ds, "secret_suspects", [])),
+            "playerSpawn": getattr(ds, "player_spawn", None),
         }
 
     def _cleanup_walls_around(self) -> None:
@@ -1942,22 +2045,282 @@ class BattleSession:
         dungeon_analyze(self.dungeon, list(self.state.enemies.values()))
         self.autosave()
 
-    def save_dungeon_as_map_template(self, name: str) -> dict:
+    def set_player_spawn(self, x: int, y: int) -> None:
+        """Set (or toggle off) the player spawn-area cell for this map."""
+        if self.dungeon is None:
+            self.dungeon = DungeonState()
+        cell = {"x": int(x), "y": int(y)}
+        current = getattr(self.dungeon, "player_spawn", None)
+        if isinstance(current, dict) and current.get("x") == cell["x"] and current.get("y") == cell["y"]:
+            self.dungeon.player_spawn = None
+            self._add_log("Cleared player spawn area")
+        else:
+            self.dungeon.player_spawn = cell
+            self._add_log(f"Set player spawn area to ({cell['x'] + 1}, {cell['y'] + 1})")
+        self.dungeon.render_version += 1
+        self.autosave()
+
+    def _current_map_template_data(self, name: str) -> dict:
         if self.dungeon is None:
             raise BattleSessionError("No dungeon to save as template")
         template_data = dungeon_state_to_map_template(self.dungeon)
-        result = self.context.save_map_template(name, template_data)
-        self._add_log(f"Map saved as template: {name}")
+        # Units + their start positions belong to the template (clean values).
+        # Players (the party) are not baked into a room template.
+        template_data["units"] = [
+            self._clean_unit_for_template(entity)
+            for entity in self.state.enemies.values()
+            if not self.is_player(entity)
+        ]
+        template_data["name"] = name
+        return template_data
+
+    def save_dungeon_as_map_template(self, name: str) -> dict:
+        display_name = str(name or "").strip() or "Map template"
+        template_data = self._current_map_template_data(display_name)
+        result = self.context.save_map_template(display_name, template_data)
+        self.active_map_template_id = result["id"]
+        self._add_log(f"Map saved as template: {display_name}")
         self.autosave()
         return result
+
+    def save_dungeon_to_map_template(self, template_id: str) -> dict:
+        current = self.context.get_map_template(template_id)
+        if current is None:
+            raise BattleSessionError(f"Map template '{template_id}' not found")
+        name = str(current.get("name") or template_id)
+        template_data = self._current_map_template_data(name)
+        try:
+            result = self.context.write_map_template(template_id, template_data)
+        except ValueError as exc:
+            raise BattleSessionError(str(exc)) from exc
+        self.active_map_template_id = result["id"]
+        self._add_log(f"Map template saved: {result['name']}")
+        self.autosave()
+        return result
+
+    def _clean_unit_for_template(self, entity: EnemyInstance) -> dict:
+        """Serialize a unit at its start position with clean (full) values,
+        stripping all play-time adjustments (damage, draws, statuses, etc.)."""
+        d = enemy_to_dict(entity)
+        d["toughness_current"] = d.get("toughness_max", 0)
+        d["armor_current"] = d.get("armor_max", 0)
+        d["magic_armor_current"] = d.get("magic_armor_max", 0)
+        d["guard_current"] = d.get("guard_base", 0)
+        d["statuses"] = {}
+        d["initiative_roll"] = None
+        d["initiative_total"] = None
+        d["actions_used"] = 0
+        d["physical_wounds"] = 0
+        d["is_ko"] = False
+        d["quick_attack_used"] = False
+        d["power_draw_used"] = False
+        d["pending_reshuffle"] = False
+        d["draw_bonus_pending"] = 0
+        d["draw_bonus_next_turn"] = 0
+        d["opportunity_attack_used_round"] = 0
+        d["visible_draw"] = []
+        d["draw_groups"] = []
+        d["loot_rolled"] = False
+        d["rolled_loot"] = {"currency": {}, "resources": {}, "other": []}
+        d["loot_taken_by"] = None
+        deck = d.get("deck_state") or {}
+        all_cards = (
+            list(deck.get("draw_pile", []))
+            + list(deck.get("discard_pile", []))
+            + list(deck.get("hand", []))
+        )
+        d["deck_state"] = {"draw_pile": all_cards, "discard_pile": [], "hand": []}
+        return d
+
+    def _spawn_template_units(self, units: Optional[list]) -> list[str]:
+        """Add the template's units at their stored start positions. Returns ids."""
+        new_ids: list[str] = []
+        for raw in units or []:
+            if not isinstance(raw, dict):
+                continue
+            data = dict(raw)
+            data["instance_id"] = f"unit_{uuid.uuid4().hex[:8]}"
+            enemy = enemy_from_dict(data)
+            self.state.add_enemy(enemy)
+            self.order.append(enemy.instance_id)
+            new_ids.append(enemy.instance_id)
+        return new_ids
+
+    def _apply_template_units(self, units: Optional[list]) -> None:
+        """Replace the current non-player units with the template's units,
+        restoring them at their start positions with clean values."""
+        for instance_id in [
+            iid for iid, entity in self.state.enemies.items() if not self.is_player(entity)
+        ]:
+            entity = self.state.enemies.get(instance_id)
+            if entity is not None and self.active_turn_id == instance_id:
+                self.active_turn_id = None
+                self.turn_in_progress = False
+            self.state.remove_enemy(instance_id)
+            if instance_id in self.order:
+                self.order.remove(instance_id)
+            if self.selected_id == instance_id:
+                self.selected_id = None
+        self.state.grapples.clear()
+        self._spawn_template_units(units)
+        self._ensure_selected()
 
     def load_map_template_into_dungeon(self, template_id: str) -> None:
         data = self.context.get_map_template(template_id)
         if data is None:
             raise BattleSessionError(f"Map template '{template_id}' not found")
         self.dungeon = dungeon_state_from_dict(data)
+        if "units" in data:
+            self._apply_template_units(data.get("units"))
         dungeon_analyze(self.dungeon, list(self.state.enemies.values()))
+        self.active_map_template_id = template_id
         self._add_log(f"Loaded map template: {data.get('name', template_id)}")
+        self.autosave()
+
+    def _reset_unit_for_play(self, entity: EnemyInstance) -> None:
+        """Reset a placed unit's play values to clean, keeping its position."""
+        entity.toughness_current = entity.toughness_max
+        entity.armor_current = entity.armor_max
+        entity.magic_armor_current = entity.magic_armor_max
+        entity.guard_current = entity.guard_base
+        entity.statuses = {}
+        entity.initiative_roll = None
+        entity.initiative_total = None
+        entity.actions_used = 0
+        entity.physical_wounds = 0
+        entity.is_ko = False
+        entity.quick_attack_used = False
+        entity.power_draw_used = False
+        entity.pending_reshuffle = False
+        entity.draw_bonus_pending = 0
+        entity.draw_bonus_next_turn = 0
+        entity.opportunity_attack_used_round = 0
+        entity.visible_draw = []
+        entity.draw_groups = []
+        deck = entity.deck_state
+        all_cards = list(deck.draw_pile) + list(deck.discard_pile) + list(deck.hand)
+        deck.draw_pile = all_cards
+        deck.discard_pile = []
+        deck.hand = []
+
+    # ── Player spawning + group placement ─────────────────────────────────────
+
+    def _spawn_requested_players(self, players: Optional[list]) -> list[str]:
+        """Spawn the PCs chosen in the picker (premade or custom). Returns new ids."""
+        new_ids: list[str] = []
+        for spec in players or []:
+            if not isinstance(spec, dict):
+                continue
+            before = set(self.state.enemies)
+            character_id = spec.get("characterId")
+            if character_id:
+                self.add_player_from_character(str(character_id), physical_cards=bool(spec.get("physicalCards", False)))
+            else:
+                self.add_player(
+                    name=str(spec.get("name", "")),
+                    toughness=int(spec.get("toughness", HUMAN_FIGHTER_DEFAULTS["toughness"]) or 0),
+                    armor=int(spec.get("armor", HUMAN_FIGHTER_DEFAULTS["armor"]) or 0),
+                    magic_armor=int(spec.get("magicArmor", HUMAN_FIGHTER_DEFAULTS["magic_armor"]) or 0),
+                    power=int(spec.get("power", HUMAN_FIGHTER_DEFAULTS["power"]) or 0),
+                    movement=int(spec.get("movement", HUMAN_FIGHTER_DEFAULTS["movement"]) or 0),
+                    base_guard=int(spec.get("baseGuard", HUMAN_FIGHTER_DEFAULTS["base_guard"]) or 0),
+                    initiative_modifier=int(spec.get("initiativeModifier", HUMAN_FIGHTER_DEFAULTS["initiative_modifier"]) or 0),
+                    player_deck_id=str(spec.get("playerDeckId", PLAYER_DECK_ID) or PLAYER_DECK_ID),
+                    physical_cards=bool(spec.get("physicalCards", False)),
+                )
+            new_ids.extend([iid for iid in self.state.enemies if iid not in before])
+        return new_ids
+
+    def _spawn_cells_around(self, cx: int, cy: int, count: int, occupied: set) -> list[tuple[int, int]]:
+        """Return up to `count` walkable, unoccupied cells expanding out from (cx, cy)."""
+        cells: list[tuple[int, int]] = []
+        if count <= 0:
+            return cells
+        candidates: list[tuple[int, int]] = [(int(cx), int(cy))]
+        limit = max(self.room_columns, self.room_rows, SCENARIO_DEFAULT_ARENA_COLUMNS, SCENARIO_DEFAULT_ARENA_ROWS)
+        for radius in range(1, limit + 1):
+            for dx, dy in self._clockwise_ring_offsets(radius):
+                candidates.append((int(cx) + dx, int(cy) + dy))
+        for (x, y) in candidates:
+            if len(cells) >= count:
+                break
+            if (x, y) in occupied or not self._position_is_walkable(x, y):
+                continue
+            cells.append((x, y))
+            occupied.add((x, y))
+        return cells
+
+    def _place_group_around(self, ids: list[str], cx: int, cy: int) -> None:
+        ids = [i for i in ids if i in self.state.enemies]
+        for pid in ids:
+            entity = self.state.enemies.get(pid)
+            if entity:
+                self._set_position(entity, None, None)
+        occupied = self._occupied_positions()
+        cells = self._spawn_cells_around(cx, cy, len(ids), occupied)
+        for pid, cell in zip(ids, cells):
+            entity = self.state.enemies.get(pid)
+            if entity:
+                self._set_position(entity, cell[0], cell[1])
+
+    def _group_anchors(self) -> tuple[tuple[int, int], tuple[int, int]]:
+        """Enemy anchor and player anchor for default-arena grouping (≥2 apart)."""
+        ext = self._dungeon_extents()
+        cx = (int(ext["minX"]) + int(ext["maxX"])) // 2
+        midy = (int(ext["minY"]) + int(ext["maxY"])) // 2
+        gap = 3
+        enemy_anchor = (cx, max(int(ext["minY"]), midy - gap))
+        player_anchor = (cx, min(int(ext["maxY"]), midy + gap))
+        return enemy_anchor, player_anchor
+
+    def _player_spawn_cell(self) -> tuple[int, int]:
+        spawn = getattr(self.dungeon, "player_spawn", None) if self.dungeon else None
+        if isinstance(spawn, dict):
+            try:
+                return int(spawn["x"]), int(spawn["y"])
+            except (KeyError, TypeError, ValueError):
+                pass
+        return 0, 0
+
+    def start_play_from_current_map(self, players: Optional[list] = None) -> None:
+        """Begin a fresh play session on the current map: keep the structure
+        and the placed units at their start positions, wipe play runtime
+        (fog/revealed/doors/secret/searched), reset combat values, and spawn the
+        chosen PCs around the map's spawn-area (or 0,0 if none)."""
+        if self.dungeon is None:
+            self.dungeon = migrate_to_dungeon(self.room_columns, self.room_rows, [])
+        ds = self.dungeon
+        ds.revealed_room_ids = []
+        ds.pending_encounter_room_ids = []
+        ds.searched_room_ids = []
+        ds.secret_suspects = []
+        ds.fog_of_war_enabled = True
+        for wall in ds.walls.values():
+            wall.door_open = False
+            if wall.wall_type == "secret_door":
+                wall.secret_discovered = False
+        ds.render_version += 1
+
+        for entity in self.state.enemies.values():
+            self._reset_unit_for_play(entity)
+
+        new_player_ids = self._spawn_requested_players(players)
+        spawn_x, spawn_y = self._player_spawn_cell()
+        self._place_group_around(new_player_ids, spawn_x, spawn_y)
+
+        self.encounter_started = False
+        self.pending_new_round = False
+        self.initiative_rolled_round = None
+        self.round = 1
+        self.active_turn_id = None
+        self.turn_in_progress = False
+        self.movement_state = None
+        self.pending_search = None
+        self.pending_opportunity = None
+        self.state.grapples.clear()
+
+        dungeon_analyze(ds, list(self.state.enemies.values()))
+        self._add_log("Started play session from map")
         self.autosave()
 
     def set_door_state(self, x: int, y: int, side: str, open_state: bool) -> None:
@@ -5078,6 +5441,7 @@ class BattleSession:
         }
         save_current(path, payload)
         self._add_log(f"Session save created: {display_name}")
+        self._mark_clean()
         self.autosave()
         return {"save": self._manual_save_entry(path, payload)}
 
@@ -5098,6 +5462,7 @@ class BattleSession:
         }
         save_current(path, payload)
         self._add_log(f"Session save updated: {previous_entry['name']}")
+        self._mark_clean()
         self.autosave()
         return {"save": self._manual_save_entry(path, payload)}
 
@@ -5110,6 +5475,7 @@ class BattleSession:
         self.active_save_filename = filename
         entry = self._manual_save_entry(path, payload)
         self._add_log(f"Loaded session save: {entry['name']}")
+        self._mark_clean()
         self.autosave()
 
     def _new_manual_save_filename(self, name: str) -> str:
