@@ -916,6 +916,76 @@ function getReachableMovementCells(room, selectedEntity, movementState, blocking
   return reachable;
 }
 
+function passthroughPositionsForEntity(placedEntities, entity) {
+  if (!entity) return new Map();
+  const entityIsPlayer = Boolean(entity.is_player);
+  return new Map(
+    placedEntities
+      .filter((candidate) => isBlockingEntity(candidate) && Boolean(candidate.is_player) === entityIsPlayer && candidate.instance_id !== entity.instance_id)
+      .map((candidate) => [positionKey(candidate.grid_x, candidate.grid_y), candidate]),
+  );
+}
+
+function getUnlimitedWalkCells(room, entity, blockingByPosition, dungeon, passthroughByPosition = new Map()) {
+  const reachable = new Map();
+  const usesDungeonGrid = Boolean(dungeon?.tiles);
+  if (!hasGridPosition(entity, room, dungeon)) {
+    return reachable;
+  }
+
+  const start = { x: entity.grid_x, y: entity.grid_y };
+  const queue = [{ x: start.x, y: start.y }];
+  const visited = new Set([positionKey(start.x, start.y)]);
+  const directions = [
+    [-1, -1],
+    [0, -1],
+    [1, -1],
+    [-1, 0],
+    [1, 0],
+    [-1, 1],
+    [0, 1],
+    [1, 1],
+  ];
+
+  while (queue.length) {
+    const current = queue.shift();
+    for (const [dx, dy] of directions) {
+      const nextX = current.x + dx;
+      const nextY = current.y + dy;
+      if (!usesDungeonGrid && (nextX < 0 || nextY < 0 || nextX >= room.columns || nextY >= room.rows)) {
+        continue;
+      }
+      const key = positionKey(nextX, nextY);
+      if (visited.has(key)) {
+        continue;
+      }
+      const isPassthrough = passthroughByPosition.has(key);
+      if (!isPassthrough && blockingByPosition.has(key)) {
+        continue;
+      }
+      if (dungeonBlocksCell(dungeon, nextX, nextY)) {
+        continue;
+      }
+
+      const isDiagonal = dx !== 0 && dy !== 0;
+      if (isDiagonal) {
+        if (diagonalTouchesAnyWall(dungeon, current.x, current.y, nextX, nextY)) continue;
+      } else if (wallBlocksOrthogonal(dungeon, current.x, current.y, nextX, nextY)) {
+        continue;
+      }
+
+      visited.add(key);
+      queue.push({ x: nextX, y: nextY });
+      if (!isPassthrough) {
+        reachable.set(key, { x: nextX, y: nextY, kind: "normal", requiresDash: false, cost: 0 });
+      }
+    }
+  }
+
+  reachable.delete(positionKey(start.x, start.y));
+  return reachable;
+}
+
 function countReachableByKind(reachableCells, kind) {
   let count = 0;
   for (const cell of reachableCells.values()) {
@@ -947,7 +1017,8 @@ function drawMoveHighlights(
     return;
   }
 
-  const isRepositionMode = mapMode === "reposition" || mapMode === "gm-reposition" || mapMode === "party-walk";
+  const isRepositionMode = mapMode === "reposition" || mapMode === "gm-reposition";
+  const isRouteMode = mapMode === "move" || mapMode === "walk" || mapMode === "party-walk";
   const usesDungeonGrid = Boolean(dungeon?.tiles);
   if (isRepositionMode) {
     if (usesDungeonGrid) {
@@ -972,7 +1043,7 @@ function drawMoveHighlights(
         .fill({ color: 0x82d9df, alpha: 0.035 })
         .stroke({ color: 0x82d9df, alpha: 0.32, width: 2 });
     }
-  } else {
+  } else if (isRouteMode) {
     for (const cell of reachableCells.values()) {
       const bounds = cellBounds(cell.x, cell.y, cellSize);
       const isDash = cell.kind === "dash";
@@ -1002,15 +1073,25 @@ function drawMoveHighlights(
   }
 }
 
-function drawUnit(PIXI, layer, entity, entityState, cellSize, texture) {
-  const center = cellToWorld(entity.grid_x, entity.grid_y, cellSize);
+function drawUnit(PIXI, layer, entity, entityState, cellSize, texture, options = {}) {
+  const center = options.center || cellToWorld(entity.grid_x, entity.grid_y, cellSize);
   const token = new PIXI.Container();
   const radius = Math.max(10, cellSize / 2 - 5);
   const hpValue = entity.is_player ? 100 : percent(entity.toughness_current, entity.toughness_max);
   const statusKeys = Object.keys(entity.statuses || {});
 
   token.position.set(center.x, center.y);
-  token.alpha = entity.is_down ? 0.46 : 1;
+  token.alpha = options.alpha ?? (entity.is_down ? 0.46 : 1);
+  const scale = options.scale ?? 1;
+  token.scale.set(scale, scale);
+
+  if (options.shadow) {
+    const shadow = new PIXI.Graphics();
+    shadow
+      .ellipse(3, 6, radius + 8, Math.max(6, radius * 0.58))
+      .fill({ color: 0x000000, alpha: 0.36 });
+    token.addChild(shadow);
+  }
 
   const base = new PIXI.Graphics();
   const fillColor = entity.is_player ? 0x24323a : 0x0d0907;
@@ -1089,6 +1170,7 @@ function drawUnit(PIXI, layer, entity, entityState, cellSize, texture) {
   });
 
   layer.addChild(token);
+  return token;
 }
 
 function prefersReducedMotion() {
@@ -1270,6 +1352,68 @@ function drawUnitsLayer(renderer, placedEntities, selectedId, selectedUnitIds, a
   renderPixi(renderer);
 }
 
+function drawDragPreviewLayer(renderer, dragPreview, cellSize) {
+  if (!renderer) {
+    return;
+  }
+  const { PIXI, layers, textures } = renderer;
+  clearLayer(layers.dragPreview);
+  if (!dragPreview?.entity) {
+    renderPixi(renderer);
+    return;
+  }
+
+  const radius = Math.max(10, cellSize / 2 - 5);
+  const origin = dragPreview.originCell ? cellToWorld(dragPreview.originCell.x, dragPreview.originCell.y, cellSize) : null;
+  if (origin) {
+    const ghost = new PIXI.Graphics();
+    ghost
+      .circle(origin.x, origin.y, radius + 5)
+      .fill({ color: 0xaeb6bb, alpha: 0.14 })
+      .stroke({ color: 0xaeb6bb, alpha: 0.58, width: 2 });
+    layers.dragPreview.addChild(ghost);
+  }
+
+  for (const member of dragPreview.partyMembers || []) {
+    if (member.instance_id === dragPreview.entity.instance_id || !Number.isInteger(member.grid_x) || !Number.isInteger(member.grid_y)) {
+      continue;
+    }
+    const center = cellToWorld(member.grid_x, member.grid_y, cellSize);
+    const ring = new PIXI.Graphics();
+    ring.circle(center.x, center.y, Math.max(6, radius * 0.58)).stroke({ color: 0x82d9df, alpha: 0.42, width: 2 });
+    layers.dragPreview.addChild(ring);
+  }
+
+  if (dragPreview.targetCell && dragPreview.targetValid) {
+    const bounds = cellBounds(dragPreview.targetCell.x, dragPreview.targetCell.y, cellSize);
+    const target = new PIXI.Graphics();
+    target
+      .rect(bounds.x, bounds.y, bounds.width, bounds.height)
+      .fill({ color: 0x7db97f, alpha: 0.18 })
+      .stroke({ color: 0x7db97f, alpha: 0.86, width: 2 });
+    layers.dragPreview.addChild(target);
+  }
+
+  if (dragPreview.pointerWorld) {
+    drawUnit(
+      PIXI,
+      layers.dragPreview,
+      dragPreview.entity,
+      { isSelected: true, isActive: dragPreview.entity.instance_id === dragPreview.activeTurnId },
+      cellSize,
+      dragPreview.entity.image_url ? textures.get(dragPreview.entity.image_url) : null,
+      {
+        center: dragPreview.pointerWorld,
+        scale: 0.93,
+        alpha: 0.9,
+        shadow: true,
+      },
+    );
+  }
+
+  renderPixi(renderer);
+}
+
 function BattleMapSurface({
   room,
   entities,
@@ -1288,6 +1432,10 @@ function BattleMapSurface({
   highlightedRoomId = null,
   drawPulse,
   busy,
+  canUseMove = false,
+  canUseMapWalk = false,
+  canUseWalk = false,
+  canUsePartyWalk = false,
   onSelect,
   onSelectionChange,
   onGroupMove,
@@ -1308,6 +1456,7 @@ function BattleMapSurface({
   const wallStrokeRef = useRef(null);
   const selectionDragRef = useRef(null);
   const groupDragRef = useRef(null);
+  const unitDragRef = useRef(null);
   const dungeonPreviewRef = useRef(new Map());
   const dungeonPreviewFrameRef = useRef(null);
   const cellSizeRef = useRef(MAP_ZOOM.defaultSize);
@@ -1323,6 +1472,8 @@ function BattleMapSurface({
   const [isPanning, setIsPanning] = useState(false);
   const [pixiReady, setPixiReady] = useState(false);
   const [textureVersion, setTextureVersion] = useState(0);
+  const [unitDragPreview, setUnitDragPreview] = useState(null);
+  const [showExplorationTargets, setShowExplorationTargets] = useState(false);
   const glowActiveUntilRef = useRef(0);
   const prevDiscoveredEdgesRef = useRef(new Set());
 
@@ -1352,21 +1503,47 @@ function BattleMapSurface({
   );
   // Same-faction non-down units: can be traversed during movement but cannot be stopped on
   const passthroughByPosition = useMemo(() => {
-    if (!selectedEntity) return new Map();
-    const selectedIsPlayer = Boolean(selectedEntity.is_player);
-    return new Map(
-      placedEntities
-        .filter((e) => isBlockingEntity(e) && Boolean(e.is_player) === selectedIsPlayer && e.instance_id !== selectedEntity.instance_id)
-        .map((e) => [positionKey(e.grid_x, e.grid_y), e]),
-    );
+    return passthroughPositionsForEntity(placedEntities, selectedEntity);
   }, [placedEntities, selectedEntity]);
   const reachableCells = useMemo(
-    () =>
-      mapMode === "move"
-        ? getReachableMovementCells(room, selectedEntity, movementState, blockingByPosition, dungeon, passthroughByPosition)
-        : new Map(),
-    [room.columns, room.rows, selectedEntity, movementState, blockingByPosition, passthroughByPosition, mapMode, dungeon],
+    () => {
+      if (mapMode === "move" || unitDragPreview?.mode === "move") {
+        return getReachableMovementCells(room, selectedEntity, movementState, blockingByPosition, dungeon, passthroughByPosition);
+      }
+      if (mapMode === "walk" || mapMode === "party-walk") {
+        return getUnlimitedWalkCells(room, selectedEntity, blockingByPosition, dungeon, passthroughByPosition);
+      }
+      return new Map();
+    },
+    [
+      room.columns,
+      room.rows,
+      selectedEntity,
+      movementState,
+      blockingByPosition,
+      passthroughByPosition,
+      mapMode,
+      dungeon,
+      unitDragPreview?.mode,
+    ],
   );
+  const highlightsMapMode = unitDragPreview?.mode === "move" ? "move" : mapMode;
+  const visibleReachableCells = useMemo(() => {
+    if (highlightsMapMode === "walk" || highlightsMapMode === "party-walk") {
+      return showExplorationTargets ? reachableCells : new Map();
+    }
+    return reachableCells;
+  }, [highlightsMapMode, showExplorationTargets, reachableCells]);
+
+  useEffect(() => {
+    if (mapMode !== "walk" && mapMode !== "party-walk") {
+      setShowExplorationTargets(false);
+    }
+  }, [mapMode]);
+
+  useEffect(() => {
+    setShowExplorationTargets(false);
+  }, [selectedId, selectedEntity?.grid_x, selectedEntity?.grid_y]);
 
   useEffect(() => {
     cellSizeRef.current = cellSize;
@@ -1453,6 +1630,7 @@ function BattleMapSurface({
           selection: new PIXI.Graphics(),
           highlights: new PIXI.Graphics(),
           units: new PIXI.Container(),
+          dragPreview: new PIXI.Container(),
           effects: new PIXI.Container(),
         };
 
@@ -1468,6 +1646,7 @@ function BattleMapSurface({
           layers.selection,
           layers.highlights,
           layers.units,
+          layers.dragPreview,
           layers.effects,
         );
         app.stage.addChild(world);
@@ -1580,12 +1759,12 @@ function BattleMapSurface({
       dungeon,
       renderIndex,
       cellSize,
-      mapMode,
+      highlightsMapMode,
       selectedEntity,
       busy,
       hoverCell,
       blockingByPosition,
-      reachableCells,
+      visibleReachableCells,
       camera,
       viewportRef.current,
     );
@@ -1596,19 +1775,24 @@ function BattleMapSurface({
     dungeon,
     renderIndex,
     cellSize,
-    mapMode,
+    highlightsMapMode,
     selectedEntity,
     busy,
     hoverCell,
     blockingByPosition,
-    reachableCells,
+    visibleReachableCells,
     camera.x,
     camera.y,
+    showExplorationTargets,
   ]);
 
   useEffect(() => {
     drawUnitsLayer(rendererRef.current, placedEntities, selectedId, selectedUnitIds, activeTurnId, cellSize);
   }, [pixiReady, textureVersion, placedEntities, selectedId, selectedUnitIds, activeTurnId, cellSize]);
+
+  useEffect(() => {
+    drawDragPreviewLayer(rendererRef.current, unitDragPreview, cellSize);
+  }, [pixiReady, textureVersion, unitDragPreview, cellSize]);
 
   // Secret door glow: detect new discoveries and animate; timer auto-expires after GLOW_DURATION_MS
   useEffect(() => {
@@ -1776,6 +1960,115 @@ function BattleMapSurface({
   function updateHoverCell(event) {
     const nextCell = cellFromPointer(event);
     setHoverCell((current) => (sameCell(current, nextCell) ? current : nextCell));
+  }
+
+  function worldPointFromPointer(event) {
+    const surface = surfaceRef.current;
+    const metrics = viewportMetricsOf(surface);
+    viewportRef.current = metrics;
+    const point = pointerPointOf(event);
+    return {
+      x: point.x - metrics.left - cameraRef.current.x,
+      y: point.y - metrics.top - cameraRef.current.y,
+    };
+  }
+
+  function partyDragMembers() {
+    return placedEntities.filter((entity) => entity.is_player && !entity.is_down && hasGridPosition(entity, room, dungeon));
+  }
+
+  function getRouteCellsForEntity(entity) {
+    return getUnlimitedWalkCells(
+      room,
+      entity,
+      blockingByPosition,
+      dungeon,
+      passthroughPositionsForEntity(placedEntities, entity),
+    );
+  }
+
+  function getMoveCellsForEntity(entity) {
+    return getReachableMovementCells(
+      room,
+      entity,
+      movementState,
+      blockingByPosition,
+      dungeon,
+      passthroughPositionsForEntity(placedEntities, entity),
+    );
+  }
+
+  function unitDragModeFor(occupant) {
+    if (!occupant || busy) {
+      return "";
+    }
+    if (mapMode === "reposition" && selectedEntity?.instance_id === occupant.instance_id) {
+      return "reposition";
+    }
+    if (
+      mapMode === "party-walk" &&
+      canUsePartyWalk &&
+      occupant.is_player &&
+      !occupant.is_down
+    ) {
+      return "party-walk";
+    }
+    if (selectedEntity?.instance_id === occupant.instance_id && activeTurnId === occupant.instance_id && canUseMove) {
+      return "move";
+    }
+    if ((mapMode === "idle" || mapMode === "walk") && canUseMapWalk && !occupant.is_down) {
+      return "walk";
+    }
+    return "";
+  }
+
+  function isRepositionDropCell(cell, entity) {
+    if (!cell || !isVisibleWalkableRepositionCell(cell)) {
+      return false;
+    }
+    const blocking = blockingByPosition.get(positionKey(cell.x, cell.y));
+    return !blocking || blocking.instance_id === entity?.instance_id;
+  }
+
+  function isUnitDragTargetValid(drag, cell) {
+    if (!drag || !cell || sameCell(cell, drag.originCell)) {
+      return false;
+    }
+    const key = positionKey(cell.x, cell.y);
+    if (drag.mode === "move") {
+      const moveCells = reachableCells.size ? reachableCells : getMoveCellsForEntity(drag.entity);
+      return Boolean(moveCells.get(key));
+    }
+    if (drag.mode === "walk") {
+      return Boolean(getRouteCellsForEntity(drag.entity).get(key));
+    }
+    if (drag.mode === "party-walk") {
+      return Boolean(getRouteCellsForEntity(drag.entity).get(key));
+    }
+    if (drag.mode === "reposition") {
+      return isRepositionDropCell(cell, drag.entity);
+    }
+    return false;
+  }
+
+  function updateUnitDragPreview(event, drag) {
+    const targetCell = cellFromPointer(event);
+    setHoverCell((current) => (sameCell(current, targetCell) ? current : targetCell));
+    setUnitDragPreview({
+      entity: drag.entity,
+      mode: drag.mode,
+      originCell: drag.originCell,
+      targetCell,
+      targetValid: isUnitDragTargetValid(drag, targetCell),
+      pointerWorld: worldPointFromPointer(event),
+      activeTurnId,
+      partyMembers: drag.mode === "party-walk" ? partyDragMembers() : [],
+    });
+  }
+
+  function clearUnitDragPreview() {
+    setUnitDragPreview(null);
+    drawDragPreviewLayer(rendererRef.current, null, cellSizeRef.current);
   }
 
   function applyCamera(nextCamera) {
@@ -2151,6 +2444,23 @@ function BattleMapSurface({
       }
     }
 
+    if (!busy && (isLeftMouse || pointerType === "touch") && cell) {
+      const occupant = getTopSelectableEntity(getEntitiesAtPosition(entitiesByPosition, cell));
+      const dragMode = unitDragModeFor(occupant);
+      if (dragMode) {
+        unitDragRef.current = {
+          pointerId,
+          startX: point.x,
+          startY: point.y,
+          originCell: { x: occupant.grid_x, y: occupant.grid_y },
+          entity: occupant,
+          mode: dragMode,
+          dragging: false,
+        };
+        return;
+      }
+    }
+
     const blocking = cell ? blockingByPosition.has(positionKey(cell.x, cell.y)) : false;
     const canStartPan = isMiddleMouse || ((isLeftMouse || pointerType === "touch") && !blocking);
 
@@ -2199,6 +2509,20 @@ function BattleMapSurface({
       cameraRef.current = nextZoom.camera;
       setCellSize(nextZoom.cellSize);
       setCamera(nextZoom.camera);
+      return;
+    }
+
+    const unitDrag = unitDragRef.current;
+    if (unitDrag && unitDrag.pointerId === pointerId) {
+      const moved = Math.hypot(point.x - unitDrag.startX, point.y - unitDrag.startY);
+      if (moved >= MAP_DRAG_THRESHOLD) {
+        event.preventDefault();
+        unitDrag.dragging = true;
+        surfaceRef.current?.setPointerCapture?.(pointerId);
+        updateUnitDragPreview(event, unitDrag);
+      } else {
+        updateHoverCell(event);
+      }
       return;
     }
 
@@ -2284,6 +2608,45 @@ function BattleMapSurface({
       flushBrushStroke();
       surfaceRef.current?.releasePointerCapture?.(pointerId);
       return;
+    }
+
+    const unitDrag = unitDragRef.current;
+    if (unitDrag && unitDrag.pointerId === pointerId) {
+      unitDragRef.current = null;
+      surfaceRef.current?.releasePointerCapture?.(pointerId);
+      const wasDragging = unitDrag.dragging;
+      const targetCell = cellFromPointer(event);
+      const targetValid = isUnitDragTargetValid(unitDrag, targetCell);
+      clearUnitDragPreview();
+      if (wasDragging) {
+        if (targetCell && targetValid) {
+          const key = positionKey(targetCell.x, targetCell.y);
+          if (unitDrag.mode === "move") {
+            const moveCells = reachableCells.size ? reachableCells : getMoveCellsForEntity(unitDrag.entity);
+            const target = moveCells.get(key);
+            onMoveToCell?.(targetCell.x, targetCell.y, {
+              mode: "move",
+              cost: target?.cost,
+              requiresDash: Boolean(target?.requiresDash),
+            });
+          } else if (unitDrag.mode === "walk") {
+            onMoveToCell?.(targetCell.x, targetCell.y, {
+              mode: "walk",
+              instanceId: unitDrag.entity.instance_id,
+              input: "drag",
+            });
+          } else if (unitDrag.mode === "party-walk") {
+            onMoveToCell?.(targetCell.x, targetCell.y, {
+              mode: "party-walk",
+              instanceId: unitDrag.entity.instance_id,
+              input: "drag",
+            });
+          } else if (unitDrag.mode === "reposition") {
+            onMoveToCell?.(targetCell.x, targetCell.y, { mode: "reposition" });
+          }
+        }
+        return;
+      }
     }
 
     const groupDrag = groupDragRef.current;
@@ -2406,6 +2769,10 @@ function BattleMapSurface({
     }
 
     if (selectedOccupant) {
+      if ((mapMode === "walk" || mapMode === "party-walk") && selectedOccupant.instance_id === selectedEntity?.instance_id) {
+        setShowExplorationTargets((current) => !current);
+        return;
+      }
       onSelect(selectedOccupant.instance_id);
       return;
     }
@@ -2424,18 +2791,26 @@ function BattleMapSurface({
       return;
     }
 
+    const reachableTarget = reachableCells.get(positionKey(clickCell.x, clickCell.y));
+    if (mapMode === "walk" && selectedEntity && !busy && reachableTarget && !blockingOccupant) {
+      onMoveToCell(clickCell.x, clickCell.y, {
+        mode: "walk",
+        instanceId: selectedEntity.instance_id,
+      });
+      return;
+    }
+
     if (
       mapMode === "party-walk" &&
       selectedEntity &&
       !busy &&
       !blockingOccupant &&
-      isVisibleWalkableRepositionCell(clickCell)
+      reachableTarget
     ) {
       onMoveToCell(clickCell.x, clickCell.y, { mode: "party-walk" });
       return;
     }
 
-    const reachableTarget = reachableCells.get(positionKey(clickCell.x, clickCell.y));
     if (mapMode === "move" && selectedEntity && !busy && reachableTarget && !blockingOccupant) {
       onMoveToCell(clickCell.x, clickCell.y, {
         mode: "move",
@@ -2554,8 +2929,8 @@ function BattleMapSurface({
   }
 
   const zoomPercent = Math.round((cellSize / MAP_ZOOM.defaultSize) * 100);
-  const reachableNormalCount = countReachableByKind(reachableCells, "normal");
-  const reachableDashCount = countReachableByKind(reachableCells, "dash");
+  const reachableNormalCount = countReachableByKind(visibleReachableCells, "normal");
+  const reachableDashCount = countReachableByKind(visibleReachableCells, "dash");
   const surfaceClassName = `battle-map-surface ${isPanning ? "battle-map-surface-panning" : ""}`.trim();
 
   return (

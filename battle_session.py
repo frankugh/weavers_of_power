@@ -43,6 +43,9 @@ from engine.models import Card, Deck, Effect, EnemyTemplate, LootEntry
 from engine.runtime import BattleState, draw_additional_cards, draw_cards, end_turn, spawn_enemy, start_turn
 from engine.runtime_models import DeckState, DungeonState, DungeonWall, EnemyInstance, GrappleInstance, Tile
 from persistence import (
+    _atomic_write_json,
+    dungeon_state_from_dict,
+    dungeon_state_to_map_template,
     enemy_to_dict,
     grapple_to_dict,
     load_save_payload,
@@ -300,9 +303,11 @@ class BattleSessionContext:
         self.creature_workbook_backup_dir = self.saves_dir / BACKUP_DIR_NAME
         self._creature_workbook_lock = threading.Lock()
 
+        self.map_templates_dir = self.root / "data" / "map_templates"
         self.saves_dir.mkdir(parents=True, exist_ok=True)
         self.manual_dir.mkdir(parents=True, exist_ok=True)
         self.character_dir.mkdir(parents=True, exist_ok=True)
+        self.map_templates_dir.mkdir(parents=True, exist_ok=True)
 
         self.decks = load_decks(self.decks_dir)
         self.player_decks = load_decks(self.player_decks_dir) if self.player_decks_dir.exists() else {}
@@ -330,6 +335,64 @@ class BattleSessionContext:
 
     def current_path(self, sid: str) -> Path:
         return self.saves_dir / f"_current_{sid}.json"
+
+    def list_map_templates(self) -> list[dict]:
+        entries = []
+        for path in sorted(self.map_templates_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                continue
+            entries.append({
+                "id": path.stem,
+                "filename": path.name,
+                "name": data.get("name", path.stem),
+                "savedAt": data.get("saved_at"),
+            })
+        return entries
+
+    def save_map_template(self, name: str, template_data: dict) -> dict:
+        base = safe_filename(name)
+        stamp = now_stamp()
+        filename = f"{base}_{stamp}.json"
+        for suffix in range(2, 1000):
+            if not (self.map_templates_dir / filename).exists():
+                break
+            filename = f"{base}_{stamp}_{suffix}.json"
+        path = self.map_templates_dir / filename
+        template_data["name"] = name
+        template_data["saved_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        _atomic_write_json(path, template_data)
+        return {"id": path.stem, "filename": filename, "name": name, "savedAt": template_data["saved_at"]}
+
+    def get_map_template(self, template_id: str) -> Optional[dict]:
+        try:
+            path = self._resolve_map_template_path(template_id)
+        except ValueError:
+            return None
+        if not path.exists():
+            return None
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def delete_map_template(self, template_id: str) -> None:
+        path = self._resolve_map_template_path(template_id)
+        if not path.exists():
+            raise ValueError(f"Map template '{template_id}' not found")
+        path.unlink()
+
+    def _resolve_map_template_path(self, template_id: str) -> Path:
+        import re as _re
+        if not _re.match(r'^[\w\-]+$', template_id):
+            raise ValueError("Invalid template id")
+        path = (self.map_templates_dir / f"{template_id}.json").resolve()
+        if not str(path).startswith(str(self.map_templates_dir.resolve())):
+            raise ValueError("Invalid template path")
+        return path
 
     def character_art_options(self) -> list[dict]:
         return build_character_art_options(self.character_catalog, self.images_dir)
@@ -1217,6 +1280,24 @@ class BattleSession:
         dungeon_analyze(self.dungeon, list(self.state.enemies.values()))
         self.autosave()
 
+    def save_dungeon_as_map_template(self, name: str) -> dict:
+        if self.dungeon is None:
+            raise BattleSessionError("No dungeon to save as template")
+        template_data = dungeon_state_to_map_template(self.dungeon)
+        result = self.context.save_map_template(name, template_data)
+        self._add_log(f"Map saved as template: {name}")
+        self.autosave()
+        return result
+
+    def load_map_template_into_dungeon(self, template_id: str) -> None:
+        data = self.context.get_map_template(template_id)
+        if data is None:
+            raise BattleSessionError(f"Map template '{template_id}' not found")
+        self.dungeon = dungeon_state_from_dict(data)
+        dungeon_analyze(self.dungeon, list(self.state.enemies.values()))
+        self._add_log(f"Loaded map template: {data.get('name', template_id)}")
+        self.autosave()
+
     def set_door_state(self, x: int, y: int, side: str, open_state: bool) -> None:
         if self.dungeon is None:
             raise BattleSessionError("No dungeon loaded")
@@ -1983,25 +2064,96 @@ class BattleSession:
         self._add_log(f"Repositioned {len(normalized)} unit{'s' if len(normalized) != 1 else ''}")
         self.autosave()
 
-    def party_walk(self, leader_id: str, x: int, y: int) -> dict:
-        has_live_ordered_enemy = any(
+    def _has_live_ordered_enemy(self) -> bool:
+        return any(
             (entity := self.state.enemies.get(instance_id)) is not None
             and not self.is_player(entity)
             and not self.is_down(entity)
             for instance_id in self.order
         )
+
+    def _assert_outside_exploration_movement(self, action_name: str) -> None:
+        has_live_ordered_enemy = self._has_live_ordered_enemy()
         if (
             self.active_turn_id is not None
             or self.turn_in_progress
             or (self.encounter_started and has_live_ordered_enemy)
             or (self.pending_new_round and has_live_ordered_enemy)
         ):
-            raise BattleSessionError("Party Walk is only available outside active combat turns.")
+            raise BattleSessionError(f"{action_name} is only available outside active combat turns.")
         if self.pending_opportunity is not None:
-            raise BattleSessionError("Resolve the pending opportunity attack before using Party Walk.")
+            raise BattleSessionError(f"Resolve the pending opportunity attack before using {action_name}.")
         if self.dungeon and self.dungeon.pending_encounter_room_ids:
-            raise BattleSessionError("Resolve the pending encounter before using Party Walk.")
+            raise BattleSessionError(f"Resolve the pending encounter before using {action_name}.")
 
+    def walk_entity(self, instance_id: str, x: int, y: int) -> dict:
+        self._assert_outside_exploration_movement("Walk")
+        entity = self.state.enemies.get(str(instance_id or ""))
+        if not entity:
+            raise BattleSessionError(f"Entity '{instance_id}' does not exist")
+        if self.is_down(entity):
+            raise BattleSessionError(f"{entity.name} cannot Walk while down.")
+        if not self._has_position(entity) or not self._position_is_walkable(entity.grid_x, entity.grid_y):
+            raise BattleSessionError(f"{entity.name} must be on the battle map to Walk.")
+        if self._grapples_for_target(entity.instance_id):
+            raise BattleSessionError(f"{entity.name} is Grappled and cannot Walk.")
+
+        x = int(x)
+        y = int(y)
+        if not self._position_in_bounds(x, y):
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is outside the battle map")
+        if not self._position_is_walkable(x, y):
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is not walkable")
+        occupying = self._entity_at_position(x, y, exclude_id=entity.instance_id, blocking_only=True)
+        if occupying:
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is occupied by {occupying.name}")
+
+        route = self._movement_route(entity, x, y, diagonal_steps_used=0, max_cost=None)
+        if route is None:
+            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is not reachable")
+
+        route_steps, stopped_for_encounter, revealed_rooms, pending_rooms = self._party_walk_route_plan(
+            entity,
+            list(route.steps),
+            ignored_enemy_ids={entity.instance_id},
+        )
+        route_positions = [(int(entity.grid_x), int(entity.grid_y))]
+        route_positions.extend((int(step["x"]), int(step["y"])) for step in route_steps)
+        actual_x, actual_y = route_positions[-1]
+        actual_occupying = self._entity_at_position(actual_x, actual_y, exclude_id=entity.instance_id, blocking_only=True)
+        if actual_occupying:
+            raise BattleSessionError(f"Position ({actual_x + 1}, {actual_y + 1}) is occupied by {actual_occupying.name}")
+
+        if self.dungeon:
+            for room_id in revealed_rooms:
+                if room_id not in self.dungeon.revealed_room_ids:
+                    self.dungeon.revealed_room_ids.append(room_id)
+            for room_id in pending_rooms:
+                if room_id not in self.dungeon.pending_encounter_room_ids:
+                    self.dungeon.pending_encounter_room_ids.append(room_id)
+            if revealed_rooms or pending_rooms:
+                self.dungeon.render_version += 1
+
+        self._set_position(entity, actual_x, actual_y)
+        self.selected_id = entity.instance_id
+        if stopped_for_encounter:
+            self._add_log(f"Walk stopped: encounter discovered after {entity.name} moved to ({actual_x + 1}, {actual_y + 1}).")
+        else:
+            self._add_log(f"Walk: {entity.name} moved to ({actual_x + 1}, {actual_y + 1}).")
+        self.autosave()
+        return {
+            "walk": {
+                "entityId": entity.instance_id,
+                "destination": {"x": x, "y": y},
+                "actualDestination": {"x": actual_x, "y": actual_y},
+                "stoppedForEncounter": stopped_for_encounter,
+                "revealedRoomIds": list(revealed_rooms),
+                "pendingEncounterRoomIds": list(pending_rooms),
+            }
+        }
+
+    def party_walk(self, leader_id: str, x: int, y: int) -> dict:
+        self._assert_outside_exploration_movement("Party Walk")
         leader = self.state.enemies.get(str(leader_id or ""))
         if not leader:
             raise BattleSessionError(f"Entity '{leader_id}' does not exist")
@@ -2108,6 +2260,8 @@ class BattleSession:
         self,
         leader: EnemyInstance,
         route_steps: list[dict],
+        *,
+        ignored_enemy_ids: Optional[set[str]] = None,
     ) -> tuple[list[dict], bool, list[str], list[str]]:
         if not self.dungeon:
             return route_steps, False, [], []
@@ -2123,7 +2277,7 @@ class BattleSession:
             if room_id not in revealed_seen:
                 revealed_seen.add(room_id)
                 revealed_rooms.append(room_id)
-            if self._party_walk_room_has_enemies(room_id):
+            if self._party_walk_room_has_enemies(room_id, ignored_enemy_ids=ignored_enemy_ids):
                 if room_id not in pending_seen:
                     pending_seen.add(room_id)
                     pending_rooms.append(room_id)
@@ -2145,8 +2299,11 @@ class BattleSession:
 
         return accepted_steps, False, revealed_rooms, pending_rooms
 
-    def _party_walk_room_has_enemies(self, room_id: str) -> bool:
+    def _party_walk_room_has_enemies(self, room_id: str, *, ignored_enemy_ids: Optional[set[str]] = None) -> bool:
+        ignored_enemy_ids = ignored_enemy_ids or set()
         for entity in self.state.enemies.values():
+            if entity.instance_id in ignored_enemy_ids:
+                continue
             if self.is_player(entity) or self.is_down(entity) or not self._has_position(entity):
                 continue
             if self._room_id_for_position(entity.grid_x, entity.grid_y) == room_id:
@@ -3364,6 +3521,8 @@ class BattleSession:
         self.pending_opportunity = None
         self.turn_skip_notice = []
         self.round = 1
+        if self.dungeon:
+            self.dungeon.pending_encounter_room_ids.clear()
         self._add_log("Combat ended.")
         self.autosave()
 

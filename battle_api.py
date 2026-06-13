@@ -176,6 +176,10 @@ class LoadRequest(BaseModel):
     filename: str
 
 
+class SaveMapTemplateRequest(BaseModel):
+    name: str = "map template"
+
+
 class DungeonTilesRequest(BaseModel):
     tileType: str
     cells: list[list[int]]
@@ -509,6 +513,13 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
             lambda session: session.move_entity_with_movement(instance_id, request.x, request.y, dash=request.dash),
         )
 
+    @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/walk")
+    def walk_entity(sid: str, instance_id: str, request: PositionRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.walk_entity(instance_id, request.x, request.y),
+        )
+
     @api_app.post("/api/battle/sessions/{sid}/action/party-walk")
     def party_walk(sid: str, request: PartyWalkRequest):
         return run_mutation(
@@ -762,3 +773,30 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     @api_app.post("/api/battle/sessions/{sid}/dungeon/suspects/resolve")
     def resolve_suspect(sid: str, request: SearchResolveRequest):
         return run_mutation(sid, lambda session: session.resolve_suspect_interaction(request.useWillpower), undoable=False)
+
+    @api_app.get("/api/map-templates")
+    def list_map_templates():
+        return {"templates": context.list_map_templates()}
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/save-as-template")
+    def save_dungeon_as_map_template(sid: str, request: SaveMapTemplateRequest):
+        session = load_session_or_400(sid)
+        try:
+            result = session.save_dungeon_as_map_template(request.name)
+        except BattleSessionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        payload = session.snapshot()
+        payload["savedTemplate"] = result
+        return payload
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/load-template/{template_id}")
+    def load_map_template(sid: str, template_id: str):
+        return run_mutation(sid, lambda session: session.load_map_template_into_dungeon(template_id))
+
+    @api_app.delete("/api/map-templates/{template_id}")
+    def delete_map_template(template_id: str):
+        try:
+            context.delete_map_template(template_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"templates": context.list_map_templates()}

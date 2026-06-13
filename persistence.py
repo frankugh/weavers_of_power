@@ -54,6 +54,25 @@ def _backup_then_write(path: Path, data: Dict[str, Any]) -> None:
     _atomic_write_json(path, data)
 
 
+def dungeon_state_to_map_template(ds: DungeonState) -> Dict[str, Any]:
+    """Extract only structural data from a DungeonState, stripping all runtime state."""
+    tiles_out = {key: {"tile_type": tile.tile_type} for key, tile in ds.tiles.items()}
+    walls_out = {
+        key: {"wall_type": w.wall_type, "secret_dc": getattr(w, "secret_dc", 2)}
+        for key, w in ds.walls.items()
+    }
+    rooms_out = [{"room_id": r.room_id, "cells": r.cells} for r in ds.rooms]
+    return {
+        "tiles": tiles_out,
+        "walls": walls_out,
+        "rooms": rooms_out,
+        "fog_of_war_enabled": ds.fog_of_war_enabled,
+        "linked_doors": {
+            key: list(rooms) for key, rooms in getattr(ds, "linked_doors", {}).items()
+        },
+    }
+
+
 def dungeon_state_to_dict(ds: DungeonState) -> Dict[str, Any]:
     tiles_out = {}
     for key, tile in ds.tiles.items():

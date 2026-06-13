@@ -563,7 +563,7 @@ describe("App", () => {
 
     render(<App />);
 
-    await screen.findByText("Battle Simulator");
+    await screen.findByText("Weave Forge");
     await screen.findByText("Round 1");
 
     expect(window.location.search).toContain("sid=sid-123");
@@ -572,7 +572,7 @@ describe("App", () => {
   it("lets the user brighten the display and stores the preference", async () => {
     renderWithSnapshot(buildSnapshot());
 
-    await screen.findByText("Battle Simulator");
+    await screen.findByText("Weave Forge");
 
     const brightnessSlider = screen.getByRole("slider", { name: "Display brightness" });
     expect(brightnessSlider).toHaveValue("115");
@@ -3910,6 +3910,298 @@ describe("App", () => {
     expect(getMapViewport().dataset.mapMode).toBe("idle");
   });
 
+  it("walks the selected unit with the Walk button and a map click", async () => {
+    const user = userEvent.setup();
+    const walkedSnapshot = buildSnapshot({
+      enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
+      combatLog: ["Walk: Goblin 1 moved to (1, 1)."],
+      walk: {
+        entityId: "enemy-1",
+        destination: { x: 0, y: 0 },
+        actualDestination: { x: 0, y: 0 },
+        stoppedForEncounter: false,
+        revealedRoomIds: [],
+        pendingEncounterRoomIds: [],
+      },
+    });
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/walk" && requestOptions?.method === "POST") {
+          return jsonResponse(walkedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await user.click(screen.getByRole("button", { name: "Walk" }));
+    expect(getMapViewport().dataset.mapMode).toBe("walk");
+    expect(getMapViewport().dataset.reachableNormal).toBe("0");
+    pointerClickMapCell(4, 3);
+    await waitFor(() => {
+      expect(Number(getMapViewport().dataset.reachableNormal)).toBeGreaterThan(0);
+    });
+    pointerClickMapCell(0, 0);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/enemy-1/walk",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ x: 0, y: 0 }),
+        }),
+      );
+    });
+    expect(await screen.findByText("Walk: Goblin 1 moved to (1, 1).")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(getMapViewport().dataset.reachableNormal).toBe("0");
+    });
+  });
+
+  it("walks a unit by dragging it outside combat", async () => {
+    const walkedSnapshot = buildSnapshot({
+      enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
+      combatLog: ["Walk: Goblin 1 moved to (1, 1)."],
+      walk: {
+        entityId: "enemy-1",
+        destination: { x: 0, y: 0 },
+        actualDestination: { x: 0, y: 0 },
+        stoppedForEncounter: false,
+        revealedRoomIds: [],
+        pendingEncounterRoomIds: [],
+      },
+    });
+
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/walk" && requestOptions?.method === "POST") {
+          return jsonResponse(walkedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    pointerDragBetweenCells(4, 3, 0, 0, { pointerId: 101 });
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/enemy-1/walk",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ x: 0, y: 0 }),
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(getMapViewport().dataset.mapMode).toBe("idle");
+      expect(getMapViewport().dataset.selectedUnitIds).toBe("");
+    });
+  });
+
+  it("moves the active combat unit by dragging it", async () => {
+    const movedSnapshot = buildSnapshot({
+      activeTurnId: "enemy-1",
+      movementState: buildMovementState({ movementUsed: 5, remainingMovement: 1 }),
+      enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
+      combatLog: ["Moved Goblin 1 to (1, 1)"],
+    });
+
+    renderWithSnapshot(buildSnapshot({ activeTurnId: "enemy-1", movementState: buildMovementState() }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/entities/enemy-1/move" && requestOptions?.method === "POST") {
+          return jsonResponse(movedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    pointerDragBetweenCells(4, 3, 0, 0, { pointerId: 102 });
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/entities/enemy-1/move",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ x: 0, y: 0, dash: false }),
+        }),
+      );
+    });
+  });
+
+  it("shows combat movement range immediately while dragging the active unit", async () => {
+    renderWithSnapshot(buildSnapshot({ activeTurnId: "enemy-1", movementState: buildMovementState() }));
+
+    await findMapToken("Goblin 1");
+    const viewport = getMapViewport();
+    expect(viewport.dataset.mapMode).toBe("idle");
+    expect(Number(viewport.dataset.reachableNormal)).toBe(0);
+
+    const start = mapPointForCell(viewport, 4, 3);
+    const end = mapPointForCell(viewport, 3, 3);
+    fireEvent.pointerDown(viewport, {
+      pointerId: 105,
+      pointerType: "mouse",
+      button: 0,
+      buttons: 1,
+      ...start,
+    });
+    fireEvent.pointerMove(viewport, {
+      pointerId: 105,
+      pointerType: "mouse",
+      buttons: 1,
+      ...end,
+    });
+
+    await waitFor(() => {
+      expect(Number(getMapViewport().dataset.reachableNormal)).toBeGreaterThan(0);
+    });
+
+    fireEvent.pointerUp(viewport, {
+      pointerId: 105,
+      pointerType: "mouse",
+      button: 0,
+      buttons: 0,
+      ...start,
+    });
+  });
+
+  it("party walks by dragging the selected leader while Party Walk mode is active", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 0,
+      grid_y: 1,
+    });
+    const follower = buildEnemy({
+      instance_id: "player-2",
+      template_id: "player",
+      name: "Player 2",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 0,
+      grid_y: 2,
+    });
+    const movedSnapshot = buildSnapshot({
+      selectedId: "player-1",
+      order: ["player-1", "player-2"],
+      enemies: [
+        buildEnemy({ ...player, grid_x: 4, grid_y: 1 }),
+        buildEnemy({ ...follower, grid_x: 3, grid_y: 1 }),
+      ],
+      combatLog: ["Party walk: Player 1 led 2 PCs to (5, 2)."],
+      partyWalk: {
+        leaderId: "player-1",
+        movedEntityIds: ["player-1", "player-2"],
+        destination: { x: 4, y: 1 },
+        actualDestination: { x: 4, y: 1 },
+        stoppedForEncounter: false,
+        revealedRoomIds: [],
+        pendingEncounterRoomIds: [],
+      },
+    });
+
+    renderWithSnapshot(buildSnapshot({ selectedId: "player-1", order: ["player-1", "player-2"], enemies: [player, follower] }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/action/party-walk" && requestOptions?.method === "POST") {
+          return jsonResponse(movedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Player 1");
+    await user.click(screen.getByRole("button", { name: "Party Walk" }));
+    pointerDragBetweenCells(0, 1, 4, 1, { pointerId: 103 });
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/action/party-walk",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ leaderId: "player-1", x: 4, y: 1 }),
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(getMapViewport().dataset.selectedUnitIds).toBe("");
+      expect(getMapViewport().dataset.mapMode).toBe("party-walk");
+    });
+  });
+
+  it("party walks by dragging a non-selected player while Party Walk mode is active", async () => {
+    const user = userEvent.setup();
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Player 1",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 0,
+      grid_y: 1,
+    });
+    const follower = buildEnemy({
+      instance_id: "player-2",
+      template_id: "player",
+      name: "Player 2",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 0,
+      grid_y: 2,
+    });
+    const movedSnapshot = buildSnapshot({
+      selectedId: "player-2",
+      order: ["player-1", "player-2"],
+      enemies: [
+        buildEnemy({ ...player, grid_x: 3, grid_y: 1 }),
+        buildEnemy({ ...follower, grid_x: 4, grid_y: 1 }),
+      ],
+      combatLog: ["Party walk: Player 2 led 2 PCs to (5, 2)."],
+      partyWalk: {
+        leaderId: "player-2",
+        movedEntityIds: ["player-2", "player-1"],
+        destination: { x: 4, y: 1 },
+        actualDestination: { x: 4, y: 1 },
+        stoppedForEncounter: false,
+        revealedRoomIds: [],
+        pendingEncounterRoomIds: [],
+      },
+    });
+
+    renderWithSnapshot(buildSnapshot({ selectedId: "player-1", order: ["player-1", "player-2"], enemies: [player, follower] }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/action/party-walk" && requestOptions?.method === "POST") {
+          return jsonResponse(movedSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Player 2");
+    await user.click(screen.getByRole("button", { name: "Party Walk" }));
+    pointerDragBetweenCells(0, 2, 4, 1, { pointerId: 104 });
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/battle/sessions/sid-123/action/party-walk",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ leaderId: "player-2", x: 4, y: 1 }),
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(getMapViewport().dataset.selectedUnitIds).toBe("");
+      expect(getMapViewport().dataset.mapMode).toBe("party-walk");
+    });
+  });
+
   it("opens and resolves the opportunity attack popup from a move response", async () => {
     const user = userEvent.setup();
     const player = buildEnemy({
@@ -4844,7 +5136,7 @@ describe("App", () => {
     );
 
     await findMapToken("Bandit 1");
-    await user.click(screen.getByRole("button", { name: "GM Reposition" }));
+    await user.click(screen.getByRole("button", { name: "GM Mode" }));
     expect(getMapViewport().dataset.mapMode).toBe("gm-reposition");
 
     pointerClickMapCell(5, 3);
@@ -4871,7 +5163,7 @@ describe("App", () => {
         }),
       );
     });
-    expect(screen.getByRole("button", { name: "Exit GM" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Exit GM Mode" })).toBeInTheDocument();
     expect(getMapViewport().dataset.mapMode).toBe("gm-reposition");
   });
 
@@ -4896,7 +5188,7 @@ describe("App", () => {
     });
 
     await findMapToken("Goblin 1");
-    await user.click(screen.getByRole("button", { name: "GM Reposition" }));
+    await user.click(screen.getByRole("button", { name: "GM Mode" }));
     pointerClickMapEdge({ x: 0, y: 0, side: "e" });
     await user.click(await screen.findByRole("button", { name: "Reveal to players" }));
 
@@ -4941,7 +5233,7 @@ describe("App", () => {
     });
 
     await findMapToken("Goblin 1");
-    await user.click(screen.getByRole("button", { name: "GM Reposition" }));
+    await user.click(screen.getByRole("button", { name: "GM Mode" }));
 
     pointerClickMapCell(3, 0, 93);
     expect(positionCalls).toEqual([]);
@@ -5864,7 +6156,7 @@ describe("App", () => {
     const dungeon = buildDungeon();
     renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })] }));
 
-    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(await screen.findByRole("button", { name: "Map Edit" }));
     const viewport = getMapViewport();
     expect(viewport.dataset.gmInteractionMode).toBe("draw");
     expect(screen.getByRole("button", { name: "Brush" })).toBeInTheDocument();
@@ -5911,7 +6203,7 @@ describe("App", () => {
       },
     });
 
-    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(await screen.findByRole("button", { name: "Map Edit" }));
     await user.click(screen.getByRole("button", { name: "Select" }));
     const viewport = getMapViewport();
     expect(viewport.dataset.selectedUnitIds).toBe("enemy-1");
@@ -5988,7 +6280,7 @@ describe("App", () => {
       },
     });
 
-    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(await screen.findByRole("button", { name: "Map Edit" }));
     await user.click(screen.getByRole("button", { name: "Select" }));
     pointerClickMapCell(1, 0, 87, { shiftKey: true });
     await waitFor(() => {
@@ -6041,7 +6333,7 @@ describe("App", () => {
       },
     });
 
-    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(await screen.findByRole("button", { name: "Map Edit" }));
     await user.click(screen.getByRole("button", { name: "Select" }));
     const copyButton = screen.getByRole("button", { name: "Copy" });
     expect(copyButton).toBeEnabled();
@@ -6069,7 +6361,7 @@ describe("App", () => {
       },
     });
 
-    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(await screen.findByRole("button", { name: "Map Edit" }));
     pointerDragFromCell(0, 0, 100, 0, { pointerId: 81, button: 1, buttons: 4 });
     pointerClickMapCell(-1, 0, 82);
 
@@ -6096,7 +6388,7 @@ describe("App", () => {
       },
     });
 
-    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(await screen.findByRole("button", { name: "Map Edit" }));
     await user.click(screen.getByRole("button", { name: "Rect" }));
     pointerDragBetweenCells(0, 0, 1, 1, { pointerId: 91 });
 
@@ -6129,7 +6421,7 @@ describe("App", () => {
       },
     });
 
-    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(await screen.findByRole("button", { name: "Map Edit" }));
     await user.click(screen.getByRole("button", { name: "Walls" }));
     await user.click(screen.getByRole("button", { name: "Door" }));
     pointerClickMapCell(0, 0, 93);
@@ -6155,7 +6447,7 @@ describe("App", () => {
       },
     });
 
-    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(await screen.findByRole("button", { name: "Map Edit" }));
     await user.click(screen.getByRole("button", { name: "Walls" }));
 
     const viewport = getMapViewport();
@@ -6187,7 +6479,7 @@ describe("App", () => {
       },
     });
 
-    await user.click(await screen.findByRole("button", { name: "GM Dungeon" }));
+    await user.click(await screen.findByRole("button", { name: "Map Edit" }));
     await user.click(screen.getByRole("button", { name: "Rect" }));
     pointerDragBetweenCells(0, 0, 50, 49, { pointerId: 92 });
 

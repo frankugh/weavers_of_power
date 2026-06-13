@@ -359,6 +359,95 @@ class BattleSessionTests(unittest.TestCase):
         self.assertIn(enemy_room, session.dungeon.pending_encounter_room_ids)
         self.assertEqual((session.state.enemies[player_id].grid_x, session.state.enemies[player_id].grid_y), (2, 0))
 
+    def test_walk_entity_moves_one_unit_with_unlimited_route(self) -> None:
+        session = self.context.create_session("single-walk-open")
+        session.add_player(name="Leader")
+        leader_id = session.selected_id
+        session.add_player(name="Follower")
+        follower_id = session.selected_id
+        session._set_position(session.state.enemies[leader_id], 0, 1)
+        session._set_position(session.state.enemies[follower_id], 0, 2)
+
+        result = session.walk_entity(leader_id, 4, 1)
+
+        self.assertEqual(result["walk"]["entityId"], leader_id)
+        self.assertFalse(result["walk"]["stoppedForEncounter"])
+        self.assertEqual((session.state.enemies[leader_id].grid_x, session.state.enemies[leader_id].grid_y), (4, 1))
+        self.assertEqual((session.state.enemies[follower_id].grid_x, session.state.enemies[follower_id].grid_y), (0, 2))
+        self.assertIn("Walk:", session.combat_log[0])
+
+    def test_walk_entity_respects_closed_doors_and_occupied_targets(self) -> None:
+        session = self.context.create_session("single-walk-blocked")
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[0, 0], [1, 0], [2, 0]])
+        session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.dungeon.fog_of_war_enabled = False
+        session.add_player()
+        player_id = session.selected_id
+        session._set_position(session.state.enemies[player_id], 0, 0)
+
+        with self.assertRaisesRegex(ValueError, "not reachable"):
+            session.walk_entity(player_id, 1, 0)
+
+        session.dungeon.walls["0,0,e"].door_open = True
+        session.add_enemy_from_template("C_GOBLIN")
+        blocker_id = session.selected_id
+        session._set_position(session.state.enemies[blocker_id], 2, 0)
+        with self.assertRaisesRegex(ValueError, "occupied"):
+            session.walk_entity(player_id, 2, 0)
+
+    def test_walk_entity_stops_after_revealing_enemy_room(self) -> None:
+        session = self.context.create_session("single-walk-encounter")
+        session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])
+        session.edit_dungeon_tiles("floor", [[0, 0], [1, 0], [2, 0], [3, 0]])
+        session.edit_dungeon_walls("door", [{"x": 0, "y": 0, "side": "e"}])
+        session.edit_dungeon_walls("door", [{"x": 1, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.dungeon.walls["0,0,e"].door_open = True
+        session.dungeon.walls["1,0,e"].door_open = True
+        session.dungeon.fog_of_war_enabled = True
+        session.add_player()
+        player_id = session.selected_id
+        session._set_position(session.state.enemies[player_id], 0, 0)
+        start_room = session.state.enemies[player_id].room_id
+        session.dungeon.revealed_room_ids = [start_room]
+        session.add_enemy_from_template("C_GOBLIN")
+        goblin_id = session.selected_id
+        session._set_position(session.state.enemies[goblin_id], 3, 0)
+
+        result = session.walk_entity(player_id, 2, 0)
+
+        self.assertTrue(result["walk"]["stoppedForEncounter"])
+        self.assertEqual(result["walk"]["actualDestination"], {"x": 2, "y": 0})
+        enemy_room = session.state.enemies[goblin_id].room_id
+        self.assertIn(enemy_room, session.dungeon.revealed_room_ids)
+        self.assertIn(enemy_room, session.dungeon.pending_encounter_room_ids)
+        self.assertEqual((session.state.enemies[player_id].grid_x, session.state.enemies[player_id].grid_y), (2, 0))
+
+    def test_walk_entity_rejects_active_turn_pending_encounter_and_grappled_unit(self) -> None:
+        session = self.context.create_session("single-walk-reject")
+        session.add_player(name="Walker")
+        walker_id = session.selected_id
+        session.add_player(name="Grappler")
+        grappler_id = session.selected_id
+        session._set_position(session.state.enemies[walker_id], 0, 0)
+        session._set_position(session.state.enemies[grappler_id], 1, 0)
+        session.active_turn_id = walker_id
+        with self.assertRaisesRegex(ValueError, "outside active combat"):
+            session.walk_entity(walker_id, 0, 0)
+
+        session.active_turn_id = None
+        session.dungeon = None
+        session.pending_opportunity = {"kind": "test"}
+        with self.assertRaisesRegex(ValueError, "pending opportunity"):
+            session.walk_entity(walker_id, 0, 0)
+
+        session.pending_opportunity = None
+        session._apply_grapple(session.state.enemies[grappler_id], session.state.enemies[walker_id], 2)
+        with self.assertRaisesRegex(ValueError, "Grappled"):
+            session.walk_entity(walker_id, 0, 0)
+
     def test_party_walk_failure_does_not_partially_move_or_reveal(self) -> None:
         session = self.context.create_session("party-walk-atomic")
         session.edit_dungeon_tiles("void", [[x, y] for x in range(10) for y in range(7)])

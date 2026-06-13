@@ -1,9 +1,5 @@
 
-25) Als ik een combat end en er nog enemies zijn kan ik nu geen search room doen
-
-----
-
-11) Ik kan de naam en stats van PC niet wijzigen na aanmaken. (Miss goed voor show unit scherm?)
+- Als ik search room doe of vergelijkbare searches met char met physical cards dan zou ik niet moeten drawen maar een pop-up met aantal drawn succesen moeten krijgen. Miss 0-1-2-3 custom, beetje vergelijkbaar met strengthen schermpje
 
 2) Ik wilde fighter strenghtenen in wizz beurt, maar app ondersteund niet iemand anders strengthenen. Je kunt een adjacent unit strengthenen als je ernaast staat (of cleric kan het op 30 ft)
 
@@ -19,13 +15,19 @@
 
 TODO:
 
+- Een modus met een soort flowchart waar je in elke flow flavour tekst, plaatjes, conditional events (traps / investigates / interactions) en enemies kan zetten. Bij enemies kun je 'start combat' zeggen en daar zit een default open veld met de units in, optioneel editable om er een room / dungeon van te maken'. De flowchart heeft op de blokken een label zichtbaar in de overview. Je ziet in welke je nu zit en welke aansluitend zijn, maar je kunt altijd naar elk punt in de flow. 
+Dan hebben we dus een flow overview scherm nodig in edit modus of play modus
+een event scherm in edit modus en play modus
+en zoals we al hebben het dungeon scherm edit en play modus
+
 -----
 
-Equipment en loot:
+Equipment, loot, show unit:
 
 Hoe gaan we weapons/armor/gear/loot inventory bijhouden? 
-(loot iets bij show unit?  En hoe met auto attacks en weapon modifiers?)
+(loot iets bij show unit? En stats? En hoe met auto attacks en weapon modifiers?)
 
+11) Ik kan de naam en stats van PC niet wijzigen na aanmaken. (Miss goed voor show unit scherm?)
 23) ik kan nu alsnog niet daadwerkelijk looten
 13) Ik kan geen wapen/gear kiezen bij PC creatie
 22) Loot moet in excel tabellen komen
@@ -247,3 +249,5 @@ Rechterklik show unit bij PC toont een volledig overview van niet alleen het pla
 - De naam battle simulator lijkt niet helemaal passend meer, het is wel meer geworden. 
 
 21) apply healing scherm als ik ernaast klik moet dit niet direct sluiten
+
+25) Als ik een combat end en er nog enemies zijn kan ik nu geen search room doen

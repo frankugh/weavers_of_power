@@ -71,6 +71,7 @@ const DEFAULT_ROOM = { columns: 10, rows: 7 };
 const MAP_MODES = {
   IDLE: "idle",
   MOVE: "move",
+  WALK: "walk",
   PARTY_WALK: "party-walk",
   REPOSITION: "reposition",
   GM_REPOSITION: "gm-reposition",
@@ -990,6 +991,8 @@ function App() {
   const [pendingDashMove, setPendingDashMove] = useState(null);
   const [saveName, setSaveName] = useState("session");
   const [saves, setSaves] = useState([]);
+  const [mapTemplateName, setMapTemplateName] = useState("map template");
+  const [mapTemplates, setMapTemplates] = useState([]);
   const [attackForm, setAttackForm] = useState(EMPTY_ATTACK_FORM);
   const [healForm, setHealForm] = useState(EMPTY_HEAL_FORM);
   const [drawExactCount, setDrawExactCount] = useState(1);
@@ -1075,7 +1078,9 @@ function App() {
 
   useEffect(() => {
     setMapMode((current) =>
-      current === MAP_MODES.GM_REPOSITION || current === MAP_MODES.GM_DUNGEON ? current : MAP_MODES.IDLE,
+      current === MAP_MODES.GM_REPOSITION || current === MAP_MODES.GM_DUNGEON || current === MAP_MODES.PARTY_WALK
+        ? current
+        : MAP_MODES.IDLE,
     );
   }, [snapshot?.selectedId, snapshot?.activeTurnId]);
 
@@ -1351,8 +1356,23 @@ function App() {
   const canReposition = Boolean(selectedEntity);
   const isGmRepositionMode = mapMode === MAP_MODES.GM_REPOSITION;
   const isGmDungeonMode = mapMode === MAP_MODES.GM_DUNGEON;
+  const isWalkMode = mapMode === MAP_MODES.WALK;
   const isPartyWalkMode = mapMode === MAP_MODES.PARTY_WALK;
   const canUseGmReposition = orderedEnemies.length > 0;
+  const canUseMapWalk = Boolean(
+    !snapshot?.encounterStarted &&
+    !snapshot?.activeTurnId &&
+    !snapshot?.turnInProgress &&
+    !partyWalkBlockedByCombat &&
+    !pendingOpportunity &&
+    pendingEncounterRoomIds.length === 0,
+  );
+  const canUseWalk = Boolean(
+    selectedEntity &&
+      !selectedIsDown &&
+      hasGridPosition(selectedEntity, room, dungeon) &&
+      canUseMapWalk,
+  );
   const canUsePartyWalk = Boolean(
     selectedEntity &&
       isPlayerSelected &&
@@ -1369,6 +1389,12 @@ function App() {
   const fogOfWarEnabled = dungeon?.fogOfWarEnabled ?? true;
   const visibleRoomIds = new Set(dungeon?.visibleRoomIds || []);
   const revealedRoomIdSet = new Set(dungeon?.revealedRoomIds || []);
+
+  useEffect(() => {
+    if (mapMode === MAP_MODES.WALK && !canUseWalk) {
+      setMapMode(MAP_MODES.IDLE);
+    }
+  }, [mapMode, canUseWalk]);
 
   useEffect(() => {
     if (mapMode === MAP_MODES.PARTY_WALK && !canUsePartyWalk) {
@@ -2060,6 +2086,8 @@ function App() {
     const syncLocalSelection = options.syncLocalSelection !== false;
     if (preserveMapMode && syncLocalSelection) {
       setSelectedUnitIds([instanceId]);
+    } else if (mapMode !== MAP_MODES.GM_REPOSITION && mapMode !== MAP_MODES.GM_DUNGEON) {
+      setSelectedUnitIds([]);
     }
     if (snapshot?.selectedId === instanceId) {
       if (!preserveMapMode && snapshot?.activeTurnId === instanceId && canUseMove) {
@@ -2334,36 +2362,65 @@ function App() {
     }
   }
 
-  async function submitPartyWalk(x, y) {
-    if (!selectedEntity || !snapshot?.sid || busy) {
+  async function submitWalk(instanceId, x, y, options = {}) {
+    const entity = orderedEnemies.find((candidate) => candidate.instance_id === instanceId) || selectedEntity;
+    if (!entity || !snapshot?.sid || busy) {
+      return;
+    }
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/entities/${entity.instance_id}/walk`,
+      {
+        method: "POST",
+        body: JSON.stringify({ x, y }),
+      },
+      "",
+    );
+    if (payload) {
+      const stopped = Boolean(payload.walk?.stoppedForEncounter || payload.dungeon?.pendingEncounterRoomIds?.length);
+      setSelectedUnitIds([]);
+      setMapMode(stopped || options.returnToIdle ? MAP_MODES.IDLE : MAP_MODES.WALK);
+      setNotice(stopped ? "Walk stopped: encounter discovered" : "Walk");
+    }
+  }
+
+  async function submitPartyWalk(x, y, options = {}) {
+    const leaderId = options.leaderId || selectedEntity?.instance_id;
+    const leader = orderedEnemies.find((entity) => entity.instance_id === leaderId) || selectedEntity;
+    if (!leader || !snapshot?.sid || busy) {
       return;
     }
     const payload = await applySnapshotRequest(
       `/api/battle/sessions/${snapshot.sid}/action/party-walk`,
       {
         method: "POST",
-        body: JSON.stringify({ leaderId: selectedEntity.instance_id, x, y }),
+        body: JSON.stringify({ leaderId: leader.instance_id, x, y }),
       },
       "",
     );
     if (payload) {
       const stopped = Boolean(payload.partyWalk?.stoppedForEncounter || payload.dungeon?.pendingEncounterRoomIds?.length);
-      setSelectedUnitIds(payload.partyWalk?.movedEntityIds || [selectedEntity.instance_id]);
+      setSelectedUnitIds([]);
       setMapMode(stopped ? MAP_MODES.IDLE : MAP_MODES.PARTY_WALK);
       setNotice(stopped ? "Party walk stopped: encounter discovered" : "Party walk");
     }
   }
 
   async function handleMoveSelectedToCell(x, y, target = {}) {
-    if (mapMode === MAP_MODES.REPOSITION || mapMode === MAP_MODES.GM_REPOSITION) {
+    if (mapMode === MAP_MODES.REPOSITION || mapMode === MAP_MODES.GM_REPOSITION || target.mode === "reposition") {
       await submitReposition(x, y);
       return;
     }
-    if (mapMode === MAP_MODES.PARTY_WALK) {
-      await submitPartyWalk(x, y);
+    if (mapMode === MAP_MODES.WALK || target.mode === "walk") {
+      await submitWalk(target.instanceId || selectedEntity?.instance_id, x, y, {
+        returnToIdle: target.input === "drag",
+      });
       return;
     }
-    if (mapMode !== MAP_MODES.MOVE) {
+    if (mapMode === MAP_MODES.PARTY_WALK || target.mode === "party-walk") {
+      await submitPartyWalk(x, y, { leaderId: target.instanceId });
+      return;
+    }
+    if (mapMode !== MAP_MODES.MOVE && target.mode !== "move") {
       return;
     }
     if (target.requiresDash) {
@@ -3093,6 +3150,61 @@ function App() {
     }
   }
 
+  async function fetchMapTemplates() {
+    try {
+      const data = await requestJson("/api/map-templates");
+      setMapTemplates(data.templates || []);
+    } catch {
+      // non-fatal
+    }
+  }
+
+  async function openSaveMapTemplateModal() {
+    await fetchMapTemplates();
+    setModal("save-map-template");
+  }
+
+  async function openLoadMapTemplateModal() {
+    await fetchMapTemplates();
+    setModal("load-map-template");
+  }
+
+  async function handleSaveMapTemplateSubmit(event) {
+    event.preventDefault();
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/dungeon/save-as-template`,
+      { method: "POST", body: JSON.stringify({ name: mapTemplateName }) },
+      "Map template saved",
+    );
+    if (payload) {
+      closeModal();
+    }
+  }
+
+  async function handleLoadMapTemplate(templateId) {
+    const payload = await applySnapshotRequest(
+      `/api/battle/sessions/${snapshot.sid}/dungeon/load-template/${encodeURIComponent(templateId)}`,
+      { method: "POST" },
+      "Map template loaded",
+    );
+    if (payload) {
+      closeModal();
+    }
+  }
+
+  async function handleDeleteMapTemplate(templateId) {
+    setBusy(true);
+    setError("");
+    try {
+      const data = await requestJson(`/api/map-templates/${encodeURIComponent(templateId)}`, { method: "DELETE" });
+      setMapTemplates(data.templates || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleDeleteSave(filename) {
     if (!snapshot?.sid || busy) {
       return;
@@ -3300,6 +3412,10 @@ function App() {
               highlightedRoomId={isGmDungeonMode ? highlightedRoomId : null}
               drawPulse={drawReveal ? { entityId: drawReveal.entityId, key: drawReveal.key } : null}
               busy={busy}
+              canUseMove={canUseMove}
+              canUseMapWalk={canUseMapWalk}
+              canUseWalk={canUseWalk}
+              canUsePartyWalk={canUsePartyWalk}
               onSelect={handleSelect}
               onSelectionChange={handleMapSelectionChange}
               onGroupMove={submitGroupPositions}
@@ -3525,6 +3641,24 @@ function App() {
                   Analyze
                 </button>
                 <button
+                  className="menu-button"
+                  type="button"
+                  onClick={openSaveMapTemplateModal}
+                  disabled={busy || !snapshot.dungeon}
+                  title="Save current map as a reusable template"
+                >
+                  Save as Template
+                </button>
+                <button
+                  className="menu-button"
+                  type="button"
+                  onClick={openLoadMapTemplateModal}
+                  disabled={busy}
+                  title="Load a saved map template into this session"
+                >
+                  Load Template
+                </button>
+                <button
                   className="menu-button dungeon-exit-btn"
                   type="button"
                   onClick={exitGmDungeonMode}
@@ -3665,6 +3799,18 @@ function App() {
                     disabled={!canUseMove || busy}
                   >
                     {mapMode === MAP_MODES.MOVE ? "Cancel Move" : "Move"}
+                  </button>
+                ) : null}
+                {!combatIsRunning ? (
+                  <button
+                    className={`secondary-button ${isWalkMode ? "move-button-active" : ""}`.trim()}
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      setMapMode((current) => (current === MAP_MODES.WALK ? MAP_MODES.IDLE : MAP_MODES.WALK));
+                    }}
+                    disabled={!canUseWalk || busy}
+                  >
+                    {isWalkMode ? "Cancel Walk" : "Walk"}
                   </button>
                 ) : null}
                 {showPartyWalkButton ? (
@@ -5566,6 +5712,67 @@ function App() {
             ))
           ) : (
             <div className="subtle-copy">No session saves found for this workspace.</div>
+          )}
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "save-map-template"}
+        title="Save map as template"
+        subtitle="Save the current dungeon layout as a reusable map template."
+        onClose={closeModal}
+      >
+        <form className="modal-form" onSubmit={handleSaveMapTemplateSubmit}>
+          <label className="field">
+            <span>Template name</span>
+            <input
+              type="text"
+              value={mapTemplateName}
+              onChange={(e) => setMapTemplateName(e.target.value)}
+              autoFocus
+            />
+          </label>
+          <div className="modal-actions">
+            <button className="primary-button" type="submit" disabled={busy}>
+              Save template
+            </button>
+            <button className="secondary-button" type="button" onClick={closeModal}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "load-map-template"}
+        title="Load map template"
+        subtitle="Replace the current dungeon with a saved map template. Runtime state (revealed rooms, doors) will reset."
+        onClose={closeModal}
+      >
+        <div className="save-list">
+          {mapTemplates.length ? (
+            mapTemplates.map((t) => (
+              <div className="save-row" key={t.id}>
+                <div className="save-slot-info">
+                  <span className="save-slot-title">{t.name}</span>
+                  <span className="save-slot-meta">{t.savedAt || t.filename}</span>
+                </div>
+                <button className="small-button" type="button" onClick={() => handleLoadMapTemplate(t.id)} disabled={busy}>
+                  Load
+                </button>
+                <button
+                  className="save-delete-button"
+                  type="button"
+                  aria-label={`Delete template ${t.name}`}
+                  onClick={() => handleDeleteMapTemplate(t.id)}
+                  disabled={busy}
+                >
+                  <TrashIcon />
+                </button>
+              </div>
+            ))
+          ) : (
+            <div className="subtle-copy">No map templates saved yet.</div>
           )}
         </div>
       </ModalShell>
@@ -7710,6 +7917,10 @@ function BattleRoom({
   highlightedRoomId = null,
   drawPulse,
   busy,
+  canUseMove,
+  canUseMapWalk,
+  canUseWalk,
+  canUsePartyWalk,
   onSelect,
   onSelectionChange,
   onGroupMove,
@@ -7749,6 +7960,10 @@ function BattleRoom({
         highlightedRoomId={highlightedRoomId}
         drawPulse={drawPulse}
         busy={busy}
+        canUseMove={canUseMove}
+        canUseMapWalk={canUseMapWalk}
+        canUseWalk={canUseWalk}
+        canUsePartyWalk={canUsePartyWalk}
         onSelect={onSelect}
         onSelectionChange={onSelectionChange}
         onGroupMove={onGroupMove}

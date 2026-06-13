@@ -346,6 +346,27 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("player character", response.json()["detail"])
 
+    def test_walk_endpoint_moves_single_unit_and_returns_payload(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        first_id = self.client.post(f"/api/battle/sessions/{sid}/players", json={"name": "Walker"}).json()["selectedId"]
+        second_id = self.client.post(f"/api/battle/sessions/{sid}/players", json={"name": "Follower"}).json()["selectedId"]
+        self.client.post(f"/api/battle/sessions/{sid}/entities/{first_id}/position", json={"x": 0, "y": 1})
+        self.client.post(f"/api/battle/sessions/{sid}/entities/{second_id}/position", json={"x": 0, "y": 2})
+
+        response = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{first_id}/walk",
+            json={"x": 4, "y": 1},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["walk"]["entityId"], first_id)
+        self.assertEqual(payload["walk"]["destination"], {"x": 4, "y": 1})
+        self.assertEqual(payload["walk"]["actualDestination"], {"x": 4, "y": 1})
+        positions = {enemy["instance_id"]: (enemy["grid_x"], enemy["grid_y"]) for enemy in payload["enemies"]}
+        self.assertEqual(positions[first_id], (4, 1))
+        self.assertEqual(positions[second_id], (0, 2))
+
     def test_copy_endpoint_creates_fresh_enemy_and_is_undoable(self) -> None:
         sid = self.client.post("/api/battle/sessions").json()["sid"]
         added = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()
