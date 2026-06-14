@@ -1,4 +1,8 @@
 
+Protocol voor AI:  Je mag hier een todo weghalen als opgepakt, maar zet hem dan wel helemaal onderaan dit bestand onderop bij de voltooide taken
+
+----
+
 19) Held prey is niet geïmplementeerd in map. De worg kon niet weglopen met een grappled fighter
 
 20) Als ik door een ally veld loop en een opp atack krijg en mijn move wordt gestopt mag ik niet op het veld van de ally stoppen, dan moet ik terug naar het veld waar ik daarvoor stond (en dit triggered dan natuurlijk niet extra opp attacks)
@@ -257,3 +261,5 @@ en zoals we al hebben het dungeon scherm edit en play modus
 2) Ik wilde fighter strenghtenen in wizz beurt, maar app ondersteund niet iemand anders strengthenen. Je kunt een adjacent unit strengthenen als je ernaast staat (of cleric kan het op 30 ft)
 
 18) Ik kan de grapple niet aanvallen in map
+
+14) quick attack met if ally is adjacent wordt niet goed geparsed / begrepen in battle maps

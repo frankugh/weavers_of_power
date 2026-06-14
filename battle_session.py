@@ -5894,6 +5894,11 @@ class BattleSession:
         )
         if not match:
             match = re.match(
+                r"^(?P<prefix>h[fwd])_(?P<energy>master|martial|elemental|light|void)_(?P<outcome>success|fate|fail)_(?P<amount>\d+)[a-z]?(?P<reshuffle>_reshuffle)?$",
+                raw,
+            )
+        if not match:
+            match = re.match(
                 r"^(?P<prefix>h[fwd])_(?P<energy>master|martial|elemental|light|void)_(?P<outcome>success|fate|fail)(?P<reshuffle>_reshuffle)?$",
                 raw,
             )
