@@ -19,6 +19,35 @@ const ATTACK_STATUSES = [
   { key: "slow", label: "Slow" },
   { key: "paralyze", label: "Paralyze" },
 ];
+const UNIT_DETAIL_TABS = [
+  { id: "overview", label: "Overview" },
+  { id: "identity", label: "Identity" },
+  { id: "stats", label: "Stats" },
+  { id: "conditions", label: "Conditions" },
+  { id: "deck", label: "Deck" },
+];
+const UNIT_KNOWN_CONDITIONS = [
+  { key: "burn", label: "Burn" },
+  { key: "poison", label: "Poison" },
+  { key: "slowed", label: "Slowed" },
+  { key: "paralyzed", label: "Paralyzed" },
+  { key: "prone", label: "Prone" },
+  { key: "surprised", label: "Surprised" },
+];
+const UNIT_DERIVED_CONDITIONS = new Set(["grappled", "grappling"]);
+const UNIT_STAT_FIELDS = [
+  ["toughnessCurrent", "Toughness now"],
+  ["toughnessMax", "Toughness max"],
+  ["armorCurrent", "Armor now"],
+  ["armorMax", "Armor max"],
+  ["magicArmorCurrent", "Magic armor now"],
+  ["magicArmorMax", "Magic armor max"],
+  ["guardCurrent", "Guard now"],
+  ["guardBase", "Guard base"],
+  ["powerBase", "Draw"],
+  ["movement", "Movement"],
+  ["initiativeModifier", "Initiative"],
+];
 const CREATURE_ACTION_ORDER = ["MISS", "A1", "A2", "A3", "A4", "A5", "S"];
 const CREATURE_SKILL_LABELS = {
   intelligence: "Int",
@@ -578,6 +607,127 @@ function drawGroupsForEntity(entity) {
   return items.length > 0 ? [{ label: "Draw 1", items, summary: entity?.current_draw_summary || null }] : [];
 }
 
+function normalizeUnitConditionKey(value) {
+  const key = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const aliases = {
+    burning: "burn",
+    burned: "burn",
+    poisoned: "poison",
+    slow: "slowed",
+    paralyse: "paralyzed",
+    paralysed: "paralyzed",
+    paralyze: "paralyzed",
+  };
+  return aliases[key] || key;
+}
+
+function statusStacks(value) {
+  if (!value) return 0;
+  if (typeof value === "object") {
+    return Math.max(1, Number(value.stacks || 1));
+  }
+  if (value === true) return 1;
+  return Math.max(1, Number(value || 1));
+}
+
+function nonnegativeInt(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(0, Math.round(numeric)) : 0;
+}
+
+function unitDeckCompositionFromEntity(entity) {
+  const composition = entity?.editor?.deck?.composition || {};
+  const result = {};
+  for (const card of entity?.editor?.deck?.cards || []) {
+    result[card.id] = nonnegativeInt(composition[card.id] ?? card.count ?? 0);
+  }
+  for (const [cardId, count] of Object.entries(composition)) {
+    if (!(cardId in result)) {
+      result[cardId] = nonnegativeInt(count);
+    }
+  }
+  return result;
+}
+
+function createUnitDetailsForm(entity) {
+  const knownKeys = new Set(UNIT_KNOWN_CONDITIONS.map((condition) => condition.key));
+  const statuses = {};
+  const customConditions = [];
+  for (const [rawKey, rawValue] of Object.entries(entity?.statuses || {})) {
+    const key = normalizeUnitConditionKey(rawKey);
+    if (!key || UNIT_DERIVED_CONDITIONS.has(key)) continue;
+    const stacks = statusStacks(rawValue);
+    if (knownKeys.has(key)) {
+      statuses[key] = stacks;
+    } else {
+      customConditions.push({ key, stacks });
+    }
+  }
+
+  return {
+    identity: {
+      name: entity?.name || "",
+      image: entity?.image_url || "",
+    },
+    stats: {
+      toughnessCurrent: nonnegativeInt(entity?.toughness_current),
+      toughnessMax: nonnegativeInt(entity?.toughness_max),
+      armorCurrent: nonnegativeInt(entity?.armor_current),
+      armorMax: nonnegativeInt(entity?.armor_max),
+      magicArmorCurrent: nonnegativeInt(entity?.magic_armor_current),
+      magicArmorMax: nonnegativeInt(entity?.magic_armor_max),
+      guardCurrent: nonnegativeInt(entity?.guard_current),
+      guardBase: nonnegativeInt(entity?.guard_base),
+      powerBase: nonnegativeInt(entity?.power_base),
+      movement: nonnegativeInt(entity?.movement ?? entity?.effective_movement),
+      initiativeModifier: nonnegativeInt(entity?.initiative_modifier),
+    },
+    statuses,
+    customConditions,
+    deckComposition: unitDeckCompositionFromEntity(entity),
+  };
+}
+
+function buildUnitDetailsPayload(form) {
+  const statuses = {};
+  for (const condition of UNIT_KNOWN_CONDITIONS) {
+    const stacks = nonnegativeInt(form?.statuses?.[condition.key] || 0);
+    if (stacks > 0) {
+      statuses[condition.key] = { stacks };
+    }
+  }
+  for (const condition of form?.customConditions || []) {
+    const key = normalizeUnitConditionKey(condition.key);
+    if (!key || UNIT_DERIVED_CONDITIONS.has(key)) continue;
+    const stacks = nonnegativeInt(condition.stacks || 1);
+    if (stacks > 0) {
+      statuses[key] = { stacks: Math.max(1, stacks) };
+    }
+  }
+  const composition = {};
+  for (const [cardId, count] of Object.entries(form?.deckComposition || {})) {
+    composition[cardId] = nonnegativeInt(count);
+  }
+  return {
+    identity: {
+      name: form?.identity?.name || "",
+      image: form?.identity?.image || "",
+    },
+    stats: Object.fromEntries(
+      Object.entries(form?.stats || {}).map(([key, value]) => [key, nonnegativeInt(value)]),
+    ),
+    statuses,
+    deck: {
+      composition,
+      reset: true,
+    },
+  };
+}
+
 function getEntityInitial(entity) {
   return (entity?.name || "?").trim().charAt(0).toUpperCase() || "?";
 }
@@ -1052,6 +1202,11 @@ function App() {
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [unitContextMenu, setUnitContextMenu] = useState(null);
   const [previewEntityId, setPreviewEntityId] = useState(null);
+  const [unitDetailsMode, setUnitDetailsMode] = useState("show");
+  const [unitDetailsTab, setUnitDetailsTab] = useState("overview");
+  const [unitDetailsForm, setUnitDetailsForm] = useState(null);
+  const [unitDetailsError, setUnitDetailsError] = useState("");
+  const [unitDetailsSourceConfirm, setUnitDetailsSourceConfirm] = useState(false);
   const [lootPopoverOpen, setLootPopoverOpen] = useState(false);
   const [drawReveal, setDrawReveal] = useState(null);
   const [drawDetail, setDrawDetail] = useState(null);
@@ -1811,6 +1966,11 @@ function App() {
     setStrengthenTargetId("");
     setDrawDetail(null);
     setPreviewEntityId(null);
+    setUnitDetailsMode("show");
+    setUnitDetailsTab("overview");
+    setUnitDetailsForm(null);
+    setUnitDetailsError("");
+    setUnitDetailsSourceConfirm(false);
     setWoundNotice(null);
     setPendingWoundRemove(null);
     setOpportunityResolution(null);
@@ -2406,7 +2566,7 @@ function App() {
     }
   }
 
-  async function selectEntityForAction(instanceId, { allowWhileBusy = false } = {}) {
+  async function selectEntityForAction(instanceId, { allowWhileBusy = false, preserveMapMode = false } = {}) {
     if (!snapshot?.sid || (busy && !allowWhileBusy)) {
       return null;
     }
@@ -2423,7 +2583,9 @@ function App() {
       });
       setSnapshot(payload);
       setNotice("");
-      setMapMode(MAP_MODES.IDLE);
+      if (!preserveMapMode) {
+        setMapMode(MAP_MODES.IDLE);
+      }
       return payload;
     } catch (requestError) {
       setError(requestError.message);
@@ -2444,7 +2606,7 @@ function App() {
         : null;
     setActionMenuOpen(false);
     setUnitContextMenu(null);
-    const payload = await selectEntityForAction(instanceId);
+    const payload = await selectEntityForAction(instanceId, { preserveMapMode: isGmRepositionMode || isGmDungeonMode });
     if (!payload?.enemies?.some((entity) => entity.instance_id === instanceId)) {
       return;
     }
@@ -2551,7 +2713,7 @@ function App() {
     );
   }
 
-  function openUnitPreview(instanceId) {
+  function openUnitDetails(instanceId, mode = "show") {
     const target = orderedEnemies.find((entity) => entity.instance_id === instanceId);
     if (!target) {
       return;
@@ -2559,7 +2721,130 @@ function App() {
     setUnitContextMenu(null);
     setActionMenuOpen(false);
     setPreviewEntityId(instanceId);
+    setUnitDetailsMode(mode);
+    setUnitDetailsTab("overview");
+    setUnitDetailsForm(createUnitDetailsForm(target));
+    setUnitDetailsError("");
+    setUnitDetailsSourceConfirm(false);
     setModal("unit-preview");
+  }
+
+  function openUnitPreview(instanceId) {
+    openUnitDetails(instanceId, "show");
+  }
+
+  function openUnitEditor(instanceId) {
+    openUnitDetails(instanceId, "edit");
+  }
+
+  function updateUnitDetailsForm(path, value) {
+    setUnitDetailsForm((current) => {
+      if (!current) return current;
+      const [section, key, nestedKey] = path;
+      if (nestedKey) {
+        return {
+          ...current,
+          [section]: {
+            ...current[section],
+            [key]: {
+              ...(current[section]?.[key] || {}),
+              [nestedKey]: value,
+            },
+          },
+        };
+      }
+      return {
+        ...current,
+        [section]: {
+          ...current[section],
+          [key]: value,
+        },
+      };
+    });
+    setUnitDetailsSourceConfirm(false);
+  }
+
+  function updateUnitCondition(key, stacks) {
+    setUnitDetailsForm((current) => ({
+      ...current,
+      statuses: {
+        ...(current?.statuses || {}),
+        [key]: nonnegativeInt(stacks),
+      },
+    }));
+    setUnitDetailsSourceConfirm(false);
+  }
+
+  function updateUnitCustomCondition(index, patch) {
+    setUnitDetailsForm((current) => {
+      const next = [...(current?.customConditions || [])];
+      next[index] = { ...next[index], ...patch };
+      return { ...current, customConditions: next };
+    });
+    setUnitDetailsSourceConfirm(false);
+  }
+
+  function addUnitCustomCondition() {
+    setUnitDetailsForm((current) => ({
+      ...current,
+      customConditions: [...(current?.customConditions || []), { key: "", stacks: 1 }],
+    }));
+  }
+
+  function removeUnitCustomCondition(index) {
+    setUnitDetailsForm((current) => ({
+      ...current,
+      customConditions: (current?.customConditions || []).filter((_, itemIndex) => itemIndex !== index),
+    }));
+    setUnitDetailsSourceConfirm(false);
+  }
+
+  function updateUnitDeckCount(cardId, count) {
+    setUnitDetailsForm((current) => ({
+      ...current,
+      deckComposition: {
+        ...(current?.deckComposition || {}),
+        [cardId]: nonnegativeInt(count),
+      },
+    }));
+    setUnitDetailsSourceConfirm(false);
+  }
+
+  async function applyUnitDetails({ close = true, sourceCharacter = false } = {}) {
+    if (!snapshot?.sid || !previewEntity || !unitDetailsForm) {
+      return null;
+    }
+    const payload = buildUnitDetailsPayload(unitDetailsForm);
+    setBusy(true);
+    setUnitDetailsError("");
+    setError("");
+    try {
+      const nextSnapshot = await requestJson(
+        sourceCharacter
+          ? `/api/battle/sessions/${snapshot.sid}/entities/${previewEntity.instance_id}/source-character`
+          : `/api/battle/sessions/${snapshot.sid}/entities/${previewEntity.instance_id}`,
+        {
+          method: sourceCharacter ? "POST" : "PATCH",
+          body: JSON.stringify(payload),
+        },
+      );
+      setSnapshot(nextSnapshot);
+      const updatedEntity = nextSnapshot.enemies?.find((entity) => entity.instance_id === previewEntity.instance_id);
+      if (updatedEntity) {
+        setUnitDetailsForm(createUnitDetailsForm(updatedEntity));
+      }
+      setNotice(sourceCharacter ? "Saved unit and character source" : "Unit updated");
+      setUnitDetailsSourceConfirm(false);
+      if (close) {
+        closeModal();
+      }
+      return nextSnapshot;
+    } catch (requestError) {
+      setUnitDetailsError(requestError.message);
+      return null;
+    } finally {
+      setBusy(false);
+    }
   }
 
   function handleUnitDoubleClick(instanceId) {
@@ -3774,7 +4059,7 @@ function App() {
               <button
                 className={`menu-button gm-reposition-button ${isGmRepositionMode ? "gm-reposition-active" : ""}`.trim()}
                 type="button"
-                title="Click a unit, then click an empty map cell to reposition it."
+                title={isGmRepositionMode ? "Exit GM Mode." : "GM Mode: reposition units, reveal hidden map details, and edit live units."}
                 onClick={toggleGmRepositionMode}
                 disabled={busy || !canUseGmReposition}
               >
@@ -4575,6 +4860,16 @@ function App() {
                       {selectedEntity.is_player ? <span className="badge">Player</span> : <span className="badge badge-enemy">Enemy</span>}
                       {selectedUsesPhysicalCards ? <span className="badge badge-status">Physical cards</span> : null}
                       {selectedEntity.is_down ? <span className="badge badge-down">{selectedIsKo ? "KO" : "Down"}</span> : null}
+                      {isGmRepositionMode ? (
+                        <button
+                          className="small-button unit-inspector-edit-button"
+                          type="button"
+                          onClick={() => openUnitEditor(selectedEntity.instance_id)}
+                          disabled={busy}
+                        >
+                          Edit
+                        </button>
+                      ) : null}
                       {selectedHasInventory ? (
                         <span className="loot-inventory-anchor">
                           <button
@@ -5023,31 +5318,47 @@ function App() {
             className="secondary-button unit-context-item"
             type="button"
             role="menuitem"
-            onClick={() => openUnitPreview(contextMenuEntity.instance_id)}
+            onClick={() => (isGmRepositionMode ? openUnitEditor(contextMenuEntity.instance_id) : openUnitPreview(contextMenuEntity.instance_id))}
             disabled={busy}
           >
-            Show unit
+            {isGmRepositionMode ? "Edit Unit" : "Show unit"}
           </button>
         </div>
       ) : null}
 
       <ModalShell
         open={modal === "unit-preview" && Boolean(previewEntity)}
-        title={previewEntity?.name || "Show unit"}
-        subtitle={previewEntity?.is_player ? "Player" : previewEntity ? titleCaseFromSnake(previewEntity.template_id) : ""}
+        title={unitDetailsMode === "edit" ? "Edit Unit" : "Show Unit"}
+        subtitle={
+          previewEntity
+            ? `${previewEntity.name} · ${previewEntity.is_player ? "Player" : titleCaseFromSnake(previewEntity.template_id)}`
+            : ""
+        }
         onClose={closeModal}
         size="wide"
+        className="modal-shell-unit-details"
       >
         {previewEntity ? (
-          <div className="unit-preview-body">
-            <div className="unit-preview-frame">
-              <img
-                className="unit-preview-image"
-                src={previewEntity.image_url}
-                alt={`${previewEntity.name} preview`}
-              />
-            </div>
-          </div>
+          <UnitDetailsModalContent
+            entity={previewEntity}
+            form={unitDetailsForm}
+            editable={unitDetailsMode === "edit"}
+            activeTab={unitDetailsTab}
+            onTabChange={setUnitDetailsTab}
+            onFieldChange={updateUnitDetailsForm}
+            onConditionChange={updateUnitCondition}
+            onCustomConditionChange={updateUnitCustomCondition}
+            onAddCustomCondition={addUnitCustomCondition}
+            onRemoveCustomCondition={removeUnitCustomCondition}
+            onDeckCountChange={updateUnitDeckCount}
+            error={unitDetailsError}
+            busy={busy}
+            sourceConfirm={unitDetailsSourceConfirm}
+            onSourceConfirmChange={setUnitDetailsSourceConfirm}
+            onApply={() => applyUnitDetails({ close: true })}
+            onSaveSource={() => applyUnitDetails({ close: true, sourceCharacter: true })}
+            onCancel={closeModal}
+          />
         ) : null}
       </ModalShell>
 
@@ -8697,6 +9008,287 @@ function BattleRoom({
               );
             })}
           </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function UnitDetailsModalContent({
+  entity,
+  form,
+  editable,
+  activeTab,
+  onTabChange,
+  onFieldChange,
+  onConditionChange,
+  onCustomConditionChange,
+  onAddCustomCondition,
+  onRemoveCustomCondition,
+  onDeckCountChange,
+  error,
+  busy,
+  sourceConfirm,
+  onSourceConfirmChange,
+  onApply,
+  onSaveSource,
+  onCancel,
+}) {
+  if (!entity || !form) {
+    return null;
+  }
+  const editor = entity.editor || {};
+  const deck = editor.deck || {};
+  const deckCards = Array.isArray(deck.cards) ? deck.cards : [];
+  const deckTotal = Object.values(form.deckComposition || {}).reduce((sum, count) => sum + nonnegativeInt(count), 0);
+  const activeConditions = Object.entries(entity.statuses || {})
+    .filter(([key]) => !UNIT_DERIVED_CONDITIONS.has(normalizeUnitConditionKey(key)))
+    .map(([key, value]) => `${titleCaseFromSnake(key)} ${statusStacks(value)}`)
+    .join(", ");
+  const sourceLabel = editor.sourceName || editor.sourceId || "";
+
+  return (
+    <div className={`unit-details ${editable ? "unit-details-editable" : "unit-details-readonly"}`.trim()}>
+      <div className="add-unit-tabs unit-detail-tabs" role="tablist">
+        {UNIT_DETAIL_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            className={activeTab === tab.id ? "active" : ""}
+            aria-selected={activeTab === tab.id}
+            onClick={() => onTabChange(tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {error ? <div className="status-banner status-error unit-details-error">{error}</div> : null}
+
+      <div className="unit-details-panel">
+        {activeTab === "overview" ? (
+          <div className="unit-details-overview">
+            <div className="unit-details-portrait">
+              <img src={entity.image_url} alt={`${entity.name} portrait`} />
+            </div>
+            <div className="unit-details-overview-main">
+              <div className="selected-kicker">{entity.is_player ? "Player" : titleCaseFromSnake(entity.template_id)}</div>
+              <div className="unit-details-title-row">
+                <h3>{entity.name}</h3>
+                {entity.is_player ? <span className="badge">Player</span> : <span className="badge badge-enemy">Enemy</span>}
+                {entity.physical_cards ? <span className="badge badge-status">Physical cards</span> : null}
+                {entity.is_down ? <span className="badge badge-down">{entity.is_ko ? "KO" : "Down"}</span> : null}
+              </div>
+              {sourceLabel ? <div className="subtle-copy">Source character: {sourceLabel}</div> : null}
+              <div className="unit-details-stat-grid">
+                <LootBlock label="Toughness" value={`${entity.toughness_current}/${entity.toughness_max}`} />
+                <LootBlock label="Armor" value={`${entity.armor_current}/${entity.armor_max}`} />
+                <LootBlock label="M Armor" value={`${entity.magic_armor_current}/${entity.magic_armor_max}`} />
+                <LootBlock label="Guard" value={`${entity.guard_current}/${entity.guard_base || 0}`} />
+                <LootBlock label="Draw" value={String(entity.power_base ?? 0)} />
+                <LootBlock label="Move" value={String(entity.effective_movement ?? entity.movement ?? 0)} />
+                <LootBlock label="Deck" value={String(deckTotal)} />
+              </div>
+              <div className="unit-details-summary-row">
+                <span>Conditions</span>
+                <strong>{activeConditions || "-"}</strong>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab === "identity" ? (
+          <div className="modal-form unit-details-form">
+            <label className="field field-full">
+              <span>Name</span>
+              {editable ? (
+                <input
+                  value={form.identity.name}
+                  onChange={(event) => onFieldChange(["identity", "name"], event.target.value)}
+                />
+              ) : (
+                <div className="readonly-field">{form.identity.name || "-"}</div>
+              )}
+            </label>
+            <label className="field field-full">
+              <span>Image</span>
+              {editable ? (
+                <input
+                  value={form.identity.image}
+                  onChange={(event) => onFieldChange(["identity", "image"], event.target.value)}
+                  placeholder="/images/anonymous.png"
+                />
+              ) : (
+                <div className="readonly-field">{form.identity.image || "-"}</div>
+              )}
+            </label>
+          </div>
+        ) : null}
+
+        {activeTab === "stats" ? (
+          <div className="field-grid unit-details-stat-editor">
+            {UNIT_STAT_FIELDS.map(([key, label]) => (
+              <label className="field" key={key}>
+                <span>{label}</span>
+                {editable ? (
+                  <input
+                    type="number"
+                    min="0"
+                    value={form.stats[key] ?? 0}
+                    onChange={(event) => onFieldChange(["stats", key], event.target.value)}
+                  />
+                ) : (
+                  <div className="readonly-field">{form.stats[key] ?? 0}</div>
+                )}
+              </label>
+            ))}
+          </div>
+        ) : null}
+
+        {activeTab === "conditions" ? (
+          <div className="unit-condition-editor">
+            <div className="unit-condition-grid">
+              {UNIT_KNOWN_CONDITIONS.map((condition) => {
+                const stacks = nonnegativeInt(form.statuses?.[condition.key] || 0);
+                return (
+                  <div className={`unit-condition-row ${stacks > 0 ? "unit-condition-active" : ""}`.trim()} key={condition.key}>
+                    <label className="toggle-field">
+                      <input
+                        type="checkbox"
+                        checked={stacks > 0}
+                        disabled={!editable}
+                        onChange={(event) => onConditionChange(condition.key, event.target.checked ? Math.max(1, stacks || 1) : 0)}
+                      />
+                      <span>{condition.label}</span>
+                    </label>
+                    {editable ? (
+                      <input
+                        type="number"
+                        min="1"
+                        value={stacks || 1}
+                        disabled={stacks <= 0}
+                        aria-label={`${condition.label} stacks`}
+                        onChange={(event) => onConditionChange(condition.key, event.target.value)}
+                      />
+                    ) : (
+                      <span className="unit-condition-stacks">{stacks > 0 ? `x${stacks}` : "-"}</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="unit-custom-condition-list">
+              <div className="builder-card-title">Custom conditions</div>
+              {(form.customConditions || []).map((condition, index) => (
+                <div className="unit-custom-condition-row" key={`${condition.key}-${index}`}>
+                  {editable ? (
+                    <>
+                      <input
+                        aria-label={`Custom condition ${index + 1}`}
+                        value={condition.key}
+                        onChange={(event) => onCustomConditionChange(index, { key: event.target.value })}
+                        placeholder="condition_key"
+                      />
+                      <input
+                        type="number"
+                        min="1"
+                        aria-label={`Custom condition ${index + 1} stacks`}
+                        value={condition.stacks}
+                        onChange={(event) => onCustomConditionChange(index, { stacks: event.target.value })}
+                      />
+                      <button
+                        className="small-button danger-button"
+                        type="button"
+                        onClick={() => onRemoveCustomCondition(index)}
+                        aria-label={`Remove custom condition ${condition.key || index + 1}`}
+                      >
+                        <TrashIcon />
+                      </button>
+                    </>
+                  ) : (
+                    <span>{condition.key ? `${condition.key} x${condition.stacks}` : "-"}</span>
+                  )}
+                </div>
+              ))}
+              {editable ? (
+                <button className="secondary-button compact-button" type="button" onClick={onAddCustomCondition}>
+                  Add custom condition
+                </button>
+              ) : null}
+              {!editable && !(form.customConditions || []).length ? <div className="empty-copy">No custom conditions.</div> : null}
+            </div>
+            {entity.statuses?.grappled || entity.statuses?.grappling ? (
+              <div className="subtle-copy">Grappled and grappling are derived from active grapples and are read-only here.</div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {activeTab === "deck" ? (
+          <div className="unit-deck-editor">
+            <div className="unit-details-summary-row">
+              <span>{deck.physicalCards ? "Physical deck composition" : "Digital deck composition"}</span>
+              <strong>{deckTotal} cards</strong>
+            </div>
+            {editable ? (
+              <div className="subtle-copy">Applying deck changes rebuilds and shuffles the live deck. Wounds are managed separately.</div>
+            ) : null}
+            <div className="unit-deck-card-list">
+              {deckCards.map((card) => (
+                <div className="unit-deck-card-row" key={card.id}>
+                  <div className="unit-deck-card-main">
+                    <strong>{card.title || card.id}</strong>
+                    <span>{card.text || card.id}</span>
+                    <small>{[card.energyType, card.energyAmount ? String(card.energyAmount) : "", card.outcome].filter(Boolean).join(" ")}</small>
+                  </div>
+                  {editable ? (
+                    <input
+                      type="number"
+                      min="0"
+                      aria-label={`${card.title || card.id} count`}
+                      value={form.deckComposition?.[card.id] ?? 0}
+                      onChange={(event) => onDeckCountChange(card.id, event.target.value)}
+                    />
+                  ) : (
+                    <span className="unit-deck-count">{form.deckComposition?.[card.id] ?? 0}</span>
+                  )}
+                </div>
+              ))}
+              {!deckCards.length ? <div className="empty-copy">No deck cards available for this unit.</div> : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {editable ? (
+        <div className="modal-actions unit-details-actions">
+          {editor.canSaveToCharacterSource ? (
+            <button
+              className={`secondary-button ${sourceConfirm ? "danger-button" : ""}`.trim()}
+              type="button"
+              onClick={() => (sourceConfirm ? onSaveSource() : onSourceConfirmChange(true))}
+              disabled={busy}
+            >
+              {sourceConfirm ? "Confirm save to character" : "Save to character..."}
+            </button>
+          ) : null}
+          <button className="primary-button" type="button" onClick={onApply} disabled={busy}>
+            Apply
+          </button>
+          <button className="secondary-button" type="button" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <div className="modal-actions unit-details-actions">
+          <button className="primary-button" type="button" onClick={onCancel}>
+            Close
+          </button>
+        </div>
+      )}
+      {sourceConfirm ? (
+        <div className="status-banner status-notice unit-source-confirm">
+          This updates the saved character used for future spawns. The live unit is also updated.
         </div>
       ) : null}
     </div>

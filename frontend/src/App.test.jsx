@@ -14,6 +14,8 @@ function jsonResponse(payload, init = {}) {
 }
 
 function buildEnemy(overrides = {}) {
+  const hpCurrent = overrides.hp_current ?? 10;
+  const hpMax = overrides.hp_max ?? 12;
   return {
     instance_id: "enemy-1",
     template_id: "goblin",
@@ -21,16 +23,21 @@ function buildEnemy(overrides = {}) {
     image_url: "/images/Greenskins/goblin.png",
     is_player: false,
     is_down: false,
-    hp_current: 10,
-    hp_max: 12,
+    hp_current: hpCurrent,
+    hp_max: hpMax,
+    toughness_current: overrides.toughness_current ?? hpCurrent,
+    toughness_max: overrides.toughness_max ?? hpMax,
     armor_current: 1,
     armor_max: 1,
     magic_armor_current: 0,
     magic_armor_max: 0,
+    guard_base: 0,
     guard_current: 0,
     draws_base: 1,
     power_base: 1,
+    movement: 6,
     effective_movement: 6,
+    initiative_modifier: 2,
     statuses: {},
     status_text: "-",
     current_draw_text: [],
@@ -51,6 +58,23 @@ function buildEnemy(overrides = {}) {
     loot_taken_by_name: null,
     loot_state: "uninspected",
     inventory: { currency: {}, resources: {}, other: [] },
+    editor: {
+      canEdit: true,
+      sourceType: null,
+      sourceId: null,
+      sourceName: null,
+      canSaveToCharacterSource: false,
+      deck: {
+        composition: { basic_a2: 1, basic_a3: 1 },
+        cards: [
+          { id: "basic_a2", title: "Attack 2", text: "Attack 2", energyType: "", energyAmount: 0, outcome: "", count: 1 },
+          { id: "basic_a3", title: "Attack 3", text: "Attack 3", energyType: "", energyAmount: 0, outcome: "", count: 1 },
+        ],
+        resetOnApply: true,
+        physicalCards: false,
+      },
+      derivedStatusKeys: ["grappled", "grappling"],
+    },
     grid_x: 4,
     grid_y: 3,
     ...overrides,
@@ -5202,7 +5226,7 @@ describe("App", () => {
     expect(within(downMenu).queryByRole("menuitem", { name: "Heal unit" })).not.toBeInTheDocument();
   });
 
-  it("opens a large unit preview from the context menu", async () => {
+  it("opens read-only unit details from the context menu", async () => {
     const user = userEvent.setup();
     const bandit = buildEnemy({
       instance_id: "enemy-2",
@@ -5237,14 +5261,165 @@ describe("App", () => {
     pointerRightClickMapCell(5, 3);
     await user.click(await screen.findByRole("menuitem", { name: "Show unit" }));
 
-    const previewImage = screen.getByRole("img", { name: "Bandit 1 preview" });
+    const previewImage = screen.getByRole("img", { name: "Bandit 1 portrait" });
     const previewModal = previewImage.closest(".modal-shell");
+    expect(within(previewModal).getByText("Show Unit")).toBeInTheDocument();
     expect(within(previewModal).getByText("Bandit 1")).toBeInTheDocument();
     expect(within(previewModal).getByText("Bandit")).toBeInTheDocument();
     expect(previewImage).toHaveAttribute("src", "/images/Outlaws/bandit.png");
+    expect(within(previewModal).getByRole("tab", { name: "Stats" })).toBeInTheDocument();
+    expect(within(previewModal).queryByRole("button", { name: "Apply" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Close" }));
-    expect(screen.queryByRole("img", { name: "Bandit 1 preview" })).not.toBeInTheDocument();
+    await user.click(within(previewModal).getAllByRole("button", { name: "Close" })[1]);
+    expect(screen.queryByRole("img", { name: "Bandit 1 portrait" })).not.toBeInTheDocument();
+  });
+
+  it("opens editable unit details in GM mode and applies session-only changes", async () => {
+    const user = userEvent.setup();
+    let patchBody = null;
+    const bandit = buildEnemy({
+      instance_id: "enemy-2",
+      template_id: "bandit",
+      name: "Bandit 1",
+      image_url: "/images/Outlaws/bandit.png",
+      grid_x: 5,
+      grid_y: 3,
+    });
+    const selectedBanditSnapshot = buildSnapshot({
+      selectedId: "enemy-2",
+      order: ["enemy-1", "enemy-2"],
+      enemies: [buildEnemy(), bandit],
+    });
+    const updatedBandit = buildEnemy({
+      ...bandit,
+      name: "Bandit Captain",
+      toughness_current: 10,
+      toughness_max: 11,
+      statuses: { burn: { stacks: 2 } },
+      editor: {
+        ...bandit.editor,
+        deck: {
+          ...bandit.editor.deck,
+          composition: { basic_a2: 2, basic_a3: 1 },
+          cards: bandit.editor.deck.cards.map((card) => (card.id === "basic_a2" ? { ...card, count: 2 } : card)),
+        },
+      },
+    });
+
+    renderWithSnapshot(
+      buildSnapshot({
+        order: ["enemy-1", "enemy-2"],
+        enemies: [buildEnemy(), bandit],
+      }),
+      {
+        extraFetch: (url, requestOptions) => {
+          if (url === "/api/battle/sessions/sid-123/select" && requestOptions?.method === "POST") {
+            return jsonResponse(selectedBanditSnapshot);
+          }
+          if (url === "/api/battle/sessions/sid-123/entities/enemy-2" && requestOptions?.method === "PATCH") {
+            patchBody = JSON.parse(requestOptions.body);
+            return jsonResponse(
+              buildSnapshot({
+                selectedId: "enemy-2",
+                order: ["enemy-1", "enemy-2"],
+                enemies: [buildEnemy(), updatedBandit],
+              }),
+            );
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const gmButton = await screen.findByRole("button", { name: "GM Mode" });
+    expect(gmButton).toHaveAttribute("title", "GM Mode: reposition units, reveal hidden map details, and edit live units.");
+    await user.click(gmButton);
+    pointerRightClickMapCell(5, 3);
+    const menu = await screen.findByRole("menu", { name: "Unit actions for Bandit 1" });
+    expect(within(menu).getByRole("menuitem", { name: "Edit Unit" })).toBeInTheDocument();
+    await user.click(within(menu).getByRole("menuitem", { name: "Edit Unit" }));
+
+    const modalShell = screen.getByText("Edit Unit").closest(".modal-shell");
+    await user.click(within(modalShell).getByRole("tab", { name: "Identity" }));
+    await user.clear(within(modalShell).getByLabelText("Name"));
+    await user.type(within(modalShell).getByLabelText("Name"), "Bandit Captain");
+    await user.click(within(modalShell).getByRole("tab", { name: "Stats" }));
+    await user.clear(within(modalShell).getByLabelText("Toughness max"));
+    await user.type(within(modalShell).getByLabelText("Toughness max"), "11");
+    await user.click(within(modalShell).getByRole("tab", { name: "Conditions" }));
+    fireEvent.click(within(modalShell).getByLabelText("Burn"));
+    fireEvent.change(within(modalShell).getByLabelText("Burn stacks"), { target: { value: "2" } });
+    await user.click(within(modalShell).getByRole("tab", { name: "Deck" }));
+    await user.clear(within(modalShell).getByLabelText("Attack 2 count"));
+    await user.type(within(modalShell).getByLabelText("Attack 2 count"), "2");
+    await user.click(within(modalShell).getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(patchBody).not.toBeNull());
+    expect(patchBody.identity.name).toBe("Bandit Captain");
+    expect(patchBody.stats.toughnessMax).toBe(11);
+    expect(patchBody.statuses.burn).toEqual({ stacks: 2 });
+    expect(patchBody.deck).toEqual({ composition: { basic_a2: 2, basic_a3: 1 }, reset: true });
+    expect(screen.queryByText("Edit Unit")).not.toBeInTheDocument();
+  });
+
+  it("opens editable unit details from the inspector and confirms saved character source updates", async () => {
+    const user = userEvent.setup();
+    let sourceBody = null;
+    const player = buildEnemy({
+      instance_id: "player-1",
+      template_id: "player",
+      name: "Mira",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      character_profile: { id: "mira_1", name: "Mira", className: "Fighter" },
+      editor: {
+        ...buildEnemy().editor,
+        sourceType: "character",
+        sourceId: "mira_1",
+        sourceName: "Mira",
+        canSaveToCharacterSource: true,
+        deck: {
+          ...buildEnemy().editor.deck,
+          cards: [
+            { id: "hf_light_success_2a", title: "Light energy 2 - success", text: "Light energy 2 - success", energyType: "Light", energyAmount: 2, outcome: "success", count: 1 },
+          ],
+          composition: { hf_light_success_2a: 1 },
+        },
+      },
+    });
+    const playerSnapshot = buildSnapshot({ selectedId: "player-1", order: ["player-1"], enemies: [player] });
+
+    renderWithSnapshot(playerSnapshot, {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/entities/player-1/source-character" && requestOptions?.method === "POST") {
+          sourceBody = JSON.parse(requestOptions.body);
+          return jsonResponse(
+            buildSnapshot({
+              selectedId: "player-1",
+              order: ["player-1"],
+              enemies: [{ ...player, name: "Mira Corrupted" }],
+            }),
+          );
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "GM Mode" }));
+    const editButton = await screen.findByRole("button", { name: "Edit" });
+    await user.click(editButton);
+    const modalShell = screen.getByText("Edit Unit").closest(".modal-shell");
+    expect(within(modalShell).getByRole("button", { name: "Save to character..." })).toBeInTheDocument();
+    await user.click(within(modalShell).getByRole("tab", { name: "Identity" }));
+    await user.clear(within(modalShell).getByLabelText("Name"));
+    await user.type(within(modalShell).getByLabelText("Name"), "Mira Corrupted");
+    await user.click(within(modalShell).getByRole("button", { name: "Save to character..." }));
+    expect(within(modalShell).getByText("This updates the saved character used for future spawns. The live unit is also updated.")).toBeInTheDocument();
+    await user.click(within(modalShell).getByRole("button", { name: "Confirm save to character" }));
+
+    await waitFor(() => expect(sourceBody).not.toBeNull());
+    expect(sourceBody.identity.name).toBe("Mira Corrupted");
+    expect(sourceBody.deck).toEqual({ composition: { hf_light_success_2a: 1 }, reset: true });
   });
 
   it("opens attack and heal modals from the unit context menu", async () => {

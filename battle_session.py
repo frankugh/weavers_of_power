@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 import copy
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import heapq
 import json
@@ -23,6 +23,7 @@ from engine.character_builder import (
     build_character_art_options,
     card_from_payload,
     card_library_from_profile,
+    card_to_payload,
     catalog_payload,
     character_summary,
     deck_from_profile,
@@ -774,6 +775,13 @@ class BattleSessionContext:
         if not isinstance(payload, dict):
             raise BattleSessionError("Character profile not found")
         return payload
+
+    def save_character_profile_payload(self, character_id: str, profile: dict) -> dict:
+        path = self._character_profile_path(character_id)
+        if not path.exists():
+            raise BattleSessionError("Character profile not found")
+        save_current(path, profile)
+        return {"character": character_summary(profile)}
 
     def delete_character_profile(self, character_id: str) -> dict:
         path = self._character_profile_path(character_id)
@@ -5299,6 +5307,350 @@ class BattleSession:
             )
         self.autosave()
 
+    def update_entity_from_gm_editor(self, instance_id: str, payload: dict) -> None:
+        entity = self._require_entity_by_id(instance_id)
+        changed = self._apply_entity_editor_payload(entity, payload or {})
+        if changed:
+            self._add_log(f"GM updated {entity.name}: {', '.join(changed)}.")
+        self.autosave()
+
+    def update_source_character_from_entity(self, instance_id: str, payload: dict | None = None) -> None:
+        entity = self._require_entity_by_id(instance_id)
+        if not self.is_player(entity):
+            raise BattleSessionError("Only player characters can update a saved character source.")
+        profile_ref = getattr(entity, "character_profile", {}) or {}
+        character_id = str(profile_ref.get("id") or "").strip()
+        if not character_id:
+            raise BattleSessionError("This unit was not spawned from a saved character.")
+
+        changed = self._apply_entity_editor_payload(entity, payload or {})
+        profile = self._character_profile_from_entity(entity, character_id)
+        self.context.save_character_profile_payload(character_id, profile)
+        entity.character_profile = {
+            "id": profile.get("id"),
+            "name": profile.get("name"),
+            "className": profile.get("className"),
+            "ancestryName": profile.get("ancestryName"),
+            "energyTypes": list((profile.get("choices") or {}).get("energyTypes") or []),
+            "mainArt": (profile.get("choices") or {}).get("mainArt"),
+            "art": dict(profile.get("art") or {}),
+            "gearPreset": dict(profile.get("gearPreset") or {}),
+        }
+        self._add_log(
+            f"GM updated {entity.name}'s saved character source"
+            + (f" after changing {', '.join(changed)}." if changed else ".")
+        )
+        self.autosave()
+
+    def _apply_entity_editor_payload(self, entity: EnemyInstance, payload: dict) -> list[str]:
+        changed: list[str] = []
+        identity = payload.get("identity")
+        if isinstance(identity, dict):
+            self._apply_entity_identity_edit(entity, identity)
+            changed.append("identity")
+
+        stats = payload.get("stats")
+        if isinstance(stats, dict):
+            self._apply_entity_stats_edit(entity, stats)
+            changed.append("stats")
+
+        if "statuses" in payload and isinstance(payload.get("statuses"), dict):
+            entity.statuses = self._normalize_status_map(payload.get("statuses") or {})
+            changed.append("conditions")
+
+        deck = payload.get("deck")
+        if isinstance(deck, dict) and "composition" in deck:
+            self._apply_entity_deck_composition(entity, deck.get("composition") or {})
+            changed.append("deck")
+
+        return changed
+
+    def _apply_entity_identity_edit(self, entity: EnemyInstance, identity: dict) -> None:
+        if "name" in identity:
+            name = str(identity.get("name") or "").strip()
+            entity.name = name or "Unit"
+        if "image" in identity:
+            entity.image = self._normalize_unit_image_value(identity.get("image"))
+
+    def _apply_entity_stats_edit(self, entity: EnemyInstance, stats: dict) -> None:
+        def assign(attr: str, key: str) -> None:
+            if key in stats and stats.get(key) is not None:
+                setattr(entity, attr, max(0, int(stats.get(key) or 0)))
+
+        assign("toughness_max", "toughnessMax")
+        assign("armor_max", "armorMax")
+        assign("magic_armor_max", "magicArmorMax")
+        assign("guard_base", "guardBase")
+        assign("power_base", "powerBase")
+        assign("movement", "movement")
+        assign("initiative_modifier", "initiativeModifier")
+        assign("toughness_current", "toughnessCurrent")
+        assign("armor_current", "armorCurrent")
+        assign("magic_armor_current", "magicArmorCurrent")
+        assign("guard_current", "guardCurrent")
+
+        entity.toughness_current = min(max(0, int(entity.toughness_current)), max(0, int(entity.toughness_max)))
+        entity.armor_current = min(max(0, int(entity.armor_current)), max(0, int(entity.armor_max)))
+        entity.magic_armor_current = min(max(0, int(entity.magic_armor_current)), max(0, int(entity.magic_armor_max)))
+        entity.guard_current = max(0, int(entity.guard_current))
+        entity.guard_base = max(0, int(getattr(entity, "guard_base", 0) or 0))
+        entity.power_base = max(0, int(getattr(entity, "power_base", 0) or 0))
+        entity.movement = max(0, int(getattr(entity, "movement", 0) or 0))
+        entity.initiative_modifier = max(0, int(getattr(entity, "initiative_modifier", 0) or 0))
+
+    def _apply_entity_deck_composition(self, entity: EnemyInstance, raw_composition: dict) -> None:
+        available_cards = self._available_unit_cards(entity)
+        available_ids = {card.id for card in available_cards}
+        composition: Counter[str] = Counter()
+        for raw_card_id, raw_count in (raw_composition or {}).items():
+            card_id = str(raw_card_id or "").strip()
+            if not card_id:
+                continue
+            if card_id == WOUND_CARD_ID:
+                raise BattleSessionError("Wounds are managed through wound controls, not deck composition.")
+            if card_id not in available_ids:
+                raise BattleSessionError(f"Card '{card_id}' is not available for {entity.name}.")
+            try:
+                count = int(raw_count)
+            except (TypeError, ValueError) as exc:
+                raise BattleSessionError(f"Card '{card_id}' needs a numeric count.") from exc
+            if count < 0:
+                raise BattleSessionError(f"Card '{card_id}' cannot have a negative count.")
+            if count > 100:
+                raise BattleSessionError(f"Card '{card_id}' count is too high.")
+            if count:
+                composition[card_id] = count
+
+        if not composition:
+            raise BattleSessionError("Deck composition needs at least one card.")
+
+        cards = list(composition.elements())
+        if self.is_player(entity) and not self._uses_physical_cards(entity):
+            cards.extend([WOUND_CARD_ID] * self._player_wound_counts(entity)["total"])
+        self._rng.shuffle(cards)
+        entity.deck_state = DeckState(draw_pile=cards, discard_pile=[], hand=[])
+        entity.pending_reshuffle = False
+        entity.power_draw_used = False
+        entity.quick_attack_used = False
+        self._set_visible_draw(entity, [])
+        if self.is_player(entity) and not self._uses_physical_cards(entity):
+            self._clear_player_ko_if_hand_is_clean(entity)
+        self._refresh_unit_card_library_weights(entity, composition)
+
+    def _refresh_unit_card_library_weights(self, entity: EnemyInstance, composition: Counter[str]) -> None:
+        library = dict(getattr(entity, "card_library", {}) or {})
+        if not library:
+            return
+        for card_id in list(library.keys()):
+            if card_id in composition:
+                library[card_id] = {**library[card_id], "weight": int(composition[card_id])}
+            else:
+                library.pop(card_id, None)
+        entity.card_library = library
+
+    def _character_profile_from_entity(self, entity: EnemyInstance, character_id: str) -> dict:
+        profile = copy.deepcopy(self.context.load_character_profile(character_id))
+        profile["id"] = character_id
+        profile["name"] = entity.name
+        profile["updatedAt"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        profile["art"] = self._character_art_from_entity(entity)
+
+        choices = dict(profile.get("choices") or {})
+        stats = dict(choices.get("stats") or {})
+        stats.update(
+            {
+                "toughness": max(0, int(entity.toughness_max)),
+                "armor": max(0, int(entity.armor_max)),
+                "magicArmor": max(0, int(entity.magic_armor_max)),
+                "power": max(0, int(entity.power_base)),
+                "movement": max(0, int(entity.movement)),
+                "baseGuard": max(0, int(getattr(entity, "guard_base", 0) or 0)),
+                "initiativeModifier": max(0, int(getattr(entity, "initiative_modifier", 0) or 0)),
+            }
+        )
+        choices["stats"] = stats
+        profile["choices"] = choices
+        profile["generatedDeck"] = {
+            "id": f"character_{character_id}",
+            "name": f"{entity.name} Starting Deck",
+            "cards": self._character_deck_payload_from_entity(entity),
+        }
+        return profile
+
+    def _character_art_from_entity(self, entity: EnemyInstance) -> dict:
+        image_path = self._normalize_unit_image_value(getattr(entity, "image", None))
+        if not image_path:
+            return {
+                "source": "anonymous",
+                "imagePath": "anonymous.png",
+                "imageUrl": "/images/anonymous.png",
+                "label": "Anonymous",
+            }
+        if image_path.startswith("http://") or image_path.startswith("https://"):
+            raise BattleSessionError("Saved character art must use a local image.")
+        try:
+            return resolve_character_art(
+                {"imagePath": image_path},
+                images_dir=self.context.images_dir,
+                character_art_options=self.context.character_art_options(),
+            )
+        except CharacterBuilderError as exc:
+            raise BattleSessionError(str(exc)) from exc
+
+    def _character_deck_payload_from_entity(self, entity: EnemyInstance) -> list[dict]:
+        composition = self._unit_deck_composition(entity)
+        cards_by_id = {card.id: card for card in self._available_unit_cards(entity)}
+        library = dict(getattr(entity, "card_library", {}) or {})
+        payloads: list[dict] = []
+        for card_id, count in sorted(composition.items()):
+            if count <= 0 or card_id == WOUND_CARD_ID:
+                continue
+            if card_id in library and isinstance(library[card_id], dict):
+                payload = dict(library[card_id])
+            else:
+                card = cards_by_id.get(card_id) or self._card_for_id(card_id)
+                if card is None:
+                    raise BattleSessionError(f"Card '{card_id}' is not available for source save.")
+                payload = card_to_payload(card)
+            payload["weight"] = int(count)
+            payloads.append(payload)
+        if not payloads:
+            raise BattleSessionError("Saved character deck needs at least one card.")
+        return payloads
+
+    @staticmethod
+    def _normalize_unit_image_value(value: object) -> Optional[str]:
+        text = str(value or "").strip().replace("\\", "/")
+        if not text:
+            return None
+        if text.startswith("http://") or text.startswith("https://"):
+            return text
+        if text.startswith("/images/"):
+            text = text[len("/images/") :]
+        elif text.startswith("images/"):
+            text = text[len("images/") :]
+        return text.lstrip("/")
+
+    @staticmethod
+    def _normalize_status_key(value: object) -> str:
+        raw = str(value or "").strip().lower()
+        key = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
+        aliases = {
+            "burning": "burn",
+            "burned": "burn",
+            "poisoned": "poison",
+            "slow": "slowed",
+            "paralyse": "paralyzed",
+            "paralysed": "paralyzed",
+            "paralyze": "paralyzed",
+        }
+        return aliases.get(key, key)
+
+    def _normalize_status_map(self, raw_statuses: dict) -> dict[str, dict]:
+        normalized: dict[str, dict] = {}
+        for raw_key, raw_value in (raw_statuses or {}).items():
+            key = self._normalize_status_key(raw_key)
+            if not key or key in {"grappled", "grappling"}:
+                continue
+            if raw_value in (None, False, "", 0):
+                continue
+            if isinstance(raw_value, dict):
+                raw_stacks = raw_value.get("stacks", 1)
+            elif isinstance(raw_value, bool):
+                raw_stacks = 1
+            else:
+                raw_stacks = raw_value
+            try:
+                stacks = max(1, int(raw_stacks))
+            except (TypeError, ValueError):
+                stacks = 1
+            normalized[key] = {"stacks": stacks}
+        return normalized
+
+    def _available_unit_cards(self, entity: EnemyInstance) -> list[Card]:
+        cards: list[Card] = []
+        if self.is_player(entity):
+            library = dict(getattr(entity, "card_library", {}) or {})
+            if library:
+                for payload in library.values():
+                    if isinstance(payload, dict):
+                        try:
+                            cards.append(card_from_payload(payload))
+                        except (KeyError, TypeError, ValueError):
+                            continue
+            else:
+                deck_id = getattr(entity, "core_deck_id", None) or PLAYER_DECK_ID
+                deck = self.context.player_decks.get(deck_id)
+                if deck:
+                    cards.extend(deck.cards)
+        else:
+            template = self.context.enemy_templates.get(getattr(entity, "template_id", ""))
+            if template:
+                core_deck = template.action_deck or self.context.decks.get(template.coreDeck)
+                if core_deck:
+                    cards.extend(core_deck.cards)
+                cards.extend(getattr(template, "specials", ()) or ())
+            else:
+                deck = self.context.decks.get(getattr(entity, "core_deck_id", "") or "")
+                if deck:
+                    cards.extend(deck.cards)
+
+        seen: set[str] = set()
+        result: list[Card] = []
+        for card in cards:
+            if card.id in seen or card.id == WOUND_CARD_ID:
+                continue
+            seen.add(card.id)
+            result.append(card)
+        return result
+
+    def _unit_deck_composition(self, entity: EnemyInstance) -> Counter[str]:
+        deck_state = getattr(entity, "deck_state", DeckState())
+        cards = list(deck_state.draw_pile) + list(deck_state.discard_pile) + list(deck_state.hand)
+        return Counter(card_id for card_id in cards if card_id != WOUND_CARD_ID)
+
+    def _unit_editor_card_payload(self, entity: EnemyInstance, card: Card, count: int) -> dict:
+        return {
+            "id": card.id,
+            "title": card.title,
+            "text": self.card_to_effect_text(card.id),
+            "energyType": card.energy_type or "",
+            "energyAmount": int(card.energy_amount or 0),
+            "outcome": card.outcome or "",
+            "count": int(count),
+        }
+
+    def _unit_editor_payload(self, entity: EnemyInstance) -> dict:
+        composition = self._unit_deck_composition(entity)
+        cards = self._available_unit_cards(entity)
+        available_ids = {card.id for card in cards}
+        for card_id in sorted(set(composition) - available_ids):
+            card = self._card_for_id(card_id)
+            if card and card.id != WOUND_CARD_ID:
+                cards.append(card)
+                available_ids.add(card.id)
+        cards_payload = [
+            self._unit_editor_card_payload(entity, card, composition.get(card.id, 0))
+            for card in sorted(cards, key=lambda item: (item.energy_type or "", item.outcome or "", item.title, item.id))
+        ]
+        profile = getattr(entity, "character_profile", {}) or {}
+        source_id = str(profile.get("id") or "").strip() if self.is_player(entity) else ""
+        source_name = str(profile.get("name") or "").strip() if source_id else ""
+        return {
+            "canEdit": True,
+            "sourceType": "character" if source_id else None,
+            "sourceId": source_id or None,
+            "sourceName": source_name or None,
+            "canSaveToCharacterSource": bool(source_id),
+            "deck": {
+                "composition": dict(composition),
+                "cards": cards_payload,
+                "resetOnApply": True,
+                "physicalCards": bool(getattr(entity, "physical_cards", False)) if self.is_player(entity) else False,
+            },
+            "derivedStatusKeys": ["grappled", "grappling"],
+        }
+
     def _charge_action(self, entity: EnemyInstance) -> None:
         entity.actions_used = getattr(entity, "actions_used", 0) + 1
 
@@ -6936,6 +7288,7 @@ class BattleSession:
                 "power_draw_used": bool(getattr(entity, "power_draw_used", False)),
                 "wound_counts": self._player_wound_counts(entity) if self.is_player(entity) else None,
                 "power_draw_cards": self._power_draw_cards_payload(entity) if self.is_player(entity) else None,
+                "editor": self._unit_editor_payload(entity),
                 "current_draw_attacks": [
                     self._quick_attack_payload(step)
                     for step in self._quick_attack_steps_for(entity)
@@ -7138,10 +7491,14 @@ class BattleSession:
             raise BattleSessionError("Selected entity no longer exists")
         return entity
 
-    def _require_player_by_id(self, instance_id: str) -> EnemyInstance:
+    def _require_entity_by_id(self, instance_id: str) -> EnemyInstance:
         entity = self.state.enemies.get(instance_id)
         if not entity:
             raise BattleSessionError(f"Entity '{instance_id}' does not exist")
+        return entity
+
+    def _require_player_by_id(self, instance_id: str) -> EnemyInstance:
+        entity = self._require_entity_by_id(instance_id)
         if not self.is_player(entity):
             raise BattleSessionError("Wound actions are only available for player characters.")
         return entity

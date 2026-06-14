@@ -345,6 +345,114 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("GM override", response.json()["detail"])
 
+    def test_gm_unit_update_edits_live_unit_and_resets_deck(self) -> None:
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        spawned = self.client.post(
+            f"/api/battle/sessions/{sid}/players",
+            json={"name": "Mira", "power": 1},
+        ).json()
+        player_id = spawned["selectedId"]
+        session = self.context.load_session(sid)
+        player = session.state.enemies[player_id]
+        player.deck_state.hand = [WOUND_CARD_ID]
+        session.autosave()
+
+        response = self.client.patch(
+            f"/api/battle/sessions/{sid}/entities/{player_id}",
+            json={
+                "identity": {"name": "Mira Corrupted", "image": "/images/anonymous.png"},
+                "stats": {
+                    "toughnessCurrent": 9,
+                    "toughnessMax": 8,
+                    "armorCurrent": 2,
+                    "armorMax": 3,
+                    "magicArmorCurrent": 1,
+                    "magicArmorMax": 1,
+                    "guardCurrent": 4,
+                    "guardBase": 1,
+                    "powerBase": 3,
+                    "movement": 8,
+                    "initiativeModifier": 5,
+                },
+                "statuses": {"Slow": {"stacks": 1}, "custom curse": {"stacks": 2}, "grappled": {"stacks": 9}},
+                "deck": {"composition": {"hf_master_success": 2, "hf_void_fail": 1}, "reset": True},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        player_payload = next(enemy for enemy in response.json()["enemies"] if enemy["instance_id"] == player_id)
+        self.assertEqual(player_payload["name"], "Mira Corrupted")
+        self.assertEqual(player_payload["toughness_current"], 8)
+        self.assertEqual(player_payload["toughness_max"], 8)
+        self.assertEqual(player_payload["armor_current"], 2)
+        self.assertEqual(player_payload["magic_armor_current"], 1)
+        self.assertEqual(player_payload["guard_current"], 4)
+        self.assertEqual(player_payload["power_base"], 3)
+        self.assertEqual(player_payload["movement"], 8)
+        self.assertEqual(player_payload["effective_movement"], 4)
+        self.assertEqual(player_payload["initiative_modifier"], 5)
+        self.assertIn("slowed", player_payload["statuses"])
+        self.assertIn("custom_curse", player_payload["statuses"])
+        self.assertNotIn("grappled", player_payload["statuses"])
+        self.assertEqual(player_payload["wound_counts"], {"hand": 0, "discard": 0, "draw_pile": 1, "total": 1})
+        self.assertEqual(player_payload["editor"]["deck"]["composition"], {"hf_master_success": 2, "hf_void_fail": 1})
+
+    def test_gm_unit_update_can_save_saved_character_source(self) -> None:
+        create_response = self.client.post(
+            "/api/battle/characters",
+            json={
+                "name": "Mira",
+                "classId": "fighter",
+                "ancestryId": "halfling",
+                "energyTypes": ["Martial", "Elemental", "Light"],
+                "mainArt": "Martial",
+                "deckUpgrades": {
+                    "Martial": {"success_1": 1, "success_2": 1},
+                    "Elemental": {"success_1": 1, "success_2": 1},
+                    "Light": {"success_1": 1, "success_2": 1},
+                },
+                "classImprovementTarget": "success_1",
+                "gearPresetId": "melee",
+                "art": {"source": "anonymous", "imagePath": "anonymous.png", "label": "Anonymous"},
+            },
+        )
+        self.assertEqual(create_response.status_code, 200)
+        character_id = create_response.json()["character"]["id"]
+        sid = self.client.post("/api/battle/sessions").json()["sid"]
+        spawned = self.client.post(
+            f"/api/battle/sessions/{sid}/players/from-character",
+            json={"characterId": character_id},
+        ).json()
+        player = next(enemy for enemy in spawned["enemies"] if enemy["template_id"] == "player")
+        player_id = player["instance_id"]
+        first_card_id = player["editor"]["deck"]["cards"][0]["id"]
+
+        response = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{player_id}/source-character",
+            json={
+                "identity": {"name": "Mira Corrupted", "image": "/images/anonymous.png"},
+                "stats": {"toughnessMax": 7, "toughnessCurrent": 7, "powerBase": 5},
+                "deck": {"composition": {first_card_id: 3}, "reset": True},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        profile = self.context.load_character_profile(character_id)
+        self.assertEqual(profile["name"], "Mira Corrupted")
+        self.assertEqual(profile["choices"]["stats"]["toughness"], 7)
+        self.assertEqual(profile["choices"]["stats"]["power"], 5)
+        self.assertEqual(len(profile["generatedDeck"]["cards"]), 1)
+        self.assertEqual(profile["generatedDeck"]["cards"][0]["id"], first_card_id)
+        self.assertEqual(profile["generatedDeck"]["cards"][0]["weight"], 3)
+
+        enemy_id = self.client.post(f"/api/battle/sessions/{sid}/enemies", json={"templateId": "C_GOBLIN"}).json()["selectedId"]
+        rejected = self.client.post(
+            f"/api/battle/sessions/{sid}/entities/{enemy_id}/source-character",
+            json={"identity": {"name": "Goblin Source"}},
+        )
+        self.assertEqual(rejected.status_code, 400)
+        self.assertIn("Only player characters", rejected.json()["detail"])
+
     def test_create_and_load_session(self) -> None:
         create_response = self.client.post("/api/battle/sessions")
         self.assertEqual(create_response.status_code, 200)

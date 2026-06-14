@@ -146,6 +146,37 @@ class PlayerCardModeRequest(BaseModel):
     deckReset: bool = False
 
 
+class UnitIdentityRequest(BaseModel):
+    name: Optional[str] = None
+    image: Optional[str] = None
+
+
+class UnitStatsRequest(BaseModel):
+    toughnessCurrent: Optional[int] = Field(default=None, ge=0)
+    toughnessMax: Optional[int] = Field(default=None, ge=0)
+    armorCurrent: Optional[int] = Field(default=None, ge=0)
+    armorMax: Optional[int] = Field(default=None, ge=0)
+    magicArmorCurrent: Optional[int] = Field(default=None, ge=0)
+    magicArmorMax: Optional[int] = Field(default=None, ge=0)
+    guardCurrent: Optional[int] = Field(default=None, ge=0)
+    guardBase: Optional[int] = Field(default=None, ge=0)
+    powerBase: Optional[int] = Field(default=None, ge=0)
+    movement: Optional[int] = Field(default=None, ge=0)
+    initiativeModifier: Optional[int] = Field(default=None, ge=0)
+
+
+class UnitDeckRequest(BaseModel):
+    composition: dict[str, int] = Field(default_factory=dict)
+    reset: bool = True
+
+
+class UnitUpdateRequest(BaseModel):
+    identity: Optional[UnitIdentityRequest] = None
+    stats: Optional[UnitStatsRequest] = None
+    statuses: Optional[dict[str, Any]] = None
+    deck: Optional[UnitDeckRequest] = None
+
+
 class AttackRequest(BaseModel):
     damage: int = Field(default=0, ge=0)
     modifiers: list[AttackMod] = Field(default_factory=list)
@@ -625,6 +656,24 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
                 physical_cards=request.physicalCards,
                 deck_reset=request.deckReset,
             ),
+        )
+
+    @api_app.patch("/api/battle/sessions/{sid}/entities/{instance_id}")
+    def update_entity(sid: str, instance_id: str, request: UnitUpdateRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.update_entity_from_gm_editor(instance_id, request.model_dump(exclude_unset=True)),
+        )
+
+    @api_app.post("/api/battle/sessions/{sid}/entities/{instance_id}/source-character")
+    def update_entity_source_character(sid: str, instance_id: str, request: UnitUpdateRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.update_source_character_from_entity(
+                instance_id,
+                request.model_dump(exclude_unset=True),
+            ),
+            undoable=False,
         )
 
     @api_app.post("/api/battle/sessions/{sid}/turn/draw")

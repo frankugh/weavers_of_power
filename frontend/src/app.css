@@ -2480,6 +2480,241 @@ button.draw-card:hover {
   object-fit: contain;
 }
 
+.modal-shell-unit-details {
+  width: min(1040px, 100%);
+  max-height: calc(100dvh - 32px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 0;
+}
+
+.modal-shell-unit-details .modal-header {
+  flex: 0 0 auto;
+}
+
+.unit-details {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 22px 18px;
+}
+
+.unit-detail-tabs {
+  flex: 0 0 auto;
+}
+
+.unit-details-panel {
+  min-height: 320px;
+  max-height: min(62dvh, 680px);
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.unit-details-overview {
+  display: grid;
+  grid-template-columns: minmax(160px, 240px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.unit-details-portrait {
+  display: grid;
+  place-items: center;
+  min-height: 260px;
+  border: 1px solid rgba(240, 207, 133, 0.18);
+  border-radius: 8px;
+  background: rgba(5, 4, 3, 0.58);
+  overflow: hidden;
+}
+
+.unit-details-portrait img {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+}
+
+.unit-details-overview-main,
+.unit-details-form,
+.unit-condition-editor,
+.unit-deck-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.unit-details-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.unit-details-title-row h3 {
+  margin: 0;
+  font-family: "Cormorant Garamond", serif;
+  font-size: 1.45rem;
+  line-height: 1;
+}
+
+.unit-details-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.unit-details-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 244, 216, 0.035);
+}
+
+.unit-details-summary-row span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.unit-details-summary-row strong {
+  text-align: right;
+  line-height: 1.25;
+}
+
+.readonly-field {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 244, 216, 0.03);
+  color: var(--text);
+  word-break: break-word;
+}
+
+.unit-condition-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.unit-condition-row,
+.unit-custom-condition-row,
+.unit-deck-card-row {
+  display: grid;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 244, 216, 0.03);
+}
+
+.unit-condition-row {
+  grid-template-columns: minmax(0, 1fr) 86px;
+}
+
+.unit-condition-row .toggle-field {
+  justify-content: flex-start;
+  min-height: 38px;
+  border-radius: 8px;
+}
+
+.unit-condition-row > input,
+.unit-custom-condition-row > input,
+.unit-deck-card-row > input {
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.unit-condition-active {
+  border-color: rgba(240, 207, 133, 0.34);
+  background: rgba(216, 182, 106, 0.1);
+}
+
+.unit-condition-stacks,
+.unit-deck-count {
+  justify-self: end;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.unit-custom-condition-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.unit-custom-condition-row {
+  grid-template-columns: minmax(0, 1fr) 86px auto;
+}
+
+.unit-custom-condition-row .small-button {
+  min-width: 40px;
+  height: 38px;
+  padding: 0;
+}
+
+.unit-custom-condition-row .small-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.unit-deck-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.unit-deck-card-row {
+  grid-template-columns: minmax(0, 1fr) 86px;
+}
+
+.unit-deck-card-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.unit-deck-card-main strong {
+  line-height: 1.15;
+}
+
+.unit-deck-card-main span,
+.unit-deck-card-main small {
+  color: var(--muted);
+  line-height: 1.25;
+}
+
+.unit-details-actions {
+  flex: 0 0 auto;
+  padding-top: 0;
+}
+
+.unit-source-confirm,
+.unit-details-error {
+  flex: 0 0 auto;
+}
+
+.unit-inspector-edit-button {
+  min-height: 26px;
+  padding: 3px 8px;
+}
+
 .action-title {
   margin-top: 0;
   font-family: "Cormorant Garamond", serif;
