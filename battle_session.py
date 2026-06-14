@@ -3624,12 +3624,19 @@ class BattleSession:
         diagonal_steps_used = int(movement_state["diagonal_steps_used"])
         base_movement = self.effective_movement(entity)
         max_movement = base_movement * 2 if movement_state["dash_used"] else base_movement
+
+        held_prey = self._grapples_by_grappler(entity.instance_id)
+        held_prey_ids = {
+            g.target_id for g in held_prey
+            if (t := self.state.enemies.get(g.target_id)) and self._has_position(t)
+        }
         route = self._movement_route(
             entity,
             x,
             y,
             diagonal_steps_used=diagonal_steps_used,
             max_cost=max(base_movement * 2 - movement_used, 0),
+            exclude_ids=held_prey_ids or None,
         )
         if route is None:
             raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is not reachable")
@@ -3651,6 +3658,7 @@ class BattleSession:
             base_movement=base_movement,
             dash_requested=bool(dash),
             full_move_cost=move_cost,
+            held_prey_ids=held_prey_ids or None,
         )
         self.autosave()
         return result
@@ -3664,6 +3672,7 @@ class BattleSession:
         dash_requested: bool,
         full_move_cost: int,
         ignored_attacker_ids: Optional[set[str]] = None,
+        held_prey_ids: Optional[set[str]] = None,
     ) -> dict:
         movement_state = self._movement_state_for_active()
         start_used = int(movement_state["movement_used"])
@@ -3725,6 +3734,12 @@ class BattleSession:
                 )
 
             self._apply_movement_step(entity, step, base_movement=base_movement)
+            if held_prey_ids:
+                for prey_id in held_prey_ids:
+                    prey = self.state.enemies.get(prey_id)
+                    if prey and self._has_position(prey) and self._position_is_walkable(from_x, from_y):
+                        self._set_position(prey, from_x, from_y)
+                        self._add_log(f"{prey.name} is dragged to ({from_x + 1}, {from_y + 1}) by {entity.name}.")
 
         used_now = int(movement_state["movement_used"]) - start_used
         dash_suffix = " using Dash" if used_now and int(movement_state["movement_used"]) > base_movement and dash_requested else ""
@@ -5727,13 +5742,14 @@ class BattleSession:
         *,
         diagonal_steps_used: int,
         max_cost: Optional[int] = None,
+        exclude_ids: Optional[set[str]] = None,
     ) -> Optional[MovementRoute]:
         start = (int(entity.grid_x), int(entity.grid_y))
         target = (int(target_x), int(target_y))
         if start == target:
             return MovementRoute(cost=0, diagonal_steps=0, steps=())
 
-        occupied = self._occupied_positions(exclude_id=entity.instance_id, passthrough_entity=entity)
+        occupied = self._occupied_positions(exclude_id=entity.instance_id, exclude_ids=exclude_ids, passthrough_entity=entity)
         start_parity = int(diagonal_steps_used) % 2
         counter = 0
         queue: list[tuple[int, int, int, int, int, int, int, tuple[dict, ...]]] = [
@@ -6717,11 +6733,14 @@ class BattleSession:
         self,
         *,
         exclude_id: Optional[str] = None,
+        exclude_ids: Optional[set[str]] = None,
         passthrough_entity: Optional["EnemyInstance"] = None,
     ) -> set[tuple[int, int]]:
         positions: set[tuple[int, int]] = set()
         for entity in self.state.enemies.values():
             if entity.instance_id == exclude_id:
+                continue
+            if exclude_ids and entity.instance_id in exclude_ids:
                 continue
             if not self._blocks_position(entity):
                 continue
