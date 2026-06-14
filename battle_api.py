@@ -73,6 +73,8 @@ class AddPlayerRequest(BaseModel):
     baseGuard: int = Field(default=1, ge=0)
     initiativeModifier: int = Field(default=2, ge=0)
     physicalCards: bool = False
+    abilities: dict[str, int] = Field(default_factory=dict)
+    specializations: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class CharacterStatsRequest(BaseModel):
@@ -96,6 +98,9 @@ class CharacterProfileRequest(BaseModel):
     classImprovementTarget: str = "success_1"
     gearPresetId: str = ""
     stats: CharacterStatsRequest = Field(default_factory=CharacterStatsRequest)
+    abilities: dict[str, int] = Field(default_factory=dict)
+    specializationMode: str = ""
+    specializations: list[dict[str, Any]] = Field(default_factory=list)
     art: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -170,10 +175,16 @@ class UnitDeckRequest(BaseModel):
     reset: bool = True
 
 
+class UnitSkillsRequest(BaseModel):
+    abilities: Optional[dict[str, int]] = None
+    specializations: Optional[list[dict[str, Any]]] = None
+
+
 class UnitUpdateRequest(BaseModel):
     identity: Optional[UnitIdentityRequest] = None
     stats: Optional[UnitStatsRequest] = None
     statuses: Optional[dict[str, Any]] = None
+    skills: Optional[UnitSkillsRequest] = None
     deck: Optional[UnitDeckRequest] = None
 
 
@@ -293,6 +304,12 @@ class DungeonSettingsRequest(BaseModel):
     fogOfWarEnabled: bool
 
 
+class DungeonSearchCheckRequest(BaseModel):
+    allowedChecks: list[dict[str, Any]] = Field(default_factory=lambda: [{"type": "ability", "key": "intelligence"}])
+    dc: int = Field(default=2, ge=0)
+    allowUntrained: bool = False
+
+
 class DungeonPlayerSpawnRequest(BaseModel):
     x: int
     y: int
@@ -328,6 +345,22 @@ class SearchResolveRequest(BaseModel):
 
 class InteractSuspectRequest(BaseModel):
     edgeKey: str
+
+
+class InfoMarkerRequest(BaseModel):
+    id: Optional[str] = None
+    x: int
+    y: int
+    title: str = "Info"
+    text: str = ""
+    trigger: Literal["auto", "click", "check"] = "click"
+    interactionRange: Literal["same_room", "adjacent"] = "same_room"
+    check: Optional[dict[str, Any]] = None
+
+
+class InfoMarkerInteractRequest(BaseModel):
+    gmMode: bool = False
+    autoOpen: bool = False
 
 
 class CombatSimStatOverridesRequest(BaseModel):
@@ -570,6 +603,8 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
                 initiative_modifier=request.initiativeModifier,
                 player_deck_id=request.playerDeckId,
                 physical_cards=request.physicalCards,
+                abilities=request.abilities,
+                specializations=request.specializations,
             ),
         )
 
@@ -863,6 +898,10 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
     def dungeon_settings(sid: str, request: DungeonSettingsRequest):
         return run_mutation(sid, lambda session: session.set_fog_of_war(request.fogOfWarEnabled))
 
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/search-check")
+    def dungeon_search_check(sid: str, request: DungeonSearchCheckRequest):
+        return run_mutation(sid, lambda session: session.set_dungeon_search_check(request.model_dump()))
+
     @api_app.post("/api/battle/sessions/{sid}/dungeon/rooms/{room_id}/revealed")
     def room_revealed(sid: str, room_id: str, request: DungeonRoomRevealedRequest):
         return run_mutation(sid, lambda session: session.set_room_revealed(room_id, request.revealed))
@@ -907,6 +946,38 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
         return run_mutation(
             sid,
             lambda session: session.resolve_suspect_interaction(
+                request.useWillpower,
+                manual_successes=request.successes,
+                manual_fate=request.fate,
+            ),
+            undoable=False,
+        )
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/info-markers")
+    def upsert_info_marker(sid: str, request: InfoMarkerRequest):
+        return run_mutation(sid, lambda session: session.upsert_info_marker(request.model_dump(exclude_none=True)))
+
+    @api_app.delete("/api/battle/sessions/{sid}/dungeon/info-markers/{marker_id}")
+    def delete_info_marker(sid: str, marker_id: str):
+        return run_mutation(sid, lambda session: session.delete_info_marker(marker_id))
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/info-markers/{marker_id}/open")
+    def open_info_marker(sid: str, marker_id: str, request: InfoMarkerInteractRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.open_info_marker(marker_id, gm_mode=request.gmMode, auto_open=request.autoOpen),
+            undoable=False,
+        )
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/info-markers/{marker_id}/check")
+    def start_info_marker_check(sid: str, marker_id: str, request: InfoMarkerInteractRequest):
+        return run_mutation(sid, lambda session: session.start_info_marker_check(marker_id, gm_mode=request.gmMode))
+
+    @api_app.post("/api/battle/sessions/{sid}/dungeon/info-markers/resolve")
+    def resolve_info_marker_check(sid: str, request: SearchResolveRequest):
+        return run_mutation(
+            sid,
+            lambda session: session.resolve_info_marker_check(
                 request.useWillpower,
                 manual_successes=request.successes,
                 manual_fate=request.fate,

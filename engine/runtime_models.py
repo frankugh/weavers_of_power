@@ -53,6 +53,9 @@ class DungeonState:
     searched_room_ids: list = field(default_factory=list)           # room_ids already searched by party
     secret_suspects: list = field(default_factory=list)             # list of suspect dicts
     player_spawn: Optional[dict] = None                             # {"x": int, "y": int} player spawn-area cell
+    info_markers: list = field(default_factory=list)                 # map flavour marker definitions
+    info_marker_states: dict = field(default_factory=dict)           # runtime state by marker id
+    search_check: dict = field(default_factory=dict)                 # default room-search check config
 
 
 @dataclass
@@ -121,6 +124,8 @@ class EnemyInstance:
     melee_weapon: dict = field(default_factory=dict)
     character_profile: dict = field(default_factory=dict)
     card_library: dict = field(default_factory=dict)
+    abilities: dict[str, int] = field(default_factory=dict)
+    specializations: list[dict] = field(default_factory=list)
 
     statuses: dict[str, dict] = field(default_factory=dict)
 

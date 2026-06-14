@@ -41,6 +41,47 @@ DEFAULT_STATS = {
     "baseGuard": 1,
     "initiativeModifier": 2,
 }
+ABILITY_KEYS = ("intelligence", "alertness", "stealth", "social", "arcana", "athletics")
+ABILITY_LABELS = {
+    "intelligence": "Intelligence",
+    "alertness": "Alertness",
+    "stealth": "Stealth",
+    "social": "Social",
+    "arcana": "Arcana",
+    "athletics": "Athletics",
+}
+ABILITY_ARRAYS = (
+    (3, 3, 3, 2, 2, 2),
+    (3, 3, 3, 3, 2, 1),
+    (4, 3, 2, 2, 2, 2),
+    (4, 3, 3, 2, 2, 1),
+    (4, 3, 3, 3, 1, 1),
+)
+DEFAULT_ABILITIES = dict(zip(ABILITY_KEYS, ABILITY_ARRAYS[0]))
+COMMON_SPECIALIZATIONS = (
+    "Survival",
+    "Thievery",
+    "Medicine",
+    "Engineering",
+    "Bard",
+    "Herbalist",
+    "Warrior Traditions",
+    "Elemental Traditions",
+    "Sacred Traditions",
+    "Nature Traditions",
+    "Shadow Traditions",
+)
+CLASS_ABILITY_BONUSES = {
+    "fighter": {"athletics": 1},
+    "berserker": {"athletics": 1},
+    "shadowmaster": {"stealth": 1},
+}
+CLASS_SPECIALIZATION_MINIMUMS = {
+    "ranger": {"Survival": 2},
+}
+CLASS_SPECIALIZATION_BONUSES = {
+    "ranger": {"Survival": 1},
+}
 
 
 class CharacterBuilderError(ValueError):
@@ -264,6 +305,8 @@ def character_summary(profile: dict[str, Any]) -> dict[str, Any]:
         "mainArt": choices.get("mainArt"),
         "art": dict(profile.get("art") or ANONYMOUS_ART),
         "gearPreset": profile.get("gearPreset"),
+        "abilities": abilities_from_profile(profile),
+        "specializations": specializations_from_profile(profile),
         "createdAt": profile.get("createdAt"),
         "updatedAt": profile.get("updatedAt"),
     }
@@ -304,6 +347,19 @@ def build_character_profile(
     )
 
     stats = _resolve_stats(catalog, class_entry, request.get("stats"))
+    base_abilities = _normalize_abilities(request.get("abilities"))
+    abilities = _apply_ability_bonuses(base_abilities, class_entry)
+    raw_specializations = request.get("specializations")
+    specialization_mode = str(request.get("specializationMode") or "").strip().lower()
+    normalized_specializations = (
+        _normalize_specializations(raw_specializations, specialization_mode)
+        if raw_specializations is not None
+        else []
+    )
+    specializations = _apply_specialization_bonuses(
+        normalized_specializations,
+        class_entry,
+    )
     gear_preset = _resolve_gear_preset(class_entry, request.get("gearPresetId"))
     art = resolve_character_art(
         request.get("art"),
@@ -331,6 +387,8 @@ def build_character_profile(
         "createdAt": created_at or now,
         "updatedAt": now,
         "art": art,
+        "abilities": abilities,
+        "specializations": specializations,
         "choices": {
             "classId": class_entry["id"],
             "ancestryId": ancestry["id"],
@@ -341,6 +399,13 @@ def build_character_profile(
             "classImprovementTarget": class_improvement_target,
             "gearPresetId": gear_preset.get("id"),
             "stats": stats,
+            "abilityArray": _ability_array_id(base_abilities),
+            "baseAbilities": base_abilities,
+            "abilities": abilities,
+            "specializationMode": specialization_mode or (
+                "deep" if len(specializations) == 1 else "broad" if len(specializations) == 2 else ""
+            ),
+            "specializations": specializations,
         },
         "gearPreset": gear_preset,
         "generatedDeck": {
@@ -459,6 +524,163 @@ def _resolve_stats(catalog: dict[str, Any], class_entry: dict[str, Any], raw: An
         else:
             stats[key] = max(0, int(stats.get(key, DEFAULT_STATS[key]) or 0))
     return stats
+
+
+def _ability_array_id(values: dict[str, int]) -> str:
+    ordered = [int(values.get(key, 0) or 0) for key in ABILITY_KEYS]
+    return ",".join(str(value) for value in sorted(ordered, reverse=True))
+
+
+def _class_ability_bonuses(class_entry: dict[str, Any]) -> dict[str, int]:
+    class_id = str(class_entry.get("id") or "")
+    bonuses: dict[str, int] = {}
+    raw = class_entry.get("abilityBonuses")
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            normalized = str(key or "").strip()
+            if normalized in ABILITY_KEYS:
+                bonuses[normalized] = int(value or 0)
+    else:
+        bonuses.update(CLASS_ABILITY_BONUSES.get(class_id, {}))
+    return bonuses
+
+
+def _class_specialization_minimums(class_entry: dict[str, Any]) -> dict[str, int]:
+    class_id = str(class_entry.get("id") or "")
+    minimums: dict[str, int] = {}
+    raw = class_entry.get("specializationMinimums")
+    if isinstance(raw, dict):
+        for name, value in raw.items():
+            normalized = _normalize_specialization_name(name)
+            if normalized:
+                minimums[normalized] = int(value or 0)
+    else:
+        minimums.update(CLASS_SPECIALIZATION_MINIMUMS.get(class_id, {}))
+    return minimums
+
+
+def _class_specialization_bonuses(class_entry: dict[str, Any]) -> dict[str, int]:
+    class_id = str(class_entry.get("id") or "")
+    bonuses: dict[str, int] = {}
+    raw = class_entry.get("specializationBonuses")
+    if isinstance(raw, dict):
+        for name, value in raw.items():
+            normalized = _normalize_specialization_name(name)
+            if normalized:
+                bonuses[normalized] = int(value or 0)
+    else:
+        bonuses.update(CLASS_SPECIALIZATION_BONUSES.get(class_id, {}))
+    return bonuses
+
+
+def _normalize_abilities(raw: Any) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        return dict(DEFAULT_ABILITIES)
+    result: dict[str, int] = {}
+    for key in ABILITY_KEYS:
+        result[key] = max(0, int(raw.get(key, DEFAULT_ABILITIES[key]) or 0))
+    if tuple(sorted(result.values(), reverse=True)) not in ABILITY_ARRAYS:
+        allowed = " / ".join(", ".join(str(v) for v in array) for array in ABILITY_ARRAYS)
+        raise CharacterBuilderError(f"Ability scores must match one starting array: {allowed}")
+    return result
+
+
+def _apply_ability_bonuses(abilities: dict[str, int], class_entry: dict[str, Any]) -> dict[str, int]:
+    result = dict(abilities)
+    for key, bonus in _class_ability_bonuses(class_entry).items():
+        result[key] = max(0, int(result.get(key, 0) or 0) + int(bonus or 0))
+    return result
+
+
+def _normalize_specialization_name(raw: Any) -> str:
+    return " ".join(str(raw or "").strip().split())
+
+
+def _normalize_specializations(raw: Any, mode: Any = None) -> list[dict[str, int]]:
+    source = raw if isinstance(raw, list) else []
+    normalized: list[dict[str, int]] = []
+    seen: set[str] = set()
+    for entry in source:
+        if not isinstance(entry, dict):
+            continue
+        name = _normalize_specialization_name(entry.get("name"))
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            raise CharacterBuilderError(f"Duplicate specialization: {name}")
+        seen.add(key)
+        normalized.append({"name": name, "rank": max(0, int(entry.get("rank", 0) or 0))})
+
+    mode_value = str(mode or "").strip().lower()
+    ranks = sorted((item["rank"] for item in normalized), reverse=True)
+    if mode_value == "deep":
+        if ranks != [4] or len(normalized) != 1:
+            raise CharacterBuilderError("Deep training requires one specialization at 4")
+    elif mode_value == "broad":
+        if ranks != [3, 2] or len(normalized) != 2:
+            raise CharacterBuilderError("Broad training requires two specializations at 3 and 2")
+    elif normalized:
+        if ranks not in ([4], [3, 2]):
+            raise CharacterBuilderError("Specializations must be broad training (3 and 2) or deep training (4)")
+    return normalized
+
+
+def _apply_specialization_bonuses(specializations: list[dict[str, int]], class_entry: dict[str, Any]) -> list[dict[str, int]]:
+    by_key = {
+        item["name"].lower(): {"name": item["name"], "rank": int(item.get("rank", 0) or 0)}
+        for item in specializations
+    }
+    added_from_minimum: set[str] = set()
+    minimums = _class_specialization_minimums(class_entry)
+    bonuses = _class_specialization_bonuses(class_entry)
+    for name, minimum in minimums.items():
+        key = name.lower()
+        current = by_key.get(key)
+        if current is None:
+            by_key[key] = {"name": name, "rank": max(0, int(minimum or 0))}
+            added_from_minimum.add(key)
+        else:
+            current["rank"] = max(int(current.get("rank", 0) or 0), int(minimum or 0))
+    for name, bonus in bonuses.items():
+        key = name.lower()
+        current = by_key.get(key)
+        if current is not None and key not in added_from_minimum:
+            current["rank"] = max(0, int(current.get("rank", 0) or 0) + int(bonus or 0))
+    return sorted(by_key.values(), key=lambda item: item["name"].lower())
+
+
+def abilities_from_profile(profile: dict[str, Any]) -> dict[str, int]:
+    choices = profile.get("choices") or {}
+    raw = profile.get("abilities") or choices.get("abilities") or choices.get("baseAbilities")
+    class_id = str(choices.get("classId") or "").strip()
+    class_entry = {"id": class_id}
+    if not isinstance(raw, dict):
+        return _apply_ability_bonuses(dict(DEFAULT_ABILITIES), class_entry)
+    result: dict[str, int] = {}
+    for key in ABILITY_KEYS:
+        result[key] = max(0, int(raw.get(key, DEFAULT_ABILITIES[key]) or 0))
+    return result
+
+
+def specializations_from_profile(profile: dict[str, Any]) -> list[dict[str, int]]:
+    choices = profile.get("choices") or {}
+    raw = profile.get("specializations") or choices.get("specializations") or []
+    result: list[dict[str, int]] = []
+    seen: set[str] = set()
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        name = _normalize_specialization_name(entry.get("name"))
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        result.append({"name": name, "rank": max(0, int(entry.get("rank", 0) or 0))})
+    if not result:
+        class_entry = {"id": str(choices.get("classId") or "").strip()}
+        for name, rank in _class_specialization_minimums(class_entry).items():
+            result.append({"name": name, "rank": max(0, int(rank or 0))})
+    return result
 
 
 def _resolve_gear_preset(class_entry: dict[str, Any], gear_preset_id: Any) -> dict[str, Any]:

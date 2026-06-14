@@ -6717,6 +6717,50 @@ describe("App", () => {
     expect(screen.getByText("Crypt")).toBeInTheDocument();
   });
 
+  it("creates an info marker from Map Edit info mode", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon();
+    let markerBody = null;
+
+    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })] }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/dungeon/info-markers" && requestOptions?.method === "POST") {
+          markerBody = JSON.parse(requestOptions.body);
+          return jsonResponse(buildSnapshot({
+            dungeon: {
+              ...dungeon,
+              renderVersion: 2,
+              infoMarkers: [{ ...markerBody, id: "marker-1" }],
+              infoMarkerStates: { "marker-1": {} },
+            },
+            enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
+          }));
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Map Edit" }));
+    await user.click(screen.getByRole("button", { name: "Info" }));
+    pointerClickMapCell(1, 0, 90);
+
+    const modalShell = screen.getByText("New info marker").closest(".modal-shell");
+    await user.clear(within(modalShell).getByLabelText("Title"));
+    await user.type(within(modalShell).getByLabelText("Title"), "Old mural");
+    await user.type(within(modalShell).getByLabelText("Flavour text"), "The mural shows a fallen sun.");
+    await user.click(within(modalShell).getByRole("button", { name: "Save marker" }));
+
+    await waitFor(() => expect(markerBody).not.toBeNull());
+    expect(markerBody).toEqual(expect.objectContaining({
+      x: 1,
+      y: 0,
+      title: "Old mural",
+      text: "The mural shows a fallen sun.",
+      trigger: "click",
+      interactionRange: "same_room",
+    }));
+  });
+
   it("saves the active map directly from the Map Edit toolbar", async () => {
     const user = userEvent.setup();
     const dungeon = buildDungeon();

@@ -16,9 +16,13 @@ from typing import Iterable, Optional
 
 from engine.combat import WOUND_CARD_ID, AttackMod, apply_attack, apply_heal
 from engine.character_builder import (
+    ABILITY_KEYS,
+    COMMON_SPECIALIZATIONS,
+    DEFAULT_ABILITIES,
     CUSTOM_ART_ROOT,
     CharacterBuilderError,
     SUPPORTED_ART_EXTENSIONS,
+    abilities_from_profile,
     build_character_profile,
     build_character_art_options,
     card_from_payload,
@@ -30,6 +34,7 @@ from engine.character_builder import (
     load_character_catalog,
     resolve_character_art,
     slugify,
+    specializations_from_profile,
 )
 from engine.creature_workbook_save import (
     BACKUP_DIR_NAME,
@@ -144,6 +149,48 @@ def build_core_deck_ids(deck: Deck, rnd: random.Random) -> list[str]:
     return card_ids
 
 
+def _normalize_unit_abilities(raw: object) -> dict[str, int]:
+    source = raw if isinstance(raw, dict) else {}
+    return {
+        key: max(0, int(source.get(key, DEFAULT_ABILITIES.get(key, 0)) or 0))
+        for key in ABILITY_KEYS
+    }
+
+
+def _normalize_specialization_name(raw: object) -> str:
+    return " ".join(str(raw or "").strip().split())
+
+
+def _normalize_unit_specializations(raw: object) -> list[dict]:
+    result: list[dict] = []
+    seen: set[str] = set()
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        name = _normalize_specialization_name(entry.get("name"))
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        result.append({"name": name, "rank": max(0, int(entry.get("rank", 0) or 0))})
+    return sorted(result, key=lambda item: item["name"].lower())
+
+
+def _skill_label(check: dict) -> str:
+    check_type = str(check.get("type") or "ability")
+    key = str(check.get("key") or "").strip()
+    if check_type == "specialization":
+        return key
+    labels = {
+        "intelligence": "Intelligence",
+        "alertness": "Alertness",
+        "stealth": "Stealth",
+        "social": "Social",
+        "arcana": "Arcana",
+        "athletics": "Athletics",
+    }
+    return labels.get(key, key.title())
+
+
 def spawn_custom_enemy(
     *,
     name: str,
@@ -187,6 +234,8 @@ def spawn_player(
     initiative_modifier: int = HUMAN_FIGHTER_DEFAULTS["initiative_modifier"],
     player_deck: Optional[Deck] = None,
     physical_cards: bool = False,
+    abilities: Optional[dict] = None,
+    specializations: Optional[list] = None,
     rnd: Optional[random.Random] = None,
 ) -> EnemyInstance:
     deck_state = DeckState(draw_pile=[], discard_pile=[], hand=[])
@@ -217,6 +266,8 @@ def spawn_player(
         physical_cards=bool(physical_cards),
         physical_wounds=0,
         melee_weapon=dict(PLACEHOLDER_PC_MELEE_WEAPON),
+        abilities=_normalize_unit_abilities(abilities),
+        specializations=_normalize_unit_specializations(specializations),
         statuses={},
     )
 
@@ -1250,6 +1301,11 @@ class BattleSession:
                 "hasFate": self.pending_search["has_fate"],
                 "successCount": self.pending_search["success_count"],
                 "fateCount": self.pending_search["fate_count"],
+                "markerId": self.pending_search.get("marker_id"),
+                "title": self.pending_search.get("title"),
+                "dc": self.pending_search.get("dc"),
+                "chosenCheck": self.pending_search.get("chosen_check"),
+                "drawCount": self.pending_search.get("draw_count"),
             } if self.pending_search is not None else None,
         }
 
@@ -1273,6 +1329,97 @@ class BattleSession:
             "sourceScenarioId": source_id,
             "sourceScenarioName": source_name,
             "sourceTemplateMissing": source_missing,
+        }
+
+    def _normalize_check_config(self, raw: object, *, default_dc: int = 2) -> dict:
+        source = raw if isinstance(raw, dict) else {}
+        allowed: list[dict] = []
+        for item in source.get("allowedChecks") or source.get("allowed_checks") or [{"type": "ability", "key": "intelligence"}]:
+            if not isinstance(item, dict):
+                continue
+            check_type = str(item.get("type") or "ability").strip().lower()
+            key = str(item.get("key") or item.get("name") or "").strip()
+            if check_type not in {"ability", "specialization"} or not key:
+                continue
+            allowed.append({"type": check_type, "key": key})
+        if not allowed:
+            allowed = [{"type": "ability", "key": "intelligence"}]
+        return {
+            "allowedChecks": allowed,
+            "dc": max(0, int(source.get("dc", default_dc) or 0)),
+            "allowUntrained": bool(source.get("allowUntrained", source.get("allow_untrained", False))),
+        }
+
+    def _default_search_check(self) -> dict:
+        if not self.dungeon:
+            return self._normalize_check_config(None)
+        config = self._normalize_check_config(getattr(self.dungeon, "search_check", None))
+        self.dungeon.search_check = config
+        return config
+
+    def _best_check_for_entity(self, entity: EnemyInstance, check_config: dict) -> dict:
+        config = self._normalize_check_config(check_config)
+        abilities = _normalize_unit_abilities(getattr(entity, "abilities", {}))
+        specializations = {
+            str(item.get("name") or "").strip().lower(): max(0, int(item.get("rank", 0) or 0))
+            for item in _normalize_unit_specializations(getattr(entity, "specializations", []))
+        }
+        best: Optional[dict] = None
+        for check in config.get("allowedChecks") or []:
+            check_type = str(check.get("type") or "ability").strip().lower()
+            key = str(check.get("key") or "").strip()
+            if check_type == "ability":
+                normalized_key = key.lower()
+                if normalized_key not in abilities:
+                    continue
+                candidate = {
+                    "type": "ability",
+                    "key": normalized_key,
+                    "label": _skill_label({"type": "ability", "key": normalized_key}),
+                    "drawCount": abilities[normalized_key],
+                }
+            else:
+                rank = specializations.get(key.lower())
+                if rank is None:
+                    if not bool(config.get("allowUntrained", False)):
+                        continue
+                    rank = 1
+                candidate = {
+                    "type": "specialization",
+                    "key": key,
+                    "label": _skill_label({"type": "specialization", "key": key}),
+                    "drawCount": rank,
+                }
+            if best is None or candidate["drawCount"] > best["drawCount"]:
+                best = candidate
+        if best is None:
+            labels = ", ".join(_skill_label(check) for check in config.get("allowedChecks") or [])
+            raise BattleSessionError(f"{entity.name} has no trained check option for: {labels or 'this check'}.")
+        return best
+
+    def _start_skill_check_draw(self, entity: EnemyInstance, check_config: dict) -> dict:
+        chosen = self._best_check_for_entity(entity, check_config)
+        draw_count = max(0, int(chosen.get("drawCount", 0) or 0))
+        uses_physical_cards = self._uses_physical_cards(entity)
+        drawn: list[str] = []
+        summary = None
+        if not uses_physical_cards and draw_count > 0:
+            result = self._draw_additional_for_player(entity, draw_count)
+            drawn = list(result.drawn)
+            self._append_visible_draw_group(entity, drawn)
+            summary = self._player_draw_summary(drawn)
+        elif not uses_physical_cards:
+            summary = self._player_draw_summary([])
+        return {
+            "chosen": chosen,
+            "drawCount": draw_count,
+            "usesPhysicalCards": uses_physical_cards,
+            "drawn": drawn,
+            "summary": summary,
+            "successCount": None if uses_physical_cards else summary["outcomes"]["success"],
+            "fateCount": None if uses_physical_cards else summary["outcomes"]["fate"],
+            "hasFate": False if uses_physical_cards else summary["outcomes"]["fate"] > 0,
+            "phase": "manual" if uses_physical_cards else ("willpower" if summary["outcomes"]["fate"] > 0 else "resolve"),
         }
 
     def _scenario_save_payload(self) -> dict:
@@ -1770,6 +1917,8 @@ class BattleSession:
         initiative_modifier: int = HUMAN_FIGHTER_DEFAULTS["initiative_modifier"],
         player_deck_id: str = PLAYER_DECK_ID,
         physical_cards: bool = False,
+        abilities: Optional[dict] = None,
+        specializations: Optional[list] = None,
     ) -> None:
         deck_id = player_deck_id or PLAYER_DECK_ID
         player_deck = self.context.player_decks.get(deck_id)
@@ -1787,6 +1936,8 @@ class BattleSession:
             initiative_modifier=max(0, int(initiative_modifier)),
             player_deck=player_deck,
             physical_cards=physical_cards,
+            abilities=abilities,
+            specializations=specializations,
             rnd=self._rng,
         )
         self.state.add_enemy(instance)
@@ -1820,6 +1971,8 @@ class BattleSession:
             initiative_modifier=max(0, int(stats.get("initiativeModifier", HUMAN_FIGHTER_DEFAULTS["initiative_modifier"]) or 0)),
             player_deck=deck,
             physical_cards=physical_cards,
+            abilities=abilities_from_profile(profile),
+            specializations=specializations_from_profile(profile),
             rnd=self._rng,
         )
         instance.image = art.get("imagePath") or "anonymous.png"
@@ -1832,6 +1985,8 @@ class BattleSession:
             "mainArt": choices.get("mainArt"),
             "art": dict(art),
             "gearPreset": dict(profile.get("gearPreset") or {}),
+            "abilities": dict(getattr(instance, "abilities", {}) or {}),
+            "specializations": list(getattr(instance, "specializations", []) or []),
         }
         instance.card_library = card_library_from_profile(profile)
         self.state.add_enemy(instance)
@@ -1997,6 +2152,13 @@ class BattleSession:
             "searchedRoomIds": list(getattr(ds, "searched_room_ids", [])),
             "secretSuspects": list(getattr(ds, "secret_suspects", [])),
             "playerSpawn": getattr(ds, "player_spawn", None),
+            "infoMarkers": [dict(marker) for marker in getattr(ds, "info_markers", [])],
+            "infoMarkerStates": {
+                str(marker_id): dict(state)
+                for marker_id, state in (getattr(ds, "info_marker_states", {}) or {}).items()
+                if isinstance(state, dict)
+            },
+            "searchCheck": self._normalize_check_config(getattr(ds, "search_check", None)),
         }
 
     def _cleanup_walls_around(self) -> None:
@@ -2079,6 +2241,256 @@ class BattleSession:
             self._add_log(f"Set player spawn area to ({cell['x'] + 1}, {cell['y'] + 1})")
         self.dungeon.render_version += 1
         self.autosave()
+
+    def set_dungeon_search_check(self, check_config: dict) -> None:
+        if self.dungeon is None:
+            self.dungeon = DungeonState()
+        self.dungeon.search_check = self._normalize_check_config(check_config)
+        self._add_log("Updated map search check settings.")
+        self.autosave()
+
+    def _normalize_info_marker_payload(self, raw: dict, *, existing_id: Optional[str] = None) -> dict:
+        marker_id = str(raw.get("id") or existing_id or f"info_{uuid.uuid4().hex[:8]}").strip()
+        if not marker_id:
+            marker_id = f"info_{uuid.uuid4().hex[:8]}"
+        try:
+            x = int(raw.get("x"))
+            y = int(raw.get("y"))
+        except (TypeError, ValueError) as exc:
+            raise BattleSessionError("Info marker needs a valid cell.") from exc
+        trigger = str(raw.get("trigger") or "click").strip().lower()
+        if trigger not in {"auto", "click", "check"}:
+            trigger = "click"
+        interaction_range = str(raw.get("interactionRange") or raw.get("interaction_range") or "same_room").strip()
+        if interaction_range not in {"same_room", "adjacent"}:
+            interaction_range = "same_room"
+        marker = {
+            "id": marker_id,
+            "x": x,
+            "y": y,
+            "title": str(raw.get("title") or "Info").strip() or "Info",
+            "text": str(raw.get("text") or ""),
+            "trigger": trigger,
+            "interactionRange": interaction_range,
+        }
+        if trigger == "check":
+            marker["check"] = self._normalize_check_config(raw.get("check") or {})
+        return marker
+
+    def upsert_info_marker(self, marker_payload: dict) -> dict:
+        if self.dungeon is None:
+            self.dungeon = DungeonState()
+        marker = self._normalize_info_marker_payload(marker_payload or {})
+        markers = [dict(item) for item in getattr(self.dungeon, "info_markers", []) if isinstance(item, dict)]
+        replaced = False
+        for index, current in enumerate(markers):
+            if current.get("id") == marker["id"]:
+                markers[index] = marker
+                replaced = True
+                break
+        if not replaced:
+            markers.append(marker)
+        self.dungeon.info_markers = markers
+        self.dungeon.info_marker_states = dict(getattr(self.dungeon, "info_marker_states", {}) or {})
+        self.dungeon.info_marker_states.setdefault(marker["id"], {})
+        self.dungeon.render_version += 1
+        self._add_log(("Updated" if replaced else "Added") + f" info marker: {marker['title']}")
+        self.autosave()
+        return {"infoMarker": marker}
+
+    def delete_info_marker(self, marker_id: str) -> dict:
+        if self.dungeon is None:
+            raise BattleSessionError("No dungeon loaded.")
+        marker_id = str(marker_id or "").strip()
+        before = len(getattr(self.dungeon, "info_markers", []) or [])
+        self.dungeon.info_markers = [
+            marker for marker in getattr(self.dungeon, "info_markers", []) or []
+            if isinstance(marker, dict) and marker.get("id") != marker_id
+        ]
+        if len(self.dungeon.info_markers) == before:
+            raise BattleSessionError("Info marker not found.")
+        states = dict(getattr(self.dungeon, "info_marker_states", {}) or {})
+        states.pop(marker_id, None)
+        self.dungeon.info_marker_states = states
+        self.dungeon.render_version += 1
+        self._add_log("Deleted info marker.")
+        self.autosave()
+        return {"deletedInfoMarkerId": marker_id}
+
+    def _info_marker_by_id(self, marker_id: str) -> dict:
+        if self.dungeon is None:
+            raise BattleSessionError("No dungeon loaded.")
+        marker = next(
+            (marker for marker in getattr(self.dungeon, "info_markers", []) or [] if isinstance(marker, dict) and marker.get("id") == marker_id),
+            None,
+        )
+        if marker is None:
+            raise BattleSessionError("Info marker not found.")
+        return marker
+
+    def _info_marker_state(self, marker_id: str) -> dict:
+        if self.dungeon is None:
+            raise BattleSessionError("No dungeon loaded.")
+        states = dict(getattr(self.dungeon, "info_marker_states", {}) or {})
+        state = dict(states.get(marker_id) or {})
+        states[marker_id] = state
+        self.dungeon.info_marker_states = states
+        return state
+
+    def _info_marker_visible_to_players(self, marker: dict) -> bool:
+        if not self.dungeon:
+            return False
+        if not self.dungeon.fog_of_war_enabled:
+            return True
+        room_id = self._room_id_for_position(marker.get("x"), marker.get("y"))
+        if room_id is None:
+            return True
+        if room_id in set(getattr(self.dungeon, "revealed_room_ids", []) or []):
+            return True
+        return any(
+            self.is_player(entity)
+            and not self.is_down(entity)
+            and self._room_id_for_position(entity.grid_x, entity.grid_y) == room_id
+            for entity in self.state.enemies.values()
+        )
+
+    def _validate_info_marker_interaction(self, marker: dict, *, gm_mode: bool = False) -> Optional[EnemyInstance]:
+        if gm_mode:
+            return self.state.enemies.get(self.selected_id) if self.selected_id else None
+        if self._combat_flow_active():
+            raise BattleSessionError("Info markers can only be used outside combat unless GM Mode is active.")
+        entity = self._require_selected_entity()
+        if not self.is_player(entity):
+            raise BattleSessionError("Select a player character to use this info marker.")
+        if entity.grid_x is None or entity.grid_y is None:
+            raise BattleSessionError("Selected player is not on the map.")
+        if not self._info_marker_visible_to_players(marker):
+            raise BattleSessionError("This info marker is not visible yet.")
+        distance = max(abs(int(entity.grid_x) - int(marker.get("x"))), abs(int(entity.grid_y) - int(marker.get("y"))))
+        if marker.get("interactionRange") == "adjacent":
+            if distance > 1:
+                raise BattleSessionError("Selected player must be adjacent to this info marker.")
+            return entity
+        marker_room = self._room_id_for_position(marker.get("x"), marker.get("y"))
+        entity_room = self._room_id_for_position(entity.grid_x, entity.grid_y)
+        if marker_room and entity_room and marker_room != entity_room:
+            raise BattleSessionError("Selected player must be in the same room as this info marker.")
+        return entity
+
+    def open_info_marker(self, marker_id: str, *, gm_mode: bool = False, auto_open: bool = False) -> dict:
+        marker = self._info_marker_by_id(marker_id)
+        if auto_open and not gm_mode:
+            if self._combat_flow_active():
+                raise BattleSessionError("Auto info markers can only open outside combat.")
+            if not self._info_marker_visible_to_players(marker):
+                raise BattleSessionError("This info marker is not visible yet.")
+        else:
+            self._validate_info_marker_interaction(marker, gm_mode=gm_mode)
+        state = self._info_marker_state(marker["id"])
+        state["opened"] = True
+        state["unlocked"] = True
+        self.dungeon.render_version += 1
+        self.autosave()
+        return {"infoMarkerOpened": marker, "flavourText": marker.get("text") or ""}
+
+    def start_info_marker_check(self, marker_id: str, *, gm_mode: bool = False) -> dict:
+        marker = self._info_marker_by_id(marker_id)
+        entity = self._validate_info_marker_interaction(marker, gm_mode=gm_mode)
+        if marker.get("trigger") != "check":
+            return self.open_info_marker(marker_id, gm_mode=gm_mode)
+        if entity is None:
+            raise BattleSessionError("Select a player character to check this info marker.")
+        if self.pending_search is not None:
+            raise BattleSessionError("A search is already in progress. Resolve it first.")
+        check_config = self._normalize_check_config(marker.get("check") or {})
+        check_draw = self._start_skill_check_draw(entity, check_config)
+        chosen_check = dict(check_draw["chosen"])
+        state = self._info_marker_state(marker["id"])
+        state["attempted"] = max(0, int(state.get("attempted", 0) or 0)) + 1
+        drawn = list(check_draw["drawn"])
+        if check_draw["usesPhysicalCards"]:
+            self._add_log(f"{entity.name} checks {marker['title']} with {chosen_check['label']} physical cards.")
+        else:
+            drawn_text = ", ".join(self.card_to_effect_text(cid) for cid in drawn) or "no cards"
+            self._add_log(f"{entity.name} checks {marker['title']} with {chosen_check['label']}: {drawn_text}")
+        self.pending_search = {
+            "kind": "info_marker",
+            "entity_id": entity.instance_id,
+            "room_id": self._room_id_for_position(marker.get("x"), marker.get("y")),
+            "marker_id": marker["id"],
+            "title": marker.get("title") or "Info",
+            "dc": check_config["dc"],
+            "drawn_card_ids": drawn,
+            "success_count": check_draw["successCount"],
+            "fate_count": check_draw["fateCount"],
+            "has_fate": check_draw["hasFate"],
+            "searcher_physical_cards": check_draw["usesPhysicalCards"],
+            "phase": check_draw["phase"],
+            "check_config": check_config,
+            "chosen_check": chosen_check,
+            "draw_count": check_draw["drawCount"],
+        }
+        self.autosave()
+        return {
+            "infoMarkerCheckStarted": {
+                "markerId": marker["id"],
+                "title": marker.get("title") or "Info",
+                "dc": check_config["dc"],
+                "drawnCardIds": drawn,
+                "summary": check_draw["summary"],
+                "hasFate": check_draw["hasFate"],
+                "searcherPhysicalCards": check_draw["usesPhysicalCards"],
+                "chosenCheck": chosen_check,
+                "drawCount": check_draw["drawCount"],
+            }
+        }
+
+    def resolve_info_marker_check(
+        self,
+        use_willpower: bool,
+        *,
+        manual_successes: Optional[int] = None,
+        manual_fate: Optional[int] = None,
+    ) -> dict:
+        if self.pending_search is None or self.pending_search.get("kind") != "info_marker":
+            raise BattleSessionError("No pending info marker check to resolve.")
+        ps = self.pending_search
+        marker = self._info_marker_by_id(ps["marker_id"])
+        success_count, fate_count = self._resolve_pending_search_counts(
+            ps,
+            manual_successes=manual_successes,
+            manual_fate=manual_fate,
+        )
+        score = success_count + (fate_count if use_willpower else 0)
+        dc = max(0, int(ps.get("dc", 0) or 0))
+        outcome = "success" if score >= dc else "failure"
+        opened = None
+        if outcome == "success":
+            state = self._info_marker_state(marker["id"])
+            state["opened"] = True
+            state["unlocked"] = True
+            opened = marker
+            self._add_log(f"Info check succeeded: {marker.get('title') or 'Info'} ({score}/{dc}).")
+        else:
+            self._add_log(f"Info check failed: {marker.get('title') or 'Info'} ({score}/{dc}).")
+        self.pending_search = None
+        self.dungeon.render_version += 1
+        self.autosave()
+        payload = {
+            "infoMarkerCheck": {
+                "markerId": marker["id"],
+                "title": marker.get("title") or "Info",
+                "outcome": outcome,
+                "success": outcome == "success",
+                "score": score,
+                "dc": dc,
+                "useWillpower": bool(use_willpower),
+            }
+        }
+        if opened is not None:
+            payload["infoMarkerOpened"] = opened
+            payload["flavourText"] = opened.get("text") or ""
+        return payload
 
     def _current_map_template_data(self, name: str) -> dict:
         if self.dungeon is None:
@@ -2762,37 +3174,41 @@ class BattleSession:
 
         self.dungeon.searched_room_ids.append(room_id)
 
-        uses_physical_cards = self._uses_physical_cards(entity)
-        drawn: list[str] = []
-        summary = None
+        check_config = self._default_search_check()
+        check_draw = self._start_skill_check_draw(entity, check_config)
+        uses_physical_cards = check_draw["usesPhysicalCards"]
+        drawn = list(check_draw["drawn"])
+        summary = check_draw["summary"]
+        chosen_check = dict(check_draw["chosen"])
         if uses_physical_cards:
-            self._add_log(f"{entity.name} searches the room with physical cards; waiting for result.")
+            self._add_log(f"{entity.name} searches the room with {chosen_check['label']} physical cards; waiting for result.")
         else:
-            result = self._draw_additional_for_player(entity, 3)
-            drawn = list(result.drawn)
-            self._append_visible_draw_group(entity, drawn)
-            summary = self._player_draw_summary(drawn)
-            drawn_text = ", ".join(self.card_to_effect_text(cid) for cid in drawn)
-            self._add_log(f"{entity.name} searches the room: {drawn_text}")
+            drawn_text = ", ".join(self.card_to_effect_text(cid) for cid in drawn) or "no cards"
+            self._add_log(f"{entity.name} searches the room with {chosen_check['label']}: {drawn_text}")
 
         self.pending_search = {
             "kind": "search",
             "entity_id": entity.instance_id,
             "room_id": room_id,
             "drawn_card_ids": drawn,
-            "success_count": None if uses_physical_cards else summary["outcomes"]["success"],
-            "fate_count": None if uses_physical_cards else summary["outcomes"]["fate"],
-            "has_fate": False if uses_physical_cards else summary["outcomes"]["fate"] > 0,
+            "success_count": check_draw["successCount"],
+            "fate_count": check_draw["fateCount"],
+            "has_fate": check_draw["hasFate"],
             "searcher_physical_cards": uses_physical_cards,
-            "phase": "manual" if uses_physical_cards else ("willpower" if summary["outcomes"]["fate"] > 0 else "resolve"),
+            "phase": check_draw["phase"],
+            "check_config": check_config,
+            "chosen_check": chosen_check,
+            "draw_count": check_draw["drawCount"],
         }
         self.autosave()
         return {
             "searchStarted": {
                 "drawnCardIds": drawn,
                 "summary": summary,
-                "hasFate": False if uses_physical_cards else summary["outcomes"]["fate"] > 0,
+                "hasFate": check_draw["hasFate"],
                 "searcherPhysicalCards": uses_physical_cards,
+                "chosenCheck": chosen_check,
+                "drawCount": check_draw["drawCount"],
             }
         }
 
@@ -2948,14 +3364,12 @@ class BattleSession:
         if combat_active:
             self._charge_action(entity)
 
-        uses_physical_cards = self._uses_physical_cards(entity)
-        drawn: list[str] = []
-        summary = None
-        if not uses_physical_cards:
-            result = self._draw_additional_for_player(entity, 3)
-            drawn = list(result.drawn)
-            self._append_visible_draw_group(entity, drawn)
-            summary = self._player_draw_summary(drawn)
+        check_config = self._default_search_check()
+        check_draw = self._start_skill_check_draw(entity, check_config)
+        uses_physical_cards = check_draw["usesPhysicalCards"]
+        drawn = list(check_draw["drawn"])
+        summary = check_draw["summary"]
+        chosen_check = dict(check_draw["chosen"])
 
         if suspect["kind"] == "secret":
             wall = self.dungeon.walls.get(edge_key)
@@ -2964,10 +3378,10 @@ class BattleSession:
             dc = suspect.get("false_dc", 1)
 
         if uses_physical_cards:
-            self._add_log(f"{entity.name} investigates a suspect marker with physical cards; waiting for result.")
+            self._add_log(f"{entity.name} investigates a suspect marker with {chosen_check['label']} physical cards; waiting for result.")
         else:
-            drawn_text = ", ".join(self.card_to_effect_text(cid) for cid in drawn)
-            self._add_log(f"{entity.name} investigates a suspect marker: {drawn_text}")
+            drawn_text = ", ".join(self.card_to_effect_text(cid) for cid in drawn) or "no cards"
+            self._add_log(f"{entity.name} investigates a suspect marker with {chosen_check['label']}: {drawn_text}")
         self.pending_search = {
             "kind": "suspect",
             "entity_id": entity.instance_id,
@@ -2976,11 +3390,14 @@ class BattleSession:
             "suspect_kind": suspect.get("kind", "false"),
             "dc": dc,
             "drawn_card_ids": drawn,
-            "success_count": None if uses_physical_cards else summary["outcomes"]["success"],
-            "fate_count": None if uses_physical_cards else summary["outcomes"]["fate"],
-            "has_fate": False if uses_physical_cards else summary["outcomes"]["fate"] > 0,
+            "success_count": check_draw["successCount"],
+            "fate_count": check_draw["fateCount"],
+            "has_fate": check_draw["hasFate"],
             "searcher_physical_cards": uses_physical_cards,
-            "phase": "manual" if uses_physical_cards else ("willpower" if summary["outcomes"]["fate"] > 0 else "resolve"),
+            "phase": check_draw["phase"],
+            "check_config": check_config,
+            "chosen_check": chosen_check,
+            "draw_count": check_draw["drawCount"],
         }
         self.autosave()
         return {
@@ -2990,8 +3407,10 @@ class BattleSession:
                 "dc": dc,
                 "drawnCardIds": drawn,
                 "summary": summary,
-                "hasFate": False if uses_physical_cards else summary["outcomes"]["fate"] > 0,
+                "hasFate": check_draw["hasFate"],
                 "searcherPhysicalCards": uses_physical_cards,
+                "chosenCheck": chosen_check,
+                "drawCount": check_draw["drawCount"],
             }
         }
 
@@ -5341,6 +5760,8 @@ class BattleSession:
             "mainArt": (profile.get("choices") or {}).get("mainArt"),
             "art": dict(profile.get("art") or {}),
             "gearPreset": dict(profile.get("gearPreset") or {}),
+            "abilities": dict(getattr(entity, "abilities", {}) or {}),
+            "specializations": list(getattr(entity, "specializations", []) or []),
         }
         self._add_log(
             f"GM updated {entity.name}'s saved character source"
@@ -5363,6 +5784,11 @@ class BattleSession:
         if "statuses" in payload and isinstance(payload.get("statuses"), dict):
             entity.statuses = self._normalize_status_map(payload.get("statuses") or {})
             changed.append("conditions")
+
+        skills = payload.get("skills")
+        if isinstance(skills, dict):
+            self._apply_entity_skills_edit(entity, skills)
+            changed.append("skills")
 
         deck = payload.get("deck")
         if isinstance(deck, dict) and "composition" in deck:
@@ -5403,6 +5829,12 @@ class BattleSession:
         entity.power_base = max(0, int(getattr(entity, "power_base", 0) or 0))
         entity.movement = max(0, int(getattr(entity, "movement", 0) or 0))
         entity.initiative_modifier = max(0, int(getattr(entity, "initiative_modifier", 0) or 0))
+
+    def _apply_entity_skills_edit(self, entity: EnemyInstance, skills: dict) -> None:
+        if "abilities" in skills and isinstance(skills.get("abilities"), dict):
+            entity.abilities = _normalize_unit_abilities(skills.get("abilities") or {})
+        if "specializations" in skills and isinstance(skills.get("specializations"), list):
+            entity.specializations = _normalize_unit_specializations(skills.get("specializations") or [])
 
     def _apply_entity_deck_composition(self, entity: EnemyInstance, raw_composition: dict) -> None:
         available_cards = self._available_unit_cards(entity)
@@ -5475,7 +5907,11 @@ class BattleSession:
             }
         )
         choices["stats"] = stats
+        choices["abilities"] = _normalize_unit_abilities(getattr(entity, "abilities", {}))
+        choices["specializations"] = _normalize_unit_specializations(getattr(entity, "specializations", []))
         profile["choices"] = choices
+        profile["abilities"] = choices["abilities"]
+        profile["specializations"] = choices["specializations"]
         profile["generatedDeck"] = {
             "id": f"character_{character_id}",
             "name": f"{entity.name} Starting Deck",
@@ -5648,6 +6084,12 @@ class BattleSession:
             "sourceId": source_id or None,
             "sourceName": source_name or None,
             "canSaveToCharacterSource": bool(source_id),
+            "skills": {
+                "abilities": _normalize_unit_abilities(getattr(entity, "abilities", {})),
+                "specializations": _normalize_unit_specializations(getattr(entity, "specializations", [])),
+                "abilityKeys": list(ABILITY_KEYS),
+                "commonSpecializations": list(COMMON_SPECIALIZATIONS),
+            },
             "deck": {
                 "composition": dict(composition),
                 "cards": cards_payload,
@@ -7271,6 +7713,8 @@ class BattleSession:
                 "effective_movement": self.effective_movement(entity),
                 "statuses": derived_statuses,
                 "status_text": self.format_statuses(derived_statuses),
+                "abilities": _normalize_unit_abilities(getattr(entity, "abilities", {})),
+                "specializations": _normalize_unit_specializations(getattr(entity, "specializations", [])),
                 "grappled_by": grappled_by,
                 "grappling": grappling,
                 "current_draw_groups": draw_groups,

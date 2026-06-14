@@ -18,6 +18,7 @@
       "choiceRule": "anyTwo",
       "mainArtOptions": ["Martial"],
       "statOverrides": { "toughness": 4 },
+      "abilityBonuses": { "athletics": 1 },
       "startingChanges": [
         "Your starting Toughness is 4 instead of 3.",
         "Increase your Athletics by +1. This can raise Athletics above the normal starting maximum.",
@@ -141,6 +142,7 @@
       "requiredEnergyTypes": ["Martial", "Shadow"],
       "choiceRule": "anyOne",
       "mainArtOptions": ["Martial", "Shadow"],
+      "abilityBonuses": { "stealth": 1 },
       "startingChanges": [
         "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
         "Increase your Stealth by +1. This can raise Stealth above the normal starting maximum."
@@ -216,6 +218,8 @@
       "requiredEnergyTypes": ["Martial", "Nature"],
       "choiceRule": "anyOne",
       "mainArtOptions": ["Martial", "Nature"],
+      "specializationMinimums": { "Survival": 2 },
+      "specializationBonuses": { "Survival": 1 },
       "startingChanges": [
         "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
         "Increase your Survival by +1. If you do not have Survival, learn it at value 2 instead."
@@ -266,6 +270,7 @@
       "requiredEnergyTypes": ["Martial"],
       "choiceRule": "anyTwo",
       "mainArtOptions": ["Martial"],
+      "abilityBonuses": { "athletics": 1 },
       "startingChanges": [
         "Choose one Energy card of your main Weaving Art and set its energy value to 3.",
         "Increase your Athletics by +1. This can raise Athletics above the normal starting maximum."

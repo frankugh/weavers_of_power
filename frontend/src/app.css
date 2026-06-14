@@ -720,7 +720,8 @@ button:disabled {
 }
 
 .field input,
-.field select {
+.field select,
+.field textarea {
   width: 100%;
   min-height: 42px;
   padding: 0 14px;
@@ -728,6 +729,14 @@ button:disabled {
   border-radius: 14px;
   background: rgba(255, 244, 216, 0.045);
   color: var(--text);
+}
+
+.field textarea {
+  min-height: 132px;
+  padding-top: 11px;
+  padding-bottom: 11px;
+  resize: vertical;
+  line-height: 1.45;
 }
 
 .field select {
@@ -3102,6 +3111,55 @@ button.draw-card:hover {
   grid-column: 1 / -1;
 }
 
+.check-config-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.check-option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.check-option-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(160px, 1.4fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 244, 216, 0.03);
+}
+
+.check-option-row input,
+.check-option-row select {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 244, 216, 0.045);
+  color: var(--text);
+}
+
+.check-option-row select {
+  color-scheme: dark;
+}
+
+.check-option-remove {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+}
+
+.check-option-remove svg {
+  width: 16px;
+  height: 16px;
+}
+
 .toggle-grid {
   gap: 8px;
 }
@@ -3476,6 +3534,63 @@ button.draw-card:hover {
   color: var(--text);
   font-size: 0.78rem;
   font-weight: 700;
+}
+
+.builder-skill-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.builder-skill-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 244, 216, 0.03);
+}
+
+.builder-skill-field span,
+.builder-specialization-label {
+  color: var(--muted);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.builder-skill-field input,
+.builder-specialization-row input,
+.builder-specialization-row select {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 244, 216, 0.045);
+  color: var(--text);
+}
+
+.builder-specialization-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.builder-specialization-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 86px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.builder-specialization-row .icon-button,
+.builder-specialization-row .small-button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
 }
 
 .builder-card-disclosure {
@@ -4360,6 +4475,8 @@ button.draw-card:hover {
   }
 
   .control-grid,
+  .builder-skill-grid,
+  .check-option-row,
   .field-grid,
   .stat-grid,
   .selected-stat-grid {

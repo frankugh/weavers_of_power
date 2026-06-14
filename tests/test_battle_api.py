@@ -287,6 +287,19 @@ class BattleApiTests(unittest.TestCase):
                 "ancestryId": "halfling",
                 "energyTypes": ["Martial", "Elemental", "Light"],
                 "mainArt": "Martial",
+                "abilities": {
+                    "intelligence": 4,
+                    "alertness": 3,
+                    "stealth": 3,
+                    "social": 2,
+                    "arcana": 1,
+                    "athletics": 2,
+                },
+                "specializationMode": "broad",
+                "specializations": [
+                    {"name": "Survival", "rank": 3},
+                    {"name": "Thievery", "rank": 2},
+                ],
                 "deckUpgrades": {
                     "Martial": {"success_1": 1, "success_2": 1},
                     "Elemental": {"success_1": 1, "success_2": 1},
@@ -304,6 +317,11 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(create_response.status_code, 200)
         character_id = create_response.json()["character"]["id"]
         self.assertEqual(create_response.json()["character"]["art"]["imagePath"], "Playing_Characters/fighter_human_male.png")
+        self.assertEqual(create_response.json()["character"]["abilities"]["athletics"], 3)
+        self.assertEqual(
+            {item["name"]: item["rank"] for item in create_response.json()["character"]["specializations"]},
+            {"Survival": 3, "Thievery": 2},
+        )
 
         listed = self.client.get("/api/battle/characters").json()["characters"]
         self.assertIn(character_id, {entry["id"] for entry in listed})
@@ -319,6 +337,8 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(player["image_url"], "/images/Playing_Characters/fighter_human_male.png")
         self.assertEqual(player["character_profile"]["className"], "Fighter")
         self.assertEqual(len(player["card_library"]), 20)
+        self.assertEqual(player["abilities"]["athletics"], 3)
+        self.assertEqual({item["name"]: item["rank"] for item in player["specializations"]}, {"Survival": 3, "Thievery": 2})
 
         deleted = self.client.delete(f"/api/battle/characters/{character_id}")
         self.assertEqual(deleted.status_code, 200)
@@ -375,6 +395,10 @@ class BattleApiTests(unittest.TestCase):
                     "initiativeModifier": 5,
                 },
                 "statuses": {"Slow": {"stacks": 1}, "custom curse": {"stacks": 2}, "grappled": {"stacks": 9}},
+                "skills": {
+                    "abilities": {"intelligence": 5, "alertness": 4, "stealth": 3, "social": 2, "arcana": 1, "athletics": 6},
+                    "specializations": [{"name": "Thievery", "rank": 3}],
+                },
                 "deck": {"composition": {"hf_master_success": 2, "hf_void_fail": 1}, "reset": True},
             },
         )
@@ -394,6 +418,8 @@ class BattleApiTests(unittest.TestCase):
         self.assertIn("slowed", player_payload["statuses"])
         self.assertIn("custom_curse", player_payload["statuses"])
         self.assertNotIn("grappled", player_payload["statuses"])
+        self.assertEqual(player_payload["abilities"]["intelligence"], 5)
+        self.assertEqual(player_payload["specializations"], [{"name": "Thievery", "rank": 3}])
         self.assertEqual(player_payload["wound_counts"], {"hand": 0, "discard": 0, "draw_pile": 1, "total": 1})
         self.assertEqual(player_payload["editor"]["deck"]["composition"], {"hf_master_success": 2, "hf_void_fail": 1})
 
@@ -432,6 +458,10 @@ class BattleApiTests(unittest.TestCase):
             json={
                 "identity": {"name": "Mira Corrupted", "image": "/images/anonymous.png"},
                 "stats": {"toughnessMax": 7, "toughnessCurrent": 7, "powerBase": 5},
+                "skills": {
+                    "abilities": {"intelligence": 4, "alertness": 4, "stealth": 2, "social": 2, "arcana": 2, "athletics": 5},
+                    "specializations": [{"name": "Survival", "rank": 4}],
+                },
                 "deck": {"composition": {first_card_id: 3}, "reset": True},
             },
         )
@@ -441,6 +471,8 @@ class BattleApiTests(unittest.TestCase):
         self.assertEqual(profile["name"], "Mira Corrupted")
         self.assertEqual(profile["choices"]["stats"]["toughness"], 7)
         self.assertEqual(profile["choices"]["stats"]["power"], 5)
+        self.assertEqual(profile["abilities"]["athletics"], 5)
+        self.assertEqual(profile["choices"]["specializations"], [{"name": "Survival", "rank": 4}])
         self.assertEqual(len(profile["generatedDeck"]["cards"]), 1)
         self.assertEqual(profile["generatedDeck"]["cards"][0]["id"], first_card_id)
         self.assertEqual(profile["generatedDeck"]["cards"][0]["weight"], 3)

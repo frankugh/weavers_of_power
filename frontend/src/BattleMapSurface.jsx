@@ -38,6 +38,7 @@ const MAP_THEME = {
   doorPanel: 0xf0bd66,
   doorPanelDark: 0xa66d32,
   secretDoorHidden: 0xa35de0,
+  infoMarker: 0x6fb7d8,
   preview: {
     erase: 0xff5555,
     door: 0xe8c070,
@@ -769,6 +770,45 @@ function drawSecretSuspects(PIXI, container, dungeon, renderIndex, range, cellSi
   }
 }
 
+function drawInfoMarkers(PIXI, container, dungeon, renderIndex, range, cellSize, isGmMode = false) {
+  while (container.children.length > 0) container.removeChildAt(0);
+  if (!dungeon?.infoMarkers?.length) return;
+  const step = mapStep(cellSize);
+  const padding = MAP_VIEWPORT_PADDING;
+  const revealedSet = new Set(dungeon.visibleRoomIds || []);
+  const roomCellToRoom = renderIndex?.roomCellToRoom || new Map();
+  const states = dungeon.infoMarkerStates || {};
+
+  for (const marker of dungeon.infoMarkers) {
+    const x = Number(marker.x);
+    const y = Number(marker.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    if (!isCellInRange(x, y, range)) continue;
+    if (!isGmMode) {
+      const roomCell = roomCellToRoom.get(`${x},${y}`);
+      if (roomCell && !revealedSet.has(roomCell.room_id)) continue;
+    }
+    const cx = padding + x * step + cellSize / 2;
+    const cy = padding + y * step + cellSize / 2;
+    const radius = Math.max(6, Math.round(cellSize * 0.2));
+    const state = states[marker.id] || {};
+    const bg = new PIXI.Graphics();
+    const fillColor = marker.trigger === "check" && !state.unlocked ? 0x4b5563 : MAP_THEME.infoMarker;
+    bg.circle(cx, cy, radius).fill({ color: fillColor, alpha: isGmMode ? 0.9 : 0.78 });
+    bg.circle(cx, cy, radius).stroke({ color: 0xf3d58a, alpha: 0.75, width: 1 });
+    container.addChild(bg);
+
+    const label = new PIXI.Text({
+      text: "i",
+      style: { fill: 0xffffff, fontSize: Math.max(9, Math.round(cellSize * 0.28)), fontWeight: "700" },
+      anchor: 0.5,
+    });
+    label.x = cx;
+    label.y = cy - 1;
+    container.addChild(label);
+  }
+}
+
 function drawWallEdges(graphics, dungeon, wallRenderIndex, renderIndex, range, cellSize, isGmMode) {
   graphics.clear();
   if (!dungeon?.walls) return;
@@ -1311,12 +1351,14 @@ function drawStaticMapLayer(
   }
   const { layers } = renderer;
   const isGmDungeonMode = mapMode === "gm-dungeon";
+  const isGmInfoMode = mapMode === "gm-dungeon" || mapMode === "gm-reposition";
   const unbounded = Boolean(dungeon?.tiles);
   const range = visibleCellRange(camera, viewport, cellSize);
   drawGrid(layers.terrain, room, cellSize, { unbounded, camera, viewport });
   drawDungeonTiles(layers.dungeonTiles, dungeon, renderIndex, range, cellSize, isGmDungeonMode, highlightedRoomId);
   drawWallEdges(layers.dungeonWalls, dungeon, renderIndex?.wallChunks, renderIndex, range, cellSize, isGmDungeonMode);
   drawSecretSuspects(renderer.PIXI, layers.secretSuspects, dungeon, renderIndex, range, cellSize, isGmDungeonMode);
+  drawInfoMarkers(renderer.PIXI, layers.infoMarkers, dungeon, renderIndex, range, cellSize, isGmInfoMode);
   drawDungeonIssues(layers.dungeonIssues, dungeon, range, cellSize);
   drawPlayerSpawn(layers.playerSpawn, dungeon, cellSize, isGmDungeonMode);
   renderPixi(renderer);
@@ -1539,6 +1581,8 @@ function BattleMapSurface({
   onWallEdit,
   onSetPlayerSpawn,
   onSecretDoorClick,
+  onInfoMarkerCell,
+  onInfoMarkerClick,
   onActionTarget,
   onUnitContextMenu,
   onUnitDoubleClick,
@@ -1749,6 +1793,7 @@ function BattleMapSurface({
           dungeonWalls: new PIXI.Graphics(),
           secretDoorGlow: new PIXI.Graphics(),
           secretSuspects: new PIXI.Container(),
+          infoMarkers: new PIXI.Container(),
           dungeonIssues: new PIXI.Graphics(),
           playerSpawn: new PIXI.Graphics(),
           dungeonPreview: new PIXI.Graphics(),
@@ -1767,6 +1812,7 @@ function BattleMapSurface({
           layers.dungeonWalls,
           layers.secretDoorGlow,
           layers.secretSuspects,
+          layers.infoMarkers,
           layers.dungeonIssues,
           layers.playerSpawn,
           layers.dungeonPreview,
@@ -2125,6 +2171,36 @@ function BattleMapSurface({
 
   function partyDragMembers() {
     return placedEntities.filter((entity) => entity.is_player && !entity.is_down && hasGridPosition(entity, room, dungeon));
+  }
+
+  function isInfoMarkerVisible(marker) {
+    if (!marker) {
+      return false;
+    }
+    if (mapMode === "gm-dungeon" || mapMode === "gm-reposition") {
+      return true;
+    }
+    return isDungeonCellVisibleToPlayers(dungeon, renderIndex, Number(marker.x), Number(marker.y));
+  }
+
+  function getInfoMarkerAtCell(cell, { includeHidden = false } = {}) {
+    if (!cell || !dungeon?.infoMarkers?.length) {
+      return null;
+    }
+    return (
+      dungeon.infoMarkers.find((marker) => (
+        Number(marker.x) === cell.x &&
+        Number(marker.y) === cell.y &&
+        (includeHidden || isInfoMarkerVisible(marker))
+      )) || null
+    );
+  }
+
+  function canPlaceInfoMarkerAtCell(cell) {
+    if (!cell) {
+      return false;
+    }
+    return !usesDungeonGrid || !dungeonBlocksCell(dungeon, cell.x, cell.y);
   }
 
   function getRouteCellsForEntity(entity) {
@@ -2527,6 +2603,20 @@ function BattleMapSurface({
       addWallStrokeEdge(firstEdge);
       surfaceRef.current?.setPointerCapture?.(pointerId);
       return;
+    }
+
+    if (isGmDungeonDrawMode && gmDungeonDrawSubmode === "info" && !busy && (isLeftMouse || pointerType === "touch") && cell) {
+      const marker = getInfoMarkerAtCell(cell, { includeHidden: true });
+      if (marker && onInfoMarkerClick) {
+        event.preventDefault();
+        onInfoMarkerClick(marker.id);
+        return;
+      }
+      if (canPlaceInfoMarkerAtCell(cell) && onInfoMarkerCell) {
+        event.preventDefault();
+        onInfoMarkerCell({ x: cell.x, y: cell.y });
+        return;
+      }
     }
 
     // In GM Dungeon spawn submode, left click sets the player spawn cell.
@@ -2932,6 +3022,14 @@ function BattleMapSurface({
           onSecretDoorClick(ek);
           return;
         }
+      }
+    }
+
+    if (!occupant && !isMultiSelectMode && onInfoMarkerClick) {
+      const marker = getInfoMarkerAtCell(clickCell, { includeHidden: mapMode === "gm-reposition" || mapMode === "gm-dungeon" });
+      if (marker) {
+        onInfoMarkerClick(marker.id);
+        return;
       }
     }
 

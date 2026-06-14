@@ -2,7 +2,7 @@
 Protocol voor AI:  Je mag hier een todo weghalen als opgepakt, maar zet hem dan wel helemaal onderaan dit bestand onderop bij de voltooide taken
 
 
-- De search room knop was niet te vinden ook al zat ik buiten combat. Miss omdat er enemies zichtbaar waren?
+
 
 ----
 
@@ -19,6 +19,9 @@ Hoe gaan we weapons/armor/gear/loot inventory bijhouden?
 
 -----
 
+- Ik zou in map edit i'tjes willen kunnen toevoegen met daarin een flavourtekst. Ik zou willen kunnen instellen of de i automatisch opent zodra in line of sight is, danwel na erop klikken, danwel na succesvolle skill check (waar ik soort en DC wil kunnen zetten)
+Een flavourtekst verschijnt in een pop-up net zoals bij searches
+
 17) Enemies moeten ook deuren kunnen openen
 
 16) Secret doors kun je nu in een lange gang overal vinden in die gang, er is geen restrictie anders dan in de kamer. Dit kan duidelijker, maar heeft niet veel haast nu
@@ -30,14 +33,10 @@ Hoe gaan we weapons/armor/gear/loot inventory bijhouden?
 
 - Bij secret doors wil ik default random flavourteksten kunnen overschrijven in Map Edit modus
 
-- Per chamber optionele flavour tekst (GM description + room details) voor als je de chamber ziet na openen deur (let op bij deze oppakken dat dit lastig is met genuanceerdere line of sight mechaniek
-
 - In GM mode en Map Edit mode wil ik units naar unplaced en terug kunnen repositionen 
 	o Een unplaced unit krijgt geen beurten totdat deze placed wordt. 
 	o Als GM een unplaced unit wil placen in een encounter ronde geef dan een pop-up met can't roll initiative during active round, wait for end of round or place manually   wait | manually   bij manually komt unit achter in initiative en kan GM zelf schuiven. Tussen rondes rold de unit initiative zonder aanpassingen en wordt geplaatst. GM kan natuurlijk altijd wijzigen indien gewenst. 
 	o Unplaced panel kun je minimaliseren en heropenen. 
-
-- Verschil tussen sessie opslaan/laden en kamer/dungeon/encounter opslaan/laden. Het 2e heeft nog geen start combat.
 
 
 
@@ -221,6 +220,8 @@ Rechterklik show unit bij PC toont een volledig overview van niet alleen het pla
 
 - Path zien wann je een movement doet. 
 
+- Verschil tussen sessie opslaan/laden en kamer/dungeon/encounter opslaan/laden. Het 2e heeft nog geen start combat.
+
 |||||
 
 
@@ -263,6 +264,6 @@ en zoals we al hebben het dungeon scherm edit en play modus
 
 f Als GM modus aan staat wil ik de optie hebben om stats en condities te wijzigen / om naam en plaatje te wijzigen / deck samenstelling te wijzigen. Hoe zou jij dit doen qua UX? 
 
-- Gangup van Goblins in combat sim fixed
+- Gangup in combat sim fixed
 
 - De secret door met DC 0 vond ik niet toen ik 0 successen had, maar die zou je moeten auto finden als je zoekt. 

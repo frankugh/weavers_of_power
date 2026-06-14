@@ -3968,6 +3968,107 @@ class WallEdgeDoorTests(unittest.TestCase):
         self.assertEqual(result["suspectInteraction"]["outcome"], "cleared")
         self.assertEqual(session.dungeon.secret_suspects, [])
 
+    def test_room_search_uses_best_allowed_skill(self) -> None:
+        session = self._make_dungeon("skill-search", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("secret_door", [{"x": 0, "y": 0, "side": "e"}])
+        session.dungeon.walls["0,0,e"].secret_dc = 1
+        session.set_dungeon_search_check({
+            "allowedChecks": [
+                {"type": "ability", "key": "intelligence"},
+                {"type": "ability", "key": "alertness"},
+            ],
+            "dc": 1,
+        })
+        session.add_player(
+            name="Scout",
+            abilities={
+                "intelligence": 1,
+                "alertness": 4,
+                "stealth": 2,
+                "social": 2,
+                "arcana": 2,
+                "athletics": 2,
+            },
+        )
+        player = session.state.enemies[session.selected_id]
+        session._set_position(player, 0, 0)
+        player.deck_state.hand = []
+        player.deck_state.discard_pile = []
+        player.deck_state.draw_pile = [
+            "hf_martial_success_2",
+            "hf_void_fail",
+            "hf_void_fail",
+            "hf_void_fail",
+        ]
+
+        started = session.start_room_search()
+        pending = session.snapshot()["pendingSearch"]
+
+        self.assertEqual(pending["drawCount"], 4)
+        self.assertEqual(pending["chosenCheck"]["key"], "alertness")
+        self.assertEqual(len(started["searchStarted"]["drawnCardIds"]), 4)
+        self.assertEqual(started["searchStarted"]["drawCount"], 4)
+
+    def test_info_marker_open_check_and_template_persistence(self) -> None:
+        session = self._make_dungeon("info-marker", [[0, 0], [1, 0]])
+        session.add_player(
+            name="Mira",
+            physical_cards=True,
+            specializations=[{"name": "Thievery", "rank": 3}],
+        )
+        player = session.state.enemies[session.selected_id]
+        session._set_position(player, 0, 0)
+
+        click_snapshot = session.upsert_info_marker({
+            "x": 0,
+            "y": 0,
+            "title": "Scratched note",
+            "text": "A warning has been carved into the stone.",
+            "trigger": "click",
+        })
+        click_marker_id = click_snapshot["infoMarker"]["id"]
+        opened = session.open_info_marker(click_marker_id)
+
+        self.assertEqual(opened["flavourText"], "A warning has been carved into the stone.")
+        self.assertTrue(session.dungeon.info_marker_states[click_marker_id]["opened"])
+
+        check_snapshot = session.upsert_info_marker({
+            "x": 1,
+            "y": 0,
+            "title": "Tiny latch",
+            "text": "The hidden compartment clicks open.",
+            "trigger": "check",
+            "check": {
+                "allowedChecks": [{"type": "specialization", "key": "Thievery"}],
+                "dc": 2,
+            },
+        })
+        check_marker_id = check_snapshot["infoMarker"]["id"]
+        started = session.start_info_marker_check(check_marker_id)
+        pending = session.snapshot()["pendingSearch"]
+
+        self.assertEqual(pending["kind"], "info_marker")
+        self.assertEqual(pending["drawCount"], 3)
+        self.assertEqual(pending["chosenCheck"]["label"], "Thievery")
+        self.assertIsNone(session.pending_search["success_count"])
+        self.assertEqual(started["infoMarkerCheckStarted"]["drawCount"], 3)
+
+        failed = session.resolve_info_marker_check(use_willpower=False, manual_successes=1)
+        self.assertFalse(failed["infoMarkerCheck"]["success"])
+        self.assertFalse(session.dungeon.info_marker_states[check_marker_id].get("unlocked", False))
+
+        session.start_info_marker_check(check_marker_id)
+        resolved = session.resolve_info_marker_check(use_willpower=False, manual_successes=2)
+
+        self.assertTrue(resolved["infoMarkerCheck"]["success"])
+        self.assertEqual(resolved["flavourText"], "The hidden compartment clicks open.")
+        self.assertTrue(session.dungeon.info_marker_states[check_marker_id]["unlocked"])
+
+        saved = session.save_dungeon_as_map_template("Marker Map")
+        template = self.context.get_map_template(saved["id"])
+        self.assertEqual(len(template["info_markers"]), 2)
+        self.assertNotIn("info_marker_states", template)
+
     # ------------------------------------------------------------------ persistence
 
     def test_walls_persist_across_save_and_load(self) -> None:

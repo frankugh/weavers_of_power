@@ -23,6 +23,7 @@ const UNIT_DETAIL_TABS = [
   { id: "overview", label: "Overview" },
   { id: "identity", label: "Identity" },
   { id: "stats", label: "Stats" },
+  { id: "skills", label: "Skills" },
   { id: "conditions", label: "Conditions" },
   { id: "deck", label: "Deck" },
 ];
@@ -57,6 +58,35 @@ const CREATURE_SKILL_LABELS = {
   arcana: "Arcana",
   athletics: "Athletics",
 };
+const ABILITY_LABELS = {
+  intelligence: "Intelligence",
+  alertness: "Alertness",
+  stealth: "Stealth",
+  social: "Social",
+  arcana: "Arcana",
+  athletics: "Athletics",
+};
+const ABILITY_KEYS = Object.keys(ABILITY_LABELS);
+const ABILITY_ARRAYS = [
+  [3, 3, 3, 2, 2, 2],
+  [3, 3, 3, 3, 2, 1],
+  [4, 3, 2, 2, 2, 2],
+  [4, 3, 3, 2, 2, 1],
+  [4, 3, 3, 3, 1, 1],
+];
+const COMMON_SPECIALIZATIONS = [
+  "Survival",
+  "Thievery",
+  "Medicine",
+  "Engineering",
+  "Bard",
+  "Herbalist",
+  "Warrior Traditions",
+  "Elemental Traditions",
+  "Sacred Traditions",
+  "Nature Traditions",
+  "Shadow Traditions",
+];
 const TEMPLATE_AVAILABILITY_FILTERS = [
   { id: "spawnable", label: "Spawnable" },
   { id: "all", label: "All" },
@@ -123,6 +153,7 @@ const GM_DUNGEON_DRAW_SUBMODES = {
   TERRAIN: "terrain",
   WALLS: "walls",
   SPAWN: "spawn",
+  INFO: "info",
 };
 const GM_DUNGEON_WALL_PALETTES = ["wall", "door", "secret_door", "erase"];
 const RECTANGLE_PALETTES = new Set(["floor", "void"]);
@@ -215,6 +246,63 @@ function defaultStatsForClass(catalog, classEntry) {
   };
 }
 
+function defaultAbilities() {
+  return Object.fromEntries(ABILITY_KEYS.map((key, index) => [key, ABILITY_ARRAYS[0][index]]));
+}
+
+function abilityArrayId(values) {
+  return ABILITY_KEYS
+    .map((key) => Number(values?.[key] || 0))
+    .sort((a, b) => b - a)
+    .join(",");
+}
+
+function abilitiesForArray(arrayValues) {
+  return Object.fromEntries(ABILITY_KEYS.map((key, index) => [key, Number(arrayValues?.[index] || 0)]));
+}
+
+function normalizeSpecializations(value) {
+  const seen = new Set();
+  const result = [];
+  for (const item of Array.isArray(value) ? value : []) {
+    const name = String(item?.name || "").trim();
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    result.push({ name, rank: nonnegativeInt(item?.rank) });
+  }
+  return result;
+}
+
+function normalizeCheckConfig(value) {
+  const allowedChecks = Array.isArray(value?.allowedChecks) && value.allowedChecks.length
+    ? value.allowedChecks
+    : [{ type: "ability", key: "intelligence" }];
+  return {
+    allowedChecks: allowedChecks
+      .map((item) => ({
+        type: item?.type === "specialization" ? "specialization" : "ability",
+        key: String(item?.key || "").trim() || "intelligence",
+      }))
+      .filter((item) => item.key),
+    dc: nonnegativeInt(value?.dc ?? 2),
+    allowUntrained: Boolean(value?.allowUntrained),
+  };
+}
+
+function createInfoMarkerForm(marker = {}, cell = null) {
+  const trigger = ["auto", "click", "check"].includes(marker.trigger) ? marker.trigger : "click";
+  return {
+    id: marker.id || "",
+    x: nonnegativeInt(marker.x ?? cell?.x ?? 0),
+    y: nonnegativeInt(marker.y ?? cell?.y ?? 0),
+    title: marker.title || "Info",
+    text: marker.text || "",
+    trigger,
+    interactionRange: marker.interactionRange === "adjacent" ? "adjacent" : "same_room",
+    check: normalizeCheckConfig(marker.check),
+  };
+}
+
 function defaultGearPresetId(classEntry) {
   return classEntry?.gearPresets?.[0]?.id || "";
 }
@@ -301,6 +389,13 @@ function createCharacterBuilderForm(catalog, classId = null) {
     classImprovementTarget: "success_1",
     gearPresetId: defaultGearPresetId(classEntry),
     stats: defaultStatsForClass(catalog, classEntry),
+    abilities: defaultAbilities(),
+    abilityArray: abilityArrayId(defaultAbilities()),
+    specializationMode: "broad",
+    specializations: [
+      { name: "Survival", rank: 3 },
+      { name: "Thievery", rank: 2 },
+    ],
     art: defaultCharacterArt(catalog, classEntry?.id || "", ancestryId),
     physicalCards: false,
   };
@@ -354,6 +449,19 @@ function builderValidationErrors(catalog, form) {
   const classTargetValue = 1 + Number(form.deckUpgrades?.[form.mainArt]?.[form.classImprovementTarget] || 0);
   if (classTargetValue >= 3) {
     errors.push("Class improvement target must be below energy value 3 before the class improvement.");
+  }
+  const arrayIds = new Set(ABILITY_ARRAYS.map((array) => array.join(",")));
+  if (!arrayIds.has(abilityArrayId(form.abilities))) {
+    errors.push("Ability scores must match one starting array.");
+  }
+  const specs = normalizeSpecializations(form.specializations);
+  const ranks = specs.map((item) => Number(item.rank || 0)).sort((a, b) => b - a).join(",");
+  if (form.specializationMode === "deep") {
+    if (specs.length !== 1 || ranks !== "4") {
+      errors.push("Deep training requires one specialization at 4.");
+    }
+  } else if (specs.length !== 2 || ranks !== "3,2") {
+    errors.push("Broad training requires two specializations at 3 and 2.");
   }
   return errors;
 }
@@ -688,6 +796,13 @@ function createUnitDetailsForm(entity) {
     },
     statuses,
     customConditions,
+    skills: {
+      abilities: {
+        ...defaultAbilities(),
+        ...(entity?.editor?.skills?.abilities || entity?.abilities || {}),
+      },
+      specializations: normalizeSpecializations(entity?.editor?.skills?.specializations || entity?.specializations || []),
+    },
     deckComposition: unitDeckCompositionFromEntity(entity),
   };
 }
@@ -721,6 +836,12 @@ function buildUnitDetailsPayload(form) {
       Object.entries(form?.stats || {}).map(([key, value]) => [key, nonnegativeInt(value)]),
     ),
     statuses,
+    skills: {
+      abilities: Object.fromEntries(
+        ABILITY_KEYS.map((key) => [key, nonnegativeInt(form?.skills?.abilities?.[key] ?? 0)]),
+      ),
+      specializations: normalizeSpecializations(form?.skills?.specializations || []),
+    },
     deck: {
       composition,
       reset: true,
@@ -1158,6 +1279,7 @@ function App() {
   const actionMenuRef = useRef(null);
   const unitContextMenuRef = useRef(null);
   const repositionReturnModeRef = useRef(null);
+  const autoInfoOpeningRef = useRef(new Set());
 
   const [snapshot, setSnapshot] = useState(null);
   const [meta, setMeta] = useState(null);
@@ -1170,6 +1292,7 @@ function App() {
   const [modal, setModal] = useState(null);
   const [activeView, setActiveView] = useState(APP_VIEWS.BATTLE);
   const [flavourText, setFlavourText] = useState(null);
+  const [flavourTitle, setFlavourTitle] = useState("Search");
   const [addUnitTab, setAddUnitTab] = useState("premade");
   const [templateSearch, setTemplateSearch] = useState("");
   const [templateCategory, setTemplateCategory] = useState("All");
@@ -1249,6 +1372,8 @@ function App() {
   const [gmSelectedSecretDoorKey, setGmSelectedSecretDoorKey] = useState(null);
   const [gmSecretDcInput, setGmSecretDcInput] = useState("");
   const [gmSecretDoorDefaultDc, setGmSecretDoorDefaultDc] = useState(2);
+  const [infoMarkerForm, setInfoMarkerForm] = useState(null);
+  const [searchCheckForm, setSearchCheckForm] = useState(null);
   const [pendingLargeTileEdit, setPendingLargeTileEdit] = useState(null);
   const [mapLight, setMapLight] = useState(getInitialMapLight);
 
@@ -1606,6 +1731,15 @@ function App() {
   const fogOfWarEnabled = dungeon?.fogOfWarEnabled ?? true;
   const visibleRoomIds = new Set(dungeon?.visibleRoomIds || []);
   const revealedRoomIdSet = new Set(dungeon?.revealedRoomIds || []);
+  const roomIdForCell = useMemo(() => {
+    const map = new Map();
+    for (const roomEntry of dungeon?.rooms || []) {
+      for (const cell of roomEntry.cells || []) {
+        map.set(`${cell[0]},${cell[1]}`, roomEntry.room_id);
+      }
+    }
+    return map;
+  }, [dungeon?.rooms]);
 
   useEffect(() => {
     if (mapMode === MAP_MODES.WALK && !canUseWalk) {
@@ -1618,6 +1752,45 @@ function App() {
       setMapMode(MAP_MODES.IDLE);
     }
   }, [mapMode, canUsePartyWalk]);
+
+  useEffect(() => {
+    if (!snapshot?.sid || activeView !== APP_VIEWS.BATTLE || modal || combatIsRunning || isGmDungeonMode) {
+      return;
+    }
+    const marker = (dungeon?.infoMarkers || []).find((item) => {
+      if (item.trigger !== "auto") return false;
+      const state = dungeon?.infoMarkerStates?.[item.id] || {};
+      if (state.opened || autoInfoOpeningRef.current.has(item.id)) return false;
+      if (!fogOfWarEnabled) return true;
+      const roomId = roomIdForCell.get(`${item.x},${item.y}`);
+      return !roomId || visibleRoomIds.has(roomId);
+    });
+    if (!marker) return;
+    autoInfoOpeningRef.current.add(marker.id);
+    requestJson(`/api/battle/sessions/${snapshot.sid}/dungeon/info-markers/${encodeURIComponent(marker.id)}/open`, {
+      method: "POST",
+      body: JSON.stringify({ autoOpen: true }),
+    })
+      .then((payload) => {
+        setSnapshot(payload);
+        showSearchFlavour(payload);
+      })
+      .catch((requestError) => setError(requestError.message))
+      .finally(() => {
+        autoInfoOpeningRef.current.delete(marker.id);
+      });
+  }, [
+    snapshot?.sid,
+    snapshot?.dungeon?.renderVersion,
+    activeView,
+    modal,
+    combatIsRunning,
+    isGmDungeonMode,
+    dungeon?.infoMarkers,
+    dungeon?.infoMarkerStates,
+    fogOfWarEnabled,
+    roomIdForCell,
+  ]);
 
   useEffect(() => {
     if (actionTargeting && (activeView !== APP_VIEWS.BATTLE || actionTargeting.actorId !== selectedEntity?.instance_id)) {
@@ -1750,7 +1923,7 @@ function App() {
   const searchBlockReason = !isPlayerSelected || selectedIsDown || !dungeon ? null
     : roomAlreadySearched ? null
     : pendingSearch ? "A search is already in progress."
-    : combatIsRunning ? "Search is only available outside combat."
+    : combatIsRunning ? null
     : pendingOpportunity ? "Resolve the pending opportunity attack first."
     : pendingEncounterRoomIds.length > 0 ? "Resolve the pending encounter first."
     : null;
@@ -1983,6 +2156,9 @@ function App() {
     setOpportunityResolution(null);
     setOpportunityManual({ successes: 0, fate: 0 });
     setManualSearchSuccesses(0);
+    setFlavourTitle("Search");
+    setInfoMarkerForm(null);
+    setSearchCheckForm(null);
   }
 
   function showDrawReveal(payload, kind) {
@@ -2335,6 +2511,62 @@ function App() {
     });
   }
 
+  function openInfoMarkerEditor(markerOrCell) {
+    const marker = markerOrCell?.id ? markerOrCell : {};
+    const cell = markerOrCell?.id ? null : markerOrCell;
+    setInfoMarkerForm(createInfoMarkerForm(marker, cell));
+    setModal("info-marker-editor");
+  }
+
+  async function submitInfoMarkerForm(event) {
+    event.preventDefault();
+    if (!snapshot?.sid || !infoMarkerForm) return;
+    const body = {
+      ...infoMarkerForm,
+      x: Number(infoMarkerForm.x),
+      y: Number(infoMarkerForm.y),
+      check: normalizeCheckConfig(infoMarkerForm.check),
+    };
+    if (!body.id) delete body.id;
+    const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/info-markers`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }, "Info marker saved");
+    if (payload) {
+      setInfoMarkerForm(null);
+      closeModal();
+    }
+  }
+
+  async function deleteInfoMarker() {
+    if (!snapshot?.sid || !infoMarkerForm?.id) return;
+    const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/info-markers/${encodeURIComponent(infoMarkerForm.id)}`, {
+      method: "DELETE",
+    }, "Info marker deleted");
+    if (payload) {
+      setInfoMarkerForm(null);
+      closeModal();
+    }
+  }
+
+  function openSearchCheckEditor() {
+    setSearchCheckForm(normalizeCheckConfig(dungeon?.searchCheck));
+    setModal("search-check-editor");
+  }
+
+  async function submitSearchCheckForm(event) {
+    event.preventDefault();
+    if (!snapshot?.sid || !searchCheckForm) return;
+    const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/search-check`, {
+      method: "POST",
+      body: JSON.stringify(normalizeCheckConfig(searchCheckForm)),
+    }, "Search check updated");
+    if (payload) {
+      setSearchCheckForm(null);
+      closeModal();
+    }
+  }
+
   async function handleToggleDoor({ x, y, side, key }) {
     const isOpen = dungeon?.walls?.[key]?.door_open;
     await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/doors/state`, {
@@ -2344,8 +2576,9 @@ function App() {
   }
 
   function showSearchFlavour(payload) {
-    const text = pickSearchFlavour(payload);
+    const text = payload?.flavourText || pickSearchFlavour(payload);
     if (text) {
+      setFlavourTitle(payload?.infoMarkerOpened?.title || payload?.infoMarkerCheck?.title || "Search");
       setFlavourText(text);
       setModal("search-flavour");
     }
@@ -2375,10 +2608,12 @@ function App() {
   async function handleResolveSearch(useWillpower, manualResult = {}) {
     const resolvePath = pendingSearch?.kind === "suspect"
       ? "dungeon/suspects/resolve"
-      : "dungeon/search/resolve";
-    const body = pendingSearch?.kind === "suspect"
-      ? { useWillpower }
-      : { useWillpower, partyWalk: mapMode === MAP_MODES.PARTY_WALK };
+      : pendingSearch?.kind === "info_marker"
+        ? "dungeon/info-markers/resolve"
+        : "dungeon/search/resolve";
+    const body = pendingSearch?.kind === "search"
+      ? { useWillpower, partyWalk: mapMode === MAP_MODES.PARTY_WALK }
+      : { useWillpower };
     if (manualResult.successes != null) {
       body.successes = Math.max(0, Number(manualResult.successes || 0));
       body.fate = Math.max(0, Number(manualResult.fate || 0));
@@ -2747,28 +2982,65 @@ function App() {
   function updateUnitDetailsForm(path, value) {
     setUnitDetailsForm((current) => {
       if (!current) return current;
-      const [section, key, nestedKey] = path;
-      if (nestedKey) {
-        return {
-          ...current,
-          [section]: {
-            ...current[section],
-            [key]: {
-              ...(current[section]?.[key] || {}),
-              [nestedKey]: value,
-            },
-          },
-        };
+      function assign(source, index) {
+        const key = path[index];
+        if (index === path.length - 1) {
+          if (Array.isArray(source)) {
+            const next = [...source];
+            next[key] = value;
+            return next;
+          }
+          return { ...(source || {}), [key]: value };
+        }
+        const child = source?.[key];
+        const nextChild = assign(child ?? (typeof path[index + 1] === "number" ? [] : {}), index + 1);
+        if (Array.isArray(source)) {
+          const next = [...source];
+          next[key] = nextChild;
+          return next;
+        }
+        return { ...(source || {}), [key]: nextChild };
       }
-      return {
-        ...current,
-        [section]: {
-          ...current[section],
-          [key]: value,
-        },
-      };
+      return assign(current, 0);
     });
     setUnitDetailsSourceConfirm(false);
+  }
+
+  async function handleInfoMarkerClick(markerId) {
+    const marker = (dungeon?.infoMarkers || []).find((item) => item.id === markerId);
+    if (!marker) return;
+    if (isGmDungeonMode && gmDungeonDrawSubmode === GM_DUNGEON_DRAW_SUBMODES.INFO) {
+      openInfoMarkerEditor(marker);
+      return;
+    }
+    const state = dungeon?.infoMarkerStates?.[markerId] || {};
+    const gmMode = Boolean(isGmRepositionMode || isGmDungeonMode);
+    if (marker.trigger === "check" && !state.unlocked) {
+      const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/info-markers/${encodeURIComponent(markerId)}/check`, {
+        method: "POST",
+        body: JSON.stringify({ gmMode }),
+      });
+      if (!payload) return;
+      showDrawReveal(payload, "draw");
+      if (searchNeedsManualResult(payload.pendingSearch)) {
+        setManualSearchSuccesses(0);
+        setModal("search-manual");
+      } else if (payload.pendingSearch?.hasFate) {
+        setModal("search-resolve");
+      } else {
+        const resolved = await applySnapshotRequest(
+          `/api/battle/sessions/${snapshot.sid}/dungeon/info-markers/resolve`,
+          { method: "POST", body: JSON.stringify({ useWillpower: false }) },
+        );
+        showSearchFlavour(resolved);
+      }
+      return;
+    }
+    const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/info-markers/${encodeURIComponent(markerId)}/open`, {
+      method: "POST",
+      body: JSON.stringify({ gmMode }),
+    });
+    showSearchFlavour(payload);
   }
 
   function updateUnitCondition(key, stacks) {
@@ -3048,6 +3320,13 @@ function App() {
       energyTypes,
       deckUpgrades: emptyDeckUpgrades(energyTypes),
       stats: defaultStatsForClass(characterCatalog, classEntry),
+      abilities: current.abilities || defaultAbilities(),
+      abilityArray: current.abilityArray || abilityArrayId(current.abilities || defaultAbilities()),
+      specializationMode: current.specializationMode || "broad",
+      specializations: current.specializations || [
+        { name: "Survival", rank: 3 },
+        { name: "Thievery", rank: 2 },
+      ],
       art: defaultCharacterArt(
         characterCatalog,
         classId,
@@ -3097,6 +3376,43 @@ function App() {
     }));
   }
 
+  function setBuilderAbilityArray(arrayId) {
+    const arrayValues = arrayId.split(",").map((value) => Number(value || 0));
+    setCharacterBuilderForm((current) => ({
+      ...current,
+      abilityArray: arrayId,
+      abilities: abilitiesForArray(arrayValues),
+    }));
+  }
+
+  function updateBuilderAbility(key, value) {
+    setCharacterBuilderForm((current) => {
+      const abilities = { ...(current.abilities || defaultAbilities()), [key]: nonnegativeInt(value) };
+      return { ...current, abilities, abilityArray: abilityArrayId(abilities) };
+    });
+  }
+
+  function updateBuilderSpecializationMode(mode) {
+    setCharacterBuilderForm((current) => ({
+      ...current,
+      specializationMode: mode,
+      specializations: mode === "deep"
+        ? [{ name: current.specializations?.[0]?.name || "Survival", rank: 4 }]
+        : [
+            { name: current.specializations?.[0]?.name || "Survival", rank: 3 },
+            { name: current.specializations?.[1]?.name || "Thievery", rank: 2 },
+          ],
+    }));
+  }
+
+  function updateBuilderSpecialization(index, patch) {
+    setCharacterBuilderForm((current) => {
+      const specs = [...(current.specializations || [])];
+      specs[index] = { ...(specs[index] || {}), ...patch };
+      return { ...current, specializations: specs };
+    });
+  }
+
   async function refreshSavedCharacters() {
     try {
       const payload = await requestJson("/api/battle/characters");
@@ -3128,6 +3444,9 @@ function App() {
           classImprovementTarget: characterBuilderForm.classImprovementTarget,
           gearPresetId: characterBuilderForm.gearPresetId,
           stats: characterBuilderForm.stats,
+          abilities: characterBuilderForm.abilities,
+          specializationMode: characterBuilderForm.specializationMode,
+          specializations: normalizeSpecializations(characterBuilderForm.specializations),
           art: characterBuilderForm.art,
         }),
       });
@@ -4165,6 +4484,8 @@ function App() {
                 setGmSelectedSecretDoorKey((prev) => (prev === key ? null : key));
                 setGmSecretDcInput(String(dungeon?.walls?.[key]?.secret_dc ?? 2));
               }}
+              onInfoMarkerCell={openInfoMarkerEditor}
+              onInfoMarkerClick={handleInfoMarkerClick}
               onActionTarget={handleActionTarget}
               onUnitContextMenu={handleUnitContextMenu}
               onUnitDoubleClick={handleUnitDoubleClick}
@@ -4277,14 +4598,14 @@ function App() {
                           key={sub}
                           type="button"
                           className={`dungeon-palette-btn${gmDungeonDrawSubmode === sub ? " active" : ""}`}
-                          onClick={() => {
-                            setGmDungeonDrawSubmode(sub);
-                            if (sub === GM_DUNGEON_DRAW_SUBMODES.TERRAIN) {
-                              setGmDungeonPalette("floor");
-                            } else {
-                              setGmDungeonWallPalette("wall");
-                            }
-                          }}
+                            onClick={() => {
+                              setGmDungeonDrawSubmode(sub);
+                              if (sub === GM_DUNGEON_DRAW_SUBMODES.TERRAIN) {
+                                setGmDungeonPalette("floor");
+                              } else if (sub === GM_DUNGEON_DRAW_SUBMODES.WALLS) {
+                                setGmDungeonWallPalette("wall");
+                              }
+                            }}
                           disabled={busy}
                         >
                           {sub.charAt(0).toUpperCase() + sub.slice(1)}
@@ -4297,6 +4618,16 @@ function App() {
                         <span className="subtle-copy dungeon-spawn-hint">
                           Click a cell to set the player spawn area. Click it again to clear.
                         </span>
+                        <div className="dungeon-toolbar-sep" />
+                      </>
+                    ) : gmDungeonDrawSubmode === GM_DUNGEON_DRAW_SUBMODES.INFO ? (
+                      <>
+                        <span className="subtle-copy dungeon-spawn-hint">
+                          Click a floor cell to add or edit an info marker.
+                        </span>
+                        <button className="menu-button" type="button" onClick={openSearchCheckEditor} disabled={busy}>
+                          Search Check
+                        </button>
                         <div className="dungeon-toolbar-sep" />
                       </>
                     ) : gmDungeonDrawSubmode === GM_DUNGEON_DRAW_SUBMODES.TERRAIN ? (
@@ -4606,7 +4937,7 @@ function App() {
                     Search Room
                   </button>
                 )}
-                {!canSearch && roomAlreadySearched && isPlayerSelected && canUseTurnAction && dungeon && (
+                {!canSearch && roomAlreadySearched && isPlayerSelected && !combatIsRunning && canUseTurnAction && dungeon && (
                   <button
                     className="secondary-button"
                     type="button"
@@ -6250,6 +6581,80 @@ function App() {
                     </div>
                   </details>
 
+                  <div className="builder-card">
+                    <div className="builder-card-title">Skills</div>
+                    <label className="field">
+                      <span>Ability array</span>
+                      <select
+                        value={characterBuilderForm.abilityArray || abilityArrayId(characterBuilderForm.abilities)}
+                        onChange={(event) => setBuilderAbilityArray(event.target.value)}
+                      >
+                        {ABILITY_ARRAYS.map((array) => {
+                          const id = array.join(",");
+                          return (
+                            <option key={id} value={id}>
+                              {id}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </label>
+                    <div className="builder-skill-grid">
+                      {ABILITY_KEYS.map((key) => (
+                        <label className="builder-skill-field" key={key}>
+                          <span>{ABILITY_LABELS[key]}</span>
+                          <input
+                            type="number"
+                            min="0"
+                            max="9"
+                            value={characterBuilderForm.abilities?.[key] ?? 0}
+                            onChange={(event) => updateBuilderAbility(key, event.target.value)}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    <div className="dungeon-palette builder-specialization-mode" aria-label="Specialization mode">
+                      {[
+                        ["broad", "Broad training"],
+                        ["deep", "Deep training"],
+                      ].map(([mode, label]) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          className={`dungeon-palette-btn${characterBuilderForm.specializationMode === mode ? " active" : ""}`}
+                          onClick={() => updateBuilderSpecializationMode(mode)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="builder-specialization-list">
+                      {(characterBuilderForm.specializations || []).map((spec, index) => (
+                        <div className="builder-specialization-row" key={index}>
+                          <input
+                            list="common-specializations"
+                            value={spec.name || ""}
+                            onChange={(event) => updateBuilderSpecialization(index, { name: event.target.value })}
+                            aria-label={`Specialization ${index + 1}`}
+                          />
+                          <input
+                            type="number"
+                            min="0"
+                            max="9"
+                            value={spec.rank ?? 0}
+                            onChange={(event) => updateBuilderSpecialization(index, { rank: Number(event.target.value) })}
+                            aria-label={`Specialization ${index + 1} rank`}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <datalist id="common-specializations">
+                      {COMMON_SPECIALIZATIONS.map((name) => (
+                        <option key={name} value={name} />
+                      ))}
+                    </datalist>
+                  </div>
+
                   <div className="field-grid">
                     <label className="field">
                       <span>Gear</span>
@@ -6294,6 +6699,10 @@ function App() {
                     <div>
                       <span>Deck</span>
                       <strong>20 cards</strong>
+                    </div>
+                    <div>
+                      <span>Abilities</span>
+                      <strong>{ABILITY_KEYS.map((key) => characterBuilderForm.abilities?.[key] ?? 0).join("/")}</strong>
                     </div>
                     <div className="builder-review-wide">
                       <span>Gear</span>
@@ -6703,6 +7112,101 @@ function App() {
       </ModalShell>
 
       <ModalShell
+        open={modal === "info-marker-editor" && Boolean(infoMarkerForm)}
+        title={infoMarkerForm?.id ? "Edit info marker" : "New info marker"}
+        subtitle={infoMarkerForm ? `Cell ${infoMarkerForm.x}, ${infoMarkerForm.y}` : ""}
+        onClose={closeModal}
+        size="wide"
+      >
+        {infoMarkerForm ? (
+          <form className="panel-body modal-form" onSubmit={submitInfoMarkerForm}>
+            <div className="field-grid">
+              <label className="field field-full">
+                <span>Title</span>
+                <input
+                  value={infoMarkerForm.title}
+                  onChange={(event) => setInfoMarkerForm((current) => ({ ...current, title: event.target.value }))}
+                  autoFocus
+                />
+              </label>
+              <label className="field">
+                <span>Trigger</span>
+                <select
+                  value={infoMarkerForm.trigger}
+                  onChange={(event) => setInfoMarkerForm((current) => ({ ...current, trigger: event.target.value }))}
+                >
+                  <option value="auto">Auto when visible</option>
+                  <option value="click">Click</option>
+                  <option value="check">Skill check</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Range</span>
+                <select
+                  value={infoMarkerForm.interactionRange}
+                  onChange={(event) => setInfoMarkerForm((current) => ({ ...current, interactionRange: event.target.value }))}
+                  disabled={infoMarkerForm.trigger === "auto"}
+                >
+                  <option value="same_room">Same room</option>
+                  <option value="adjacent">Adjacent</option>
+                </select>
+              </label>
+              <label className="field field-full">
+                <span>Flavour text</span>
+                <textarea
+                  value={infoMarkerForm.text}
+                  onChange={(event) => setInfoMarkerForm((current) => ({ ...current, text: event.target.value }))}
+                  rows={7}
+                  placeholder="Describe what the party notices here."
+                />
+              </label>
+            </div>
+            {infoMarkerForm.trigger === "check" ? (
+              <CheckConfigEditor
+                value={infoMarkerForm.check}
+                onChange={(next) => setInfoMarkerForm((current) => ({ ...current, check: next }))}
+              />
+            ) : null}
+            <div className="modal-actions">
+              <button className="primary-button" type="submit" disabled={busy}>
+                Save marker
+              </button>
+              {infoMarkerForm.id ? (
+                <button className="secondary-button danger-button" type="button" onClick={deleteInfoMarker} disabled={busy}>
+                  Delete
+                </button>
+              ) : null}
+              <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : null}
+      </ModalShell>
+
+      <ModalShell
+        open={modal === "search-check-editor" && Boolean(searchCheckForm)}
+        title="Search check"
+        subtitle="Used by Search Room and similar investigations on this map."
+        onClose={closeModal}
+        size="wide"
+      >
+        {searchCheckForm ? (
+          <form className="panel-body modal-form" onSubmit={submitSearchCheckForm}>
+            <CheckConfigEditor value={searchCheckForm} onChange={setSearchCheckForm} />
+            <div className="modal-actions">
+              <button className="primary-button" type="submit" disabled={busy}>
+                Save search check
+              </button>
+              <button className="secondary-button" type="button" onClick={closeModal} disabled={busy}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : null}
+      </ModalShell>
+
+      <ModalShell
         open={modal === "dungeon-exit-confirm"}
         title="Geen zichtbare kamers"
         onClose={closeModal}
@@ -6955,7 +7459,7 @@ function App() {
 
       <ModalShell
         open={modal === "search-manual" && Boolean(pendingSearch)}
-        title={pendingSearch?.kind === "suspect" ? "Investigate result" : "Search result"}
+        title={pendingSearch?.kind === "suspect" ? "Investigate result" : pendingSearch?.kind === "info_marker" ? "Skill check result" : "Search result"}
         subtitle="Physical cards"
         onClose={closeModal}
         closeOnOutsideClick={false}
@@ -7004,8 +7508,8 @@ function App() {
 
       <ModalShell
         open={modal === "search-resolve"}
-        title="Fate getrokken — Willpower inzetten?"
-        subtitle={pendingSearch ? `${pendingSearch.successCount} successen + ${pendingSearch.fateCount} fate` : ""}
+        title={pendingSearch?.kind === "info_marker" ? "Skill check - Willpower inzetten?" : "Fate getrokken - Willpower inzetten?"}
+        subtitle={pendingSearch ? `${pendingSearch.chosenCheck?.label ? `${pendingSearch.chosenCheck.label}, ` : ""}${pendingSearch.successCount} successen + ${pendingSearch.fateCount} fate${pendingSearch.dc != null ? `, DC ${pendingSearch.dc}` : ""}` : ""}
         onClose={() => handleResolveSearch(false)}
         closeOnOutsideClick={false}
       >
@@ -7121,7 +7625,7 @@ function App() {
 
       <ModalShell
         open={modal === "search-flavour"}
-        title="Search"
+        title={flavourTitle}
         onClose={closeModal}
       >
         <div className="panel-body modal-form">
@@ -8968,6 +9472,8 @@ function BattleRoom({
   onWallEdit,
   onSetPlayerSpawn,
   onSecretDoorClick,
+  onInfoMarkerCell,
+  onInfoMarkerClick,
   onActionTarget,
   onUnitContextMenu,
   onUnitDoubleClick,
@@ -9015,6 +9521,8 @@ function BattleRoom({
         onWallEdit={onWallEdit}
         onSetPlayerSpawn={onSetPlayerSpawn}
         onSecretDoorClick={onSecretDoorClick}
+        onInfoMarkerCell={onInfoMarkerCell}
+        onInfoMarkerClick={onInfoMarkerClick}
         onActionTarget={onActionTarget}
         onUnitContextMenu={onUnitContextMenu}
         onUnitDoubleClick={onUnitDoubleClick}
@@ -9177,6 +9685,86 @@ function UnitDetailsModalContent({
                 )}
               </label>
             ))}
+          </div>
+        ) : null}
+
+        {activeTab === "skills" ? (
+          <div className="modal-form unit-details-form">
+            <div className="builder-card-title">Abilities</div>
+            <div className="builder-skill-grid">
+              {ABILITY_KEYS.map((key) => (
+                <label className="builder-skill-field" key={key}>
+                  <span>{ABILITY_LABELS[key]}</span>
+                  {editable ? (
+                    <input
+                      type="number"
+                      min="0"
+                      max="9"
+                      value={form.skills?.abilities?.[key] ?? 0}
+                      onChange={(event) => onFieldChange(["skills", "abilities", key], event.target.value)}
+                    />
+                  ) : (
+                    <div className="readonly-field">{form.skills?.abilities?.[key] ?? 0}</div>
+                  )}
+                </label>
+              ))}
+            </div>
+            <div className="builder-card-title">Specializations</div>
+            <div className="builder-specialization-list">
+              {(form.skills?.specializations || []).map((spec, index) => (
+                <div className="builder-specialization-row" key={index}>
+                  {editable ? (
+                    <>
+                      <input
+                        list="unit-common-specializations"
+                        value={spec.name || ""}
+                        onChange={(event) => onFieldChange(["skills", "specializations", index, "name"], event.target.value)}
+                        aria-label={`Unit specialization ${index + 1}`}
+                      />
+                      <input
+                        type="number"
+                        min="0"
+                        max="9"
+                        value={spec.rank ?? 0}
+                        onChange={(event) => onFieldChange(["skills", "specializations", index, "rank"], event.target.value)}
+                        aria-label={`Unit specialization ${index + 1} rank`}
+                      />
+                      <button
+                        type="button"
+                        className="icon-button"
+                        onClick={() => onFieldChange(
+                          ["skills", "specializations"],
+                          (form.skills?.specializations || []).filter((_, itemIndex) => itemIndex !== index),
+                        )}
+                        aria-label={`Remove specialization ${index + 1}`}
+                      >
+                        ×
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div className="readonly-field">{spec.name || "-"}</div>
+                      <div className="readonly-field">{spec.rank ?? 0}</div>
+                    </>
+                  )}
+                </div>
+              ))}
+              {editable ? (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => onFieldChange(["skills", "specializations"], [...(form.skills?.specializations || []), { name: "Custom", rank: 2 }])}
+                >
+                  Add specialization
+                </button>
+              ) : null}
+              {!(form.skills?.specializations || []).length ? <div className="subtle-copy">No specializations.</div> : null}
+            </div>
+            <datalist id="unit-common-specializations">
+              {COMMON_SPECIALIZATIONS.map((name) => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
           </div>
         ) : null}
 
@@ -9542,6 +10130,117 @@ function StateBadge({ label, toneClass, className = "" }) {
   }
 
   return <span className={`state-badge ${toneClass} ${className}`.trim()}>{label}</span>;
+}
+
+function CheckConfigEditor({ value, onChange }) {
+  const config = normalizeCheckConfig(value);
+  const checks = config.allowedChecks.length ? config.allowedChecks : [{ type: "ability", key: "intelligence" }];
+
+  function emit(patch) {
+    onChange(normalizeCheckConfig({ ...config, ...patch }));
+  }
+
+  function updateCheck(index, patch) {
+    const nextChecks = checks.map((check, itemIndex) => {
+      if (itemIndex !== index) {
+        return check;
+      }
+      const next = { ...check, ...patch };
+      if (patch.type === "ability" && !ABILITY_KEYS.includes(next.key)) {
+        next.key = "intelligence";
+      }
+      if (patch.type === "specialization" && ABILITY_KEYS.includes(next.key)) {
+        next.key = "Survival";
+      }
+      return next;
+    });
+    emit({ allowedChecks: nextChecks });
+  }
+
+  function addCheck() {
+    emit({ allowedChecks: [...checks, { type: "ability", key: "intelligence" }] });
+  }
+
+  function removeCheck(index) {
+    const nextChecks = checks.filter((_, itemIndex) => itemIndex !== index);
+    emit({ allowedChecks: nextChecks.length ? nextChecks : [{ type: "ability", key: "intelligence" }] });
+  }
+
+  return (
+    <div className="check-config-editor">
+      <div className="field-grid">
+        <label className="field">
+          <span>DC</span>
+          <input
+            type="number"
+            min="0"
+            value={config.dc}
+            onChange={(event) => emit({ dc: event.target.value })}
+          />
+        </label>
+        <label className={`toggle-field ${config.allowUntrained ? "toggle-active" : ""}`}>
+          <input
+            type="checkbox"
+            checked={config.allowUntrained}
+            onChange={(event) => emit({ allowUntrained: event.target.checked })}
+          />
+          <span>Allow untrained specializations</span>
+        </label>
+      </div>
+      <div className="check-option-list">
+        <div className="form-section-title">Allowed checks</div>
+        {checks.map((check, index) => (
+          <div className="check-option-row" key={`${check.type}-${check.key}-${index}`}>
+            <select
+              value={check.type}
+              onChange={(event) => updateCheck(index, { type: event.target.value })}
+              aria-label={`Check type ${index + 1}`}
+            >
+              <option value="ability">Ability</option>
+              <option value="specialization">Specialization</option>
+            </select>
+            {check.type === "specialization" ? (
+              <input
+                list="common-specializations"
+                value={check.key}
+                onChange={(event) => updateCheck(index, { key: event.target.value })}
+                aria-label={`Specialization ${index + 1}`}
+              />
+            ) : (
+              <select
+                value={ABILITY_KEYS.includes(check.key) ? check.key : "intelligence"}
+                onChange={(event) => updateCheck(index, { key: event.target.value })}
+                aria-label={`Ability ${index + 1}`}
+              >
+                {ABILITY_KEYS.map((abilityKey) => (
+                  <option value={abilityKey} key={abilityKey}>
+                    {ABILITY_LABELS[abilityKey] || titleCaseFromSnake(abilityKey)}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button
+              className="small-button danger-button check-option-remove"
+              type="button"
+              onClick={() => removeCheck(index)}
+              disabled={checks.length <= 1}
+              aria-label={`Remove check option ${index + 1}`}
+            >
+              <TrashIcon />
+            </button>
+          </div>
+        ))}
+        <button className="secondary-button compact-button" type="button" onClick={addCheck}>
+          Add check option
+        </button>
+      </div>
+      <datalist id="common-specializations">
+        {COMMON_SPECIALIZATIONS.map((name) => (
+          <option key={name} value={name} />
+        ))}
+      </datalist>
+    </div>
+  );
 }
 
 function PlusIcon() {

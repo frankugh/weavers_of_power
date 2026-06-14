@@ -71,6 +71,8 @@ def dungeon_state_to_map_template(ds: DungeonState) -> Dict[str, Any]:
             key: list(rooms) for key, rooms in getattr(ds, "linked_doors", {}).items()
         },
         "player_spawn": _normalize_spawn(getattr(ds, "player_spawn", None)),
+        "info_markers": _normalize_info_markers(getattr(ds, "info_markers", [])),
+        "search_check": _normalize_check(getattr(ds, "search_check", {})),
     }
 
 
@@ -81,6 +83,87 @@ def _normalize_spawn(raw: Any) -> Optional[Dict[str, int]]:
         return {"x": int(raw["x"]), "y": int(raw["y"])}
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _normalize_check(raw: Any, *, default_dc: int = 2) -> Dict[str, Any]:
+    source = raw if isinstance(raw, dict) else {}
+    allowed = []
+    for item in source.get("allowedChecks") or source.get("allowed_checks") or [{"type": "ability", "key": "intelligence"}]:
+        if not isinstance(item, dict):
+            continue
+        check_type = str(item.get("type") or "ability").strip().lower()
+        key = str(item.get("key") or item.get("name") or "").strip()
+        if check_type not in {"ability", "specialization"} or not key:
+            continue
+        allowed.append({"type": check_type, "key": key})
+    if not allowed:
+        allowed = [{"type": "ability", "key": "intelligence"}]
+    return {
+        "allowedChecks": allowed,
+        "dc": max(0, int(source.get("dc", default_dc) or 0)),
+        "allowUntrained": bool(source.get("allowUntrained", source.get("allow_untrained", False))),
+    }
+
+
+def _normalize_info_marker(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    marker_id = str(raw.get("id") or "").strip()
+    if not marker_id:
+        return None
+    try:
+        x = int(raw.get("x"))
+        y = int(raw.get("y"))
+    except (TypeError, ValueError):
+        return None
+    trigger = str(raw.get("trigger") or "click").strip().lower()
+    if trigger not in {"auto", "click", "check"}:
+        trigger = "click"
+    interaction_range = str(raw.get("interactionRange") or raw.get("interaction_range") or "same_room").strip()
+    if interaction_range not in {"same_room", "adjacent"}:
+        interaction_range = "same_room"
+    marker = {
+        "id": marker_id,
+        "x": x,
+        "y": y,
+        "title": str(raw.get("title") or "Info").strip() or "Info",
+        "text": str(raw.get("text") or ""),
+        "trigger": trigger,
+        "interactionRange": interaction_range,
+    }
+    if trigger == "check":
+        marker["check"] = _normalize_check(raw.get("check"))
+    return marker
+
+
+def _normalize_info_markers(raw: Any) -> List[Dict[str, Any]]:
+    markers: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw if isinstance(raw, list) else []:
+        marker = _normalize_info_marker(item)
+        if marker is None or marker["id"] in seen:
+            continue
+        seen.add(marker["id"])
+        markers.append(marker)
+    return markers
+
+
+def _normalize_info_marker_states(raw: Any) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return {}
+    states: Dict[str, Dict[str, Any]] = {}
+    for marker_id, state in raw.items():
+        if not isinstance(state, dict):
+            continue
+        key = str(marker_id or "").strip()
+        if not key:
+            continue
+        states[key] = {
+            "opened": bool(state.get("opened", False)),
+            "unlocked": bool(state.get("unlocked", False)),
+            "attempted": int(state.get("attempted", 0) or 0),
+        }
+    return states
 
 
 def dungeon_state_to_dict(ds: DungeonState) -> Dict[str, Any]:
@@ -128,6 +211,9 @@ def dungeon_state_to_dict(ds: DungeonState) -> Dict[str, Any]:
         "player_spawn": _normalize_spawn(getattr(ds, "player_spawn", None)),
         "searched_room_ids": list(getattr(ds, "searched_room_ids", [])),
         "secret_suspects": [dict(s) for s in getattr(ds, "secret_suspects", [])],
+        "info_markers": _normalize_info_markers(getattr(ds, "info_markers", [])),
+        "info_marker_states": _normalize_info_marker_states(getattr(ds, "info_marker_states", {})),
+        "search_check": _normalize_check(getattr(ds, "search_check", {})),
     }
 
 
@@ -179,6 +265,9 @@ def dungeon_state_from_dict(d: Dict[str, Any]) -> DungeonState:
         searched_room_ids=list(d.get("searched_room_ids") or []),
         secret_suspects=list(d.get("secret_suspects") or []),
         player_spawn=_normalize_spawn(d.get("player_spawn")),
+        info_markers=_normalize_info_markers(d.get("info_markers")),
+        info_marker_states=_normalize_info_marker_states(d.get("info_marker_states")),
+        search_check=_normalize_check(d.get("search_check")),
     )
 
 
@@ -204,6 +293,8 @@ def enemy_to_dict(e: EnemyInstance) -> Dict[str, Any]:
     d.setdefault("melee_weapon", dict(getattr(e, "melee_weapon", {}) or {}))
     d.setdefault("character_profile", dict(getattr(e, "character_profile", {}) or {}))
     d.setdefault("card_library", dict(getattr(e, "card_library", {}) or {}))
+    d.setdefault("abilities", dict(getattr(e, "abilities", {}) or {}))
+    d.setdefault("specializations", list(getattr(e, "specializations", []) or []))
     d.setdefault("loot_rolled", getattr(e, "loot_rolled", False))
     d["rolled_loot"] = _normalize_loot(getattr(e, "rolled_loot", None))
     d.setdefault("loot_taken_by", getattr(e, "loot_taken_by", None))
@@ -262,6 +353,8 @@ def enemy_from_dict(d: Dict[str, Any]) -> EnemyInstance:
         melee_weapon=dict(d.get("melee_weapon", {}) or {}),
         character_profile=dict(d.get("character_profile", {}) or {}),
         card_library=dict(d.get("card_library", {}) or {}),
+        abilities=dict(d.get("abilities", {}) or {}),
+        specializations=list(d.get("specializations", []) or []),
         statuses=dict(d.get("statuses", {})),
     )
 
