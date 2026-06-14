@@ -277,9 +277,10 @@ function createCharacterBuilderForm(catalog, classId = null) {
 function normalizeBuilderUpgrades(current, energyTypes) {
   const next = {};
   energyTypes.forEach((energyType) => {
+    const source = current?.[energyType] || { success_1: 1, success_2: 1, fate_1: 0, fail_1: 0 };
     next[energyType] = {};
     BUILDER_UPGRADE_KEYS.forEach(({ key }) => {
-      next[energyType][key] = Math.max(0, Number(current?.[energyType]?.[key] || 0));
+      next[energyType][key] = Math.max(0, Number(source[key] || 0));
     });
   });
   return next;
@@ -307,7 +308,7 @@ function builderValidationErrors(catalog, form) {
   }
   const blocked = (classEntry.forbiddenEnergyTypes || []).filter((energyType) => form.energyTypes.includes(energyType));
   if (blocked.length && !form.gmOverride) {
-    errors.push(`GM override required for: ${blocked.join(", ")}.`);
+    errors.push(`GM approval required for: ${blocked.join(", ")}.`);
   }
   if (!classEntry.mainArtOptions?.includes(form.mainArt) || !form.energyTypes.includes(form.mainArt)) {
     errors.push("Main art must be an allowed selected energy type.");
@@ -1763,6 +1764,12 @@ function App() {
     }
     return options;
   }, [builderAnonymousArt, builderArtOptions, characterBuilderForm.art]);
+  const builderForbiddenEnergyTypes = builderClass?.forbiddenEnergyTypes || [];
+  const builderSelectedForbiddenEnergyTypes = useMemo(
+    () => builderForbiddenEnergyTypes.filter((energyType) => characterBuilderForm.energyTypes.includes(energyType)),
+    [builderForbiddenEnergyTypes, characterBuilderForm.energyTypes],
+  );
+  const builderSelectedForbiddenLabel = builderSelectedForbiddenEnergyTypes.join(", ");
   const builderErrors = useMemo(
     () => builderValidationErrors(characterCatalog, characterBuilderForm),
     [characterCatalog, characterBuilderForm],
@@ -1775,6 +1782,15 @@ function App() {
   const selectedDrawPreviewHighlighted = Boolean(
     drawReveal?.phase === "settle" && selectedEntity?.instance_id === drawReveal.entityId,
   );
+
+  useEffect(() => {
+    if (!characterBuilderForm.gmOverride || builderSelectedForbiddenEnergyTypes.length > 0) {
+      return;
+    }
+    setCharacterBuilderForm((current) => (
+      current.gmOverride ? { ...current, gmOverride: false } : current
+    ));
+  }, [characterBuilderForm.gmOverride, builderSelectedForbiddenEnergyTypes.length]);
 
   function closeModal() {
     setModal(null);
@@ -4097,15 +4113,11 @@ function App() {
                     className="primary-button"
                     onClick={() => {
                       setActionMenuOpen(false);
-                      if (isPlayerSelected && selectedPowerDrawUsed) {
-                        withActionCheck(handleHitdraw);
-                      } else {
-                        handleDraw();
-                      }
+                      handleDraw();
                     }}
-                    disabled={(isPlayerSelected && selectedPowerDrawUsed ? !canHitdraw : !canDraw) || busy}
+                    disabled={!canDraw || busy}
                   >
-                    {isPlayerSelected && selectedPowerDrawUsed ? "Hitdraw" : "Draw"}
+                    Draw
                   </button>
                 ) : null}
                 {canDrawExact && (
@@ -5733,7 +5745,6 @@ function App() {
                     <div>
                       <h3>Build character</h3>
                     </div>
-                    <span className="builder-step-pill">20-card start deck</span>
                   </div>
 
                   <div className="field-grid">
@@ -5828,19 +5839,26 @@ function App() {
                                   onChange={() => toggleBuilderEnergy(energyType)}
                                 />
                             <span>{energyType}</span>
-                            {required ? <small>required</small> : blocked ? <small>override</small> : null}
+                            {required ? <small>required</small> : blocked ? <small>GM approval</small> : null}
                           </label>
                         );
                       })}
                     </div>
-                    <label className={`toggle-field ${characterBuilderForm.gmOverride ? "toggle-active" : ""}`.trim()}>
-                      <input
-                        type="checkbox"
-                        checked={characterBuilderForm.gmOverride}
-                        onChange={(event) => setCharacterBuilderForm((current) => ({ ...current, gmOverride: event.target.checked }))}
-                      />
-                      <span>GM override</span>
-                    </label>
+                    {builderSelectedForbiddenEnergyTypes.length ? (
+                      <label className={`builder-approval-warning ${characterBuilderForm.gmOverride ? "builder-approval-checked" : ""}`.trim()}>
+                        <input
+                          type="checkbox"
+                          checked={characterBuilderForm.gmOverride}
+                          onChange={(event) => setCharacterBuilderForm((current) => ({ ...current, gmOverride: event.target.checked }))}
+                        />
+                        <span>
+                          <strong>Requires GM approval</strong>
+                          <small>
+                            {builderClass?.name || "This class"} normally cannot choose {builderSelectedForbiddenLabel}. Confirm that the GM approves this exception.
+                          </small>
+                        </span>
+                      </label>
+                    ) : null}
                     <label className="field">
                       <span>Main art</span>
                       <select
@@ -5856,41 +5874,46 @@ function App() {
                     </label>
                   </div>
 
-                  <div className="builder-card">
-                    <div className="builder-card-title">Deck upgrades</div>
-                    <div className="builder-upgrade-grid">
-                      {characterBuilderForm.energyTypes.map((energyType) => (
-                        <div className="builder-upgrade-row" key={energyType}>
-                          <strong>{energyType}</strong>
-                          {BUILDER_UPGRADE_KEYS.map(({ key, label }) => (
-                            <label className="builder-upgrade-field" key={key}>
-                              <span>{label}</span>
-                              <input
-                                type="number"
-                                min="0"
-                                max="2"
-                                value={characterBuilderForm.deckUpgrades?.[energyType]?.[key] || 0}
-                                onChange={(event) => updateBuilderUpgrade(energyType, key, event.target.value)}
-                              />
-                            </label>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                    <label className="field">
-                      <span>Class improvement</span>
-                      <select
-                        value={characterBuilderForm.classImprovementTarget}
-                        onChange={(event) => setCharacterBuilderForm((current) => ({ ...current, classImprovementTarget: event.target.value }))}
-                      >
-                        {BUILDER_UPGRADE_KEYS.map(({ key, label }) => (
-                          <option key={key} value={key} disabled={!builderClassTargetOptions.some((option) => option.key === key)}>
-                            {characterBuilderForm.mainArt} {label} to 3
-                          </option>
+                  <details className="builder-card builder-card-disclosure">
+                    <summary className="builder-card-summary">
+                      <span className="builder-card-title">Deck upgrades</span>
+                      <span className="builder-card-summary-meta">Advanced</span>
+                    </summary>
+                    <div className="builder-card-disclosure-body">
+                      <div className="builder-upgrade-grid">
+                        {characterBuilderForm.energyTypes.map((energyType) => (
+                          <div className="builder-upgrade-row" key={energyType}>
+                            <strong>{energyType}</strong>
+                            {BUILDER_UPGRADE_KEYS.map(({ key, label }) => (
+                              <label className="builder-upgrade-field" key={key}>
+                                <span>{label}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="2"
+                                  value={characterBuilderForm.deckUpgrades?.[energyType]?.[key] || 0}
+                                  onChange={(event) => updateBuilderUpgrade(energyType, key, event.target.value)}
+                                />
+                              </label>
+                            ))}
+                          </div>
                         ))}
-                      </select>
-                    </label>
-                  </div>
+                      </div>
+                      <label className="field">
+                        <span>Class improvement</span>
+                        <select
+                          value={characterBuilderForm.classImprovementTarget}
+                          onChange={(event) => setCharacterBuilderForm((current) => ({ ...current, classImprovementTarget: event.target.value }))}
+                        >
+                          {BUILDER_UPGRADE_KEYS.map(({ key, label }) => (
+                            <option key={key} value={key} disabled={!builderClassTargetOptions.some((option) => option.key === key)}>
+                              {characterBuilderForm.mainArt} {label} to 3
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  </details>
 
                   <div className="field-grid">
                     <label className="field">

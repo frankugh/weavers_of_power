@@ -30,6 +30,30 @@ function Resolve-ProjectPython {
     throw "Python niet gevonden. Maak eerst een virtualenv aan of installeer Python."
 }
 
+function Test-FrontendBuildInput {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.IO.FileInfo]$File
+    )
+
+    $frontendRoot = (Resolve-Path (Join-Path $Root "frontend")).Path
+    $relativePath = $File.FullName
+    if ($relativePath.StartsWith($frontendRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $relativePath = $relativePath.Substring($frontendRoot.Length).TrimStart([char[]]@("\", "/"))
+    }
+    if ($relativePath -match "(^|[\\/])__tests__([\\/]|$)") {
+        return $false
+    }
+    if ($relativePath -match "\.(test|spec)\.[^\\/]+$") {
+        return $false
+    }
+    if ($relativePath -match "(^|[\\/])setupTests\.[^\\/]+$") {
+        return $false
+    }
+
+    return $true
+}
+
 function Get-FrontendBuildState {
     $distIndex = Join-Path $Root "frontend\dist\index.html"
     if (-not (Test-Path $distIndex)) {
@@ -41,6 +65,7 @@ function Get-FrontendBuildState {
     $sourcePaths = @(
         (Join-Path $frontendRoot "index.html"),
         (Join-Path $frontendRoot "package.json"),
+        (Join-Path $frontendRoot "package-lock.json"),
         (Join-Path $frontendRoot "vite.config.js")
     )
 
@@ -51,7 +76,7 @@ function Get-FrontendBuildState {
         }
     }
     if (Test-Path (Join-Path $frontendRoot "src")) {
-        $sourceFiles += Get-ChildItem (Join-Path $frontendRoot "src") -Recurse -File
+        $sourceFiles += Get-ChildItem (Join-Path $frontendRoot "src") -Recurse -File | Where-Object { Test-FrontendBuildInput $_ }
     }
 
     foreach ($file in $sourceFiles) {

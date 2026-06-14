@@ -3680,6 +3680,7 @@ class BattleSession:
         wound_events: list[dict] = []
         opportunity_events: list[dict] = []
         total_steps = len(steps)
+        last_valid_x, last_valid_y = int(entity.grid_x), int(entity.grid_y)
 
         for step_index, step in enumerate(steps):
             from_x, from_y = int(entity.grid_x), int(entity.grid_y)
@@ -3709,6 +3710,9 @@ class BattleSession:
             if npc_stopped:
                 self._stop_active_movement()
                 self._add_log(f"{entity.name}'s movement is stopped by an opportunity attack.")
+                if self._ally_at_position(entity, from_x, from_y):
+                    self._set_position(entity, last_valid_x, last_valid_y)
+                    self._add_log(f"{entity.name} is pushed back to ({last_valid_x + 1}, {last_valid_y + 1}) — cannot stop on an ally's space.")
                 return self._opportunity_result_payload(
                     wound_events,
                     notice=self._opportunity_events_notice(npc_step_events),
@@ -3727,6 +3731,9 @@ class BattleSession:
                 )
                 attacker = pc_attackers[0]
                 self._add_log(f"{entity.name} provokes an opportunity attack from {attacker.name}.")
+                if self._ally_at_position(entity, from_x, from_y):
+                    self._set_position(entity, last_valid_x, last_valid_y)
+                    self._add_log(f"{entity.name} is pushed back to ({last_valid_x + 1}, {last_valid_y + 1}) — cannot stop on an ally's space.")
                 return self._opportunity_result_payload(
                     wound_events,
                     notice=f"{entity.name} provokes an opportunity attack from {attacker.name}.",
@@ -3734,6 +3741,8 @@ class BattleSession:
                 )
 
             self._apply_movement_step(entity, step, base_movement=base_movement)
+            if not self._ally_at_position(entity, int(entity.grid_x), int(entity.grid_y)):
+                last_valid_x, last_valid_y = int(entity.grid_x), int(entity.grid_y)
             if held_prey_ids:
                 for prey_id in held_prey_ids:
                     prey = self.state.enemies.get(prey_id)
@@ -4285,6 +4294,18 @@ class BattleSession:
         self.autosave()
         return self._opportunity_result_payload(wound_events, notice=notice)
 
+    def _ally_at_position(self, entity: EnemyInstance, x: int, y: int) -> bool:
+        for other in self.state.enemies.values():
+            if other.instance_id == entity.instance_id:
+                continue
+            if self.is_down(other):
+                continue
+            if self.is_player(other) != self.is_player(entity):
+                continue
+            if self._has_position(other) and int(other.grid_x) == x and int(other.grid_y) == y:
+                return True
+        return False
+
     def _apply_opportunity_stop_position(self, mover: EnemyInstance, attacker: EnemyInstance) -> None:
         if not self.pending_opportunity:
             return
@@ -4293,11 +4314,17 @@ class BattleSession:
             return
         base_movement = int(self.pending_opportunity.get("base_movement", self.effective_movement(mover)) or 0)
         reach = self._opportunity_reach(attacker)
+        last_valid_x, last_valid_y = int(mover.grid_x), int(mover.grid_y)
         for step in route_steps:
             stop_x, stop_y = int(step["x"]), int(step["y"])
             if not self._opportunity_threatens_position(attacker, stop_x, stop_y, reach):
                 break
             self._apply_movement_step(mover, step, base_movement=base_movement)
+            if not self._ally_at_position(mover, int(mover.grid_x), int(mover.grid_y)):
+                last_valid_x, last_valid_y = int(mover.grid_x), int(mover.grid_y)
+        if self._ally_at_position(mover, int(mover.grid_x), int(mover.grid_y)):
+            self._set_position(mover, last_valid_x, last_valid_y)
+            self._add_log(f"{mover.name} is pushed back to ({last_valid_x + 1}, {last_valid_y + 1}) — cannot stop on an ally's space.")
 
     def _stop_active_movement(self) -> None:
         movement_state = self._movement_state_for_active()

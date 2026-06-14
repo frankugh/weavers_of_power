@@ -2918,7 +2918,7 @@ describe("App", () => {
     expect(screen.queryByRole("complementary", { name: "Draw Card Inspector" })).not.toBeInTheDocument();
   });
 
-  it("changes player Draw of Power into Hitdraw and keeps Draw X available", async () => {
+  it("disables player Draw of Power after use and keeps Draw X available", async () => {
     const player = buildEnemy({
       instance_id: "player-1",
       template_id: "player",
@@ -3015,8 +3015,8 @@ describe("App", () => {
       "/api/battle/sessions/sid-123/turn/draw",
       expect.objectContaining({ method: "POST" }),
     );
-    expect(screen.queryByRole("button", { name: "Draw" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Hitdraw" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Draw" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Hitdraw" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Draw X" })).toBeEnabled();
     const reveal = screen.getByRole("complementary", { name: "Draw Card Inspector" });
     expect(within(reveal).getByText("Martial energy success")).toBeInTheDocument();
@@ -3221,8 +3221,7 @@ describe("App", () => {
     expect(screen.getByText("Selected: Wizard")).toBeInTheDocument();
   });
 
-  it("posts Hitdraw and shows success/fate/fail without energy results", async () => {
-    const user = userEvent.setup();
+  it("keeps Hitdraw out of the action bar after Draw of Power", async () => {
     const player = buildEnemy({
       instance_id: "player-1",
       template_id: "player",
@@ -3246,67 +3245,20 @@ describe("App", () => {
       actions_used: 0,
       wound_counts: { hand: 0, discard: 0, draw_pile: 0, total: 0 },
     });
-    const hitdrawSnapshot = buildSnapshot({
+
+    renderWithSnapshot(buildSnapshot({
       selectedId: "player-1",
       activeTurnId: "player-1",
       turnInProgress: true,
       order: ["player-1"],
-      enemies: [{ ...player, actions_used: 1 }],
-      hitDraw: {
-        entityId: "player-1",
-        entityName: "Mira",
-        drawnCardIds: ["success-card", "fate-card", "fail-card"],
-        drawnText: ["Success", "Fate", "Fail"],
-        drawnCards: [
-          { label: "Success", detail: "Martial 3 energy" },
-          { label: "Fate", detail: "Class: Fighter's Resolve" },
-          { label: "Fail", detail: "Ancestry: Human Ancestry" },
-        ],
-        summary: { outcomes: { success: 1, fate: 1, fail: 1 }, energies: { Martial: 9 } },
-        reshuffled: false,
-      },
-      combatLog: ["Mira hits draw: Success, Fate, Fail (success 1, fate 1, fail 1)"],
-    });
+      enemies: [player],
+    }));
 
-    renderWithSnapshot(
-      buildSnapshot({
-        selectedId: "player-1",
-        activeTurnId: "player-1",
-        turnInProgress: true,
-        order: ["player-1"],
-        enemies: [player],
-      }),
-      {
-        extraFetch: (url, requestOptions) => {
-          if (url === "/api/battle/sessions/sid-123/action/hitdraw" && requestOptions?.method === "POST") {
-            return jsonResponse(hitdrawSnapshot);
-          }
-          return undefined;
-        },
-      },
-    );
+    await findMapToken("Mira");
 
-    await user.click(await screen.findByRole("button", { name: "Hitdraw" }));
-
-    await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(
-        "/api/battle/sessions/sid-123/action/hitdraw",
-        expect.objectContaining({ method: "POST" }),
-      );
-    });
-    const reveal = await screen.findByRole("complementary", { name: "Draw Card Inspector" });
-    expect(within(reveal).getByText("Hit draw")).toBeInTheDocument();
-    expect(within(reveal).getByText("Success")).toBeInTheDocument();
-    expect(within(reveal).getByText("Fate")).toBeInTheDocument();
-    expect(within(reveal).getByText("Fail")).toBeInTheDocument();
-    expect(within(reveal).getByText("Martial 3 energy")).toBeInTheDocument();
-    expect(within(reveal).getByText("Class: Fighter's Resolve")).toBeInTheDocument();
-    expect(within(reveal).getByText("Ancestry: Human Ancestry")).toBeInTheDocument();
-    expect(within(reveal).queryByText("success 1")).not.toBeInTheDocument();
-    expect(within(reveal).queryByText("fate 1")).not.toBeInTheDocument();
-    expect(within(reveal).queryByText("fail 1")).not.toBeInTheDocument();
-    expect(within(reveal).queryByText("Martial 9")).not.toBeInTheDocument();
-    expect(screen.getByText("1/2 acties")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Draw" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Draw X" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Hitdraw" })).not.toBeInTheDocument();
   });
 
   it("does not show Hitdraw for physical-card player characters", async () => {
@@ -3801,6 +3753,60 @@ describe("App", () => {
     expect(screen.getByRole("checkbox", { name: "Martial" })).toBeDisabled();
     await user.selectOptions(screen.getByLabelText("Class"), "cleric");
     expect(screen.getByRole("checkbox", { name: "Light" })).toBeDisabled();
+  });
+
+  it("requires explicit GM approval for forbidden character builder energy choices", async () => {
+    const user = userEvent.setup();
+    const characterCalls = [];
+    renderWithSnapshot(buildSnapshot(), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/characters" && requestOptions?.method === "POST") {
+          characterCalls.push(JSON.parse(requestOptions.body));
+          return jsonResponse({
+            character: {
+              id: "mira_20260614_160000",
+              name: "Mira",
+              classId: "cleric",
+              className: "Cleric",
+              ancestryId: "human",
+              ancestryName: "Human",
+              energyTypes: ["Martial", "Light", "Shadow"],
+              mainArt: "Light",
+              gearPreset: { id: "default", name: "Recommended", items: ["mace", "shield"] },
+            },
+          });
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await openAddUnitModal(user);
+    await user.click(screen.getByRole("tab", { name: "Character Builder" }));
+    await user.type(screen.getByLabelText("Name"), "Mira");
+    await user.selectOptions(screen.getByLabelText("Class"), "cleric");
+
+    expect(screen.queryByText("Requires GM approval")).not.toBeInTheDocument();
+    expect(screen.queryByText("GM override")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: "Elemental" }));
+    await user.click(screen.getByRole("checkbox", { name: "Shadow" }));
+
+    expect(screen.getByText("Requires GM approval")).toBeInTheDocument();
+    expect(screen.getByText(/Cleric normally cannot choose Shadow/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save character" })).toBeDisabled();
+
+    await user.click(screen.getByRole("checkbox", { name: /Requires GM approval/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save character" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Save character" }));
+
+    await waitFor(() => {
+      expect(characterCalls[0]).toEqual(expect.objectContaining({
+        classId: "cleric",
+        energyTypes: ["Martial", "Light", "Shadow"],
+        gmOverride: true,
+      }));
+    });
   });
 
   it("shows character art choices without auto-selecting when multiple matches exist", async () => {

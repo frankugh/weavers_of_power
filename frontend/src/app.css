@@ -93,7 +93,7 @@ button {
 }
 
 .shell {
-  --display-brightness: 1;
+  --display-brightness: 1.15;
   --display-brightness-lift: 0;
   position: relative;
   height: 100vh;
@@ -2765,7 +2765,7 @@ button.draw-card:hover {
   background: rgba(5, 4, 3, 0.76);
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: clamp(10px, 2dvh, 24px);
 }
 
 .modal-shell {
@@ -2780,6 +2780,15 @@ button.draw-card:hover {
 
 .modal-shell-add-unit {
   width: min(1080px, 100%);
+  max-height: calc(100dvh - 32px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 0;
+}
+
+.modal-shell-add-unit .modal-header {
+  flex: 0 0 auto;
 }
 
 .modal-form,
@@ -3095,13 +3104,17 @@ button.draw-card:hover {
 .add-unit-body {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: 0;
+  min-height: 0;
+  overflow: hidden;
   padding-top: 10px;
 }
 
 .add-unit-tabs {
   display: flex;
   flex-wrap: wrap;
+  flex: 0 0 auto;
   gap: 8px;
   padding-bottom: 14px;
 }
@@ -3125,14 +3138,20 @@ button.draw-card:hover {
 .add-unit-tab-panel {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: 14px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
   padding-top: 16px;
+  scrollbar-width: thin;
 }
 
 .character-builder-layout {
   display: grid;
   grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
   gap: 14px;
+  min-height: 0;
   align-items: start;
 }
 
@@ -3140,6 +3159,20 @@ button.draw-card:hover {
 .character-builder-form,
 .builder-card {
   min-width: 0;
+}
+
+.character-builder-saved {
+  position: sticky;
+  top: 0;
+}
+
+.character-builder-form > .modal-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 2px -2px 0;
+  padding: 10px 2px 0;
+  background: linear-gradient(180deg, rgba(13, 9, 6, 0), rgba(13, 9, 6, 0.98) 32%);
 }
 
 .builder-section-header {
@@ -3155,14 +3188,6 @@ button.draw-card:hover {
   font-size: 0.95rem;
 }
 
-.builder-step-pill {
-  padding: 4px 8px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--muted);
-  font-size: 0.72rem;
-}
-
 .compact-button {
   min-height: 32px;
   padding: 7px 10px;
@@ -3173,7 +3198,7 @@ button.draw-card:hover {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 520px;
+  max-height: min(420px, calc(100dvh - 270px));
   overflow-y: auto;
   padding-right: 4px;
 }
@@ -3222,6 +3247,56 @@ button.draw-card:hover {
   color: var(--text);
   font-size: 0.78rem;
   font-weight: 700;
+}
+
+.builder-card-disclosure {
+  padding: 0;
+}
+
+.builder-card-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 44px;
+  padding: 10px;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+}
+
+.builder-card-summary::-webkit-details-marker {
+  display: none;
+}
+
+.builder-card-summary::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-right: 1px solid var(--accent-bright);
+  border-bottom: 1px solid var(--accent-bright);
+  transform: rotate(45deg);
+  transition: transform 140ms ease;
+}
+
+.builder-card-disclosure[open] .builder-card-summary::after {
+  transform: rotate(225deg);
+}
+
+.builder-card-summary-meta {
+  margin-left: auto;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+.builder-card-disclosure-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 10px 10px;
 }
 
 .builder-art-grid {
@@ -3336,6 +3411,43 @@ button.draw-card:hover {
 
 .builder-energy-blocked {
   border-color: rgba(209, 106, 87, 0.36);
+}
+
+.builder-approval-warning {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid rgba(209, 106, 87, 0.42);
+  border-radius: 8px;
+  background: rgba(209, 106, 87, 0.12);
+  color: var(--text);
+}
+
+.builder-approval-warning input {
+  margin-top: 2px;
+}
+
+.builder-approval-warning strong,
+.builder-approval-warning small {
+  display: block;
+}
+
+.builder-approval-warning strong {
+  font-size: 0.78rem;
+}
+
+.builder-approval-warning small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.builder-approval-checked {
+  border-color: rgba(221, 185, 121, 0.48);
+  background: rgba(221, 185, 121, 0.1);
 }
 
 .builder-upgrade-grid {
@@ -3799,6 +3911,10 @@ button.draw-card:hover {
   .character-builder-layout,
   .builder-review {
     grid-template-columns: 1fr;
+  }
+
+  .character-builder-saved {
+    position: static;
   }
 
   .builder-energy-grid {

@@ -3,16 +3,6 @@ Protocol voor AI:  Je mag hier een todo weghalen als opgepakt, maar zet hem dan 
 
 ----
 
-19) Held prey is niet geïmplementeerd in map. De worg kon niet weglopen met een grappled fighter
-
-20) Als ik door een ally veld loop en een opp atack krijg en mijn move wordt gestopt mag ik niet op het veld van de ally stoppen, dan moet ik terug naar het veld waar ik daarvoor stond (en dit triggered dan natuurlijk niet extra opp attacks)
-
-- Light heb ik zelfs s'avonds op 115% omdat het allemaal wel erg donker is. Miss is 115% een betere default en is die 100% voor als we straks licht in kamers hebben ofzo
-
-- Character creation scherm past niet op scherm
-
-- hitdraw bestaat niet meer, deze knop moet weg uit action bar
-
 TODO:
 
 
@@ -21,10 +11,13 @@ TODO:
 
 Equipment, loot, show unit:
 
+Als GM modus aan staat wil ik de optie hebben om stats en condities te wijzigen / om naam en plaatje te wijzigen / deck samenstelling te wijzigen. Hoe zou jij dit doen qua UX? 
+
+11) Ik kan de naam en stats van PC niet wijzigen na aanmaken. (Miss goed voor show unit scherm?)
+
 Hoe gaan we weapons/armor/gear/loot inventory bijhouden? 
 (loot iets bij show unit? En stats? En hoe met auto attacks en weapon modifiers?)
 
-11) Ik kan de naam en stats van PC niet wijzigen na aanmaken. (Miss goed voor show unit scherm?)
 23) ik kan nu alsnog niet daadwerkelijk looten
 13) Ik kan geen wapen/gear kiezen bij PC creatie
 22) Loot moet in excel tabellen komen
@@ -33,7 +26,6 @@ Hoe gaan we weapons/armor/gear/loot inventory bijhouden?
 
 17) Enemies moeten ook deuren kunnen openen
 
-
 16) Secret doors kun je nu in een lange gang overal vinden in die gang, er is geen restrictie anders dan in de kamer. Dit kan duidelijker, maar heeft niet veel haast nu
 - Line of sight implementeren zou leuker zijn dan alleen deur open/dicht logica. Zodat bv die buitengangen je niet meteen alles ziet. Dat heeft ook interactie met search room, want je zoekt alleen langs muren waar je zicht hebt.
 
@@ -41,18 +33,16 @@ Hoe gaan we weapons/armor/gear/loot inventory bijhouden?
 
 - Bij units moet je (in elk geval in GM Mode) de base values zoals armor enzo kunnen aanpassen, ook mid-game 
 
-- Bij secret doors wil ik default random flavourteksten kunnen overschrijven als GM in de dungeon draw modus
+- Bij secret doors wil ik default random flavourteksten kunnen overschrijven in Map Edit modus
 
-- Per chamber optionele flavour tekst (GM description + room details)
+- Per chamber optionele flavour tekst (GM description + room details) voor als je de chamber ziet na openen deur (let op bij deze oppakken dat dit lastig is met genuanceerdere line of sight mechaniek
 
-- In GM mode en Dungeon Draw mode wil ik units naar unplaced en terug kunnen repositionen 
+- In GM mode en Map Edit mode wil ik units naar unplaced en terug kunnen repositionen 
 	o Een unplaced unit krijgt geen beurten totdat deze placed wordt. 
 	o Als GM een unplaced unit wil placen in een encounter ronde geef dan een pop-up met can't roll initiative during active round, wait for end of round or place manually   wait | manually   bij manually komt unit achter in initiative en kan GM zelf schuiven. Tussen rondes rold de unit initiative zonder aanpassingen en wordt geplaatst. GM kan natuurlijk altijd wijzigen indien gewenst. 
 	o Unplaced panel kun je minimaliseren en heropenen. 
 
 - Verschil tussen sessie opslaan/laden en kamer/dungeon/encounter opslaan/laden. Het 2e heeft nog geen start combat.
-
-- Path zien wann je een movement doet. 
 
 
 
@@ -234,6 +224,8 @@ Rechterklik show unit bij PC toont een volledig overview van niet alleen het pla
 - In Dungeon Draw als ik unit move zou ik deze graag echt 'oppakken' en dragen naar nieuwe locatie en daar weer loslaten. Ook graag direct de uniit die ik aanklik en start te slepen geselecteerd maken, nu moet ik eerst selecteren en kan daarna pas slepen. 
 - Move unit met slepen ondersteunen in gm modus net als in Dungeon Draw. 
 
+- Path zien wann je een movement doet. 
+
 |||||
 
 
@@ -263,3 +255,13 @@ en zoals we al hebben het dungeon scherm edit en play modus
 18) Ik kan de grapple niet aanvallen in map
 
 14) quick attack met if ally is adjacent wordt niet goed geparsed / begrepen in battle maps
+
+19) Held prey is niet geïmplementeerd in map. De worg kon niet weglopen met een grappled fighter
+
+20) Als ik door een ally veld loop en een opp atack krijg en mijn move wordt gestopt mag ik niet op het veld van de ally stoppen, dan moet ik terug naar het veld waar ik daarvoor stond (en dit triggered dan natuurlijk niet extra opp attacks)
+
+- light op 115% gezet
+
+- hitdraw bestaat niet meer, deze knop moet weg uit action bar
+
+- Character creation scherm past niet op scherm
