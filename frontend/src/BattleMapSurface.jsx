@@ -23,6 +23,28 @@ const UNIT_DOUBLE_CLICK_MS = 320;
 const DUNGEON_CHUNK_SIZE = 32;
 const WALL_EDGE_VERTICAL = "vertical";
 const WALL_EDGE_HORIZONTAL = "horizontal";
+const MAP_THEME = {
+  void: { color: 0x110b06, alpha: 0.98 },
+  grid: { color: 0x6a4a2c, alpha: 0.56 },
+  fallbackFloor: { color: 0x24180f, alpha: 0.92 },
+  floor: { color: 0x3a2818, alpha: 0.92 },
+  floorPreview: { color: 0x5a3a20, alpha: 0.96 },
+  voidPreview: { color: 0x130d08, alpha: 0.96 },
+  hiddenRoomOverlay: { color: 0xaeb8bd, alpha: 0.24 },
+  roomHighlight: { color: 0xe0bd73, alpha: 0.92 },
+  wallOuter: 0x241207,
+  wallInner: 0xb27438,
+  doorFrame: 0x54371a,
+  doorPanel: 0xf0bd66,
+  doorPanelDark: 0xa66d32,
+  secretDoorHidden: 0xa35de0,
+  preview: {
+    erase: 0xff5555,
+    door: 0xe8c070,
+    secret: 0xaa66ff,
+    wall: 0xb2c0c8,
+  },
+};
 
 function pointerTypeOf(event) {
   return event.pointerType || event.nativeEvent?.pointerType || "mouse";
@@ -306,7 +328,7 @@ function drawGrid(graphics, room, cellSize, { unbounded = false, camera = { x: 0
     const height = range.worldBottom - range.worldTop + step * 2;
 
     graphics.clear();
-    graphics.rect(left, top, width, height).fill({ color: 0x070503, alpha: 0.9 });
+    graphics.rect(left, top, width, height).fill(MAP_THEME.void);
     for (let x = range.minX; x <= range.maxX + 1; x += 1) {
       const lineX = 10 + x * step - (x > 0 ? 1 : 0);
       graphics.moveTo(lineX, top);
@@ -317,7 +339,7 @@ function drawGrid(graphics, room, cellSize, { unbounded = false, camera = { x: 0
       graphics.moveTo(left, lineY);
       graphics.lineTo(left + width, lineY);
     }
-    graphics.stroke({ color: 0x513a23, alpha: 0.52, width: 1 });
+    graphics.stroke({ ...MAP_THEME.grid, width: 1 });
     return;
   }
 
@@ -327,8 +349,8 @@ function drawGrid(graphics, room, cellSize, { unbounded = false, camera = { x: 0
   const step = cellSize + 2;
 
   graphics.clear();
-  graphics.rect(0, 0, contentSize.width, contentSize.height).fill({ color: 0x070503, alpha: 0.9 });
-  graphics.rect(10, 10, gridWidth, gridHeight).fill({ color: 0x1a130c, alpha: 0.86 });
+  graphics.rect(0, 0, contentSize.width, contentSize.height).fill(MAP_THEME.void);
+  graphics.rect(10, 10, gridWidth, gridHeight).fill(MAP_THEME.fallbackFloor);
 
   for (let x = 0; x <= room.columns; x += 1) {
     const lineX = 10 + x * step - (x > 0 ? 1 : 0);
@@ -340,7 +362,7 @@ function drawGrid(graphics, room, cellSize, { unbounded = false, camera = { x: 0
     graphics.moveTo(10, lineY);
     graphics.lineTo(10 + gridWidth, lineY);
   }
-  graphics.stroke({ color: 0x513a23, alpha: 0.62, width: 1 });
+  graphics.stroke({ ...MAP_THEME.grid, alpha: 0.64, width: 1 });
 }
 
 function roomIdAt(roomCellToRoom, x, y) {
@@ -369,7 +391,7 @@ function drawDungeonTiles(graphics, dungeon, renderIndex, range, cellSize, isGmM
       const dimAlpha = !revealed && isGmMode ? 0.55 : 1;
       graphics
         .rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2)
-        .fill({ color: 0x2d1f12, alpha: 0.82 * dimAlpha });
+        .fill({ color: MAP_THEME.floor.color, alpha: MAP_THEME.floor.alpha * dimAlpha });
     }
   }
 
@@ -382,7 +404,7 @@ function drawDungeonTiles(graphics, dungeon, renderIndex, range, cellSize, isGmM
         const tileKey = `${x},${y}`;
         if (!dungeon.tiles?.[tileKey]) continue;
         const bounds = cellBounds(x, y, cellSize);
-        graphics.rect(bounds.x, bounds.y, bounds.width, bounds.height).fill({ color: 0x9fb0b8, alpha: 0.28 });
+        graphics.rect(bounds.x, bounds.y, bounds.width, bounds.height).fill(MAP_THEME.hiddenRoomOverlay);
       }
     }
   }
@@ -396,7 +418,7 @@ function drawDungeonTiles(graphics, dungeon, renderIndex, range, cellSize, isGmM
         const bounds = cellBounds(x, y, cellSize);
         graphics
           .rect(bounds.x, bounds.y, bounds.width, bounds.height)
-          .stroke({ color: 0xd8b66a, alpha: 0.9, width: 2 });
+          .stroke({ color: MAP_THEME.roomHighlight.color, alpha: MAP_THEME.roomHighlight.alpha, width: 2 });
       }
     }
   }
@@ -427,14 +449,14 @@ function drawDungeonPreview(graphics, previewCells, cellSize) {
     if (cell.tileType === "void") {
       graphics
         .rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2)
-        .fill({ color: 0x0b0704, alpha: 0.94 })
+        .fill(MAP_THEME.voidPreview)
         .stroke({ color: 0x82d9df, alpha: 0.26, width: 1 });
       continue;
     }
 
     graphics
       .rect(bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2)
-      .fill({ color: 0x4a311c, alpha: 0.96 })
+      .fill(MAP_THEME.floorPreview)
       .stroke({ color: 0xd8b66a, alpha: 0.35, width: 1 });
   }
 }
@@ -638,8 +660,8 @@ function drawEdgeWall(graphics, wall, x1, y1, x2, y2, side, cellSize, isGmMode =
         while (pos < len) {
           const end = Math.min(pos + (drawing ? dashLen : gap), len);
           if (drawing) {
-            if (side === "e") graphics.moveTo(x1, y1 + pos).lineTo(x1, y1 + end).stroke({ color: 0x8844cc, alpha: 0.9, width: widths.outer });
-            else graphics.moveTo(x1 + pos, y1).lineTo(x1 + end, y1).stroke({ color: 0x8844cc, alpha: 0.9, width: widths.outer });
+            if (side === "e") graphics.moveTo(x1, y1 + pos).lineTo(x1, y1 + end).stroke({ color: MAP_THEME.secretDoorHidden, alpha: 0.9, width: widths.outer });
+            else graphics.moveTo(x1 + pos, y1).lineTo(x1 + end, y1).stroke({ color: MAP_THEME.secretDoorHidden, alpha: 0.9, width: widths.outer });
           }
           pos = end;
           drawing = !drawing;
@@ -648,15 +670,15 @@ function drawEdgeWall(graphics, wall, x1, y1, x2, y2, side, cellSize, isGmMode =
       }
     } else if (!discovered) {
       // Hidden secret door for players: render as regular wall
-      graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: 0x140904, width: widths.outer });
-      graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: 0x8a5628, alpha: 0.9, width: widths.inner });
+      graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: MAP_THEME.wallOuter, width: widths.outer });
+      graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: MAP_THEME.wallInner, alpha: 0.92, width: widths.inner });
       return;
     }
     // Discovered secret door (any mode): render as regular door (fall through)
   }
   if (wall.wall_type === "wall") {
-    graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: 0x140904, width: widths.outer });
-    graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: 0x8a5628, alpha: 0.9, width: widths.inner });
+    graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: MAP_THEME.wallOuter, width: widths.outer });
+    graphics.moveTo(x1, y1).lineTo(x2, y2).stroke({ color: MAP_THEME.wallInner, alpha: 0.92, width: widths.inner });
     return;
   }
   // Door
@@ -665,9 +687,9 @@ function drawEdgeWall(graphics, wall, x1, y1, x2, y2, side, cellSize, isGmMode =
   const gapSize = Math.max(4, Math.min(totalLen * 0.45, cellSize * 0.38));
   const halfGap = gapSize / 2;
   const midCoord = isEast ? (y1 + y2) / 2 : (x1 + x2) / 2;
-  const frameColor = 0x3a2510;
-  const panelColor = 0xd4a254;
-  const panelDark = 0x8a5a26;
+  const frameColor = MAP_THEME.doorFrame;
+  const panelColor = MAP_THEME.doorPanel;
+  const panelDark = MAP_THEME.doorPanelDark;
   const panelW = Math.max(widths.doorFrame, Math.round(cellSize * 0.16));
 
   if (isEast) {
@@ -792,7 +814,13 @@ function drawWallEdgePreview(graphics, edges, wallPalette, cellSize) {
   const step = mapStep(cellSize);
   const padding = MAP_VIEWPORT_PADDING;
   const halfGap = Math.floor(MAP_GRID_GAP / 2);
-  const color = wallPalette === "erase" ? 0xff5555 : wallPalette === "door" ? 0xe8c070 : wallPalette === "secret_door" ? 0xaa66ff : 0x9ab0c0;
+  const color = wallPalette === "erase"
+    ? MAP_THEME.preview.erase
+    : wallPalette === "door"
+      ? MAP_THEME.preview.door
+      : wallPalette === "secret_door"
+        ? MAP_THEME.preview.secret
+        : MAP_THEME.preview.wall;
   const widths = wallStrokeWidths(cellSize);
   const lineWidth = wallPalette === "door" ? widths.doorFrame : widths.outer;
 

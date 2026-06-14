@@ -569,23 +569,27 @@ describe("App", () => {
     expect(window.location.search).toContain("sid=sid-123");
   });
 
-  it("lets the user brighten the display and stores the preference", async () => {
+  it("lets the user adjust map light and stores the preference", async () => {
     renderWithSnapshot(buildSnapshot());
 
     await screen.findByText("Weave Forge");
 
-    const brightnessSlider = screen.getByRole("slider", { name: "Display brightness" });
-    expect(brightnessSlider).toHaveValue("115");
-
-    fireEvent.change(brightnessSlider, { target: { value: "145" } });
-
-    expect(brightnessSlider).toHaveValue("145");
-    expect(screen.getByText("145%")).toBeInTheDocument();
+    const brightnessSlider = screen.getByRole("slider", { name: "Map light" });
+    expect(brightnessSlider).toHaveValue("100");
     expect(document.querySelector(".shell")).toHaveStyle({
-      "--display-brightness": "1.45",
-      "--display-brightness-lift": "0.165",
+      "--display-brightness": "1.20",
+      "--display-brightness-lift": "0.050",
     });
-    expect(window.localStorage.getItem("weavers-display-brightness")).toBe("145");
+
+    fireEvent.change(brightnessSlider, { target: { value: "120" } });
+
+    expect(brightnessSlider).toHaveValue("120");
+    expect(screen.getByText("120%")).toBeInTheDocument();
+    expect(document.querySelector(".shell")).toHaveStyle({
+      "--display-brightness": "1.44",
+      "--display-brightness-lift": "0.075",
+    });
+    expect(window.localStorage.getItem("weavers-map-light")).toBe("120");
   });
 
   it("opens the scenario library, creates a template, and starts a run", async () => {

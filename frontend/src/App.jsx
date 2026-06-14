@@ -98,11 +98,14 @@ const GM_DUNGEON_DRAW_SUBMODES = {
 const GM_DUNGEON_WALL_PALETTES = ["wall", "door", "secret_door", "erase"];
 const RECTANGLE_PALETTES = new Set(["floor", "void"]);
 const RECTANGLE_CONFIRM_LIMIT = 2500;
-const DISPLAY_BRIGHTNESS_STORAGE_KEY = "weavers-display-brightness";
-const DISPLAY_BRIGHTNESS_DEFAULT = 115;
-const DISPLAY_BRIGHTNESS_MIN = 100;
-const DISPLAY_BRIGHTNESS_MAX = 160;
-const DISPLAY_BRIGHTNESS_STEP = 5;
+const MAP_LIGHT_STORAGE_KEY = "weavers-map-light";
+const MAP_LIGHT_DEFAULT = 100;
+const MAP_LIGHT_MIN = 80;
+const MAP_LIGHT_MAX = 140;
+const MAP_LIGHT_STEP = 5;
+const MAP_LIGHT_FILTER_BASE = 1.2;
+const MAP_LIGHT_BASE_LIFT = 0.05;
+const MAP_LIGHT_MAX_LIFT = 0.1;
 const DRAW_REVEAL_TIMING = {
   enterMs: 80,
   holdMs: 3200,
@@ -338,23 +341,23 @@ function setSidInUrl(sid) {
   window.history.replaceState({}, "", nextUrl);
 }
 
-function clampDisplayBrightness(value) {
+function clampMapLight(value) {
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue)) {
-    return DISPLAY_BRIGHTNESS_DEFAULT;
+    return MAP_LIGHT_DEFAULT;
   }
-  return Math.max(DISPLAY_BRIGHTNESS_MIN, Math.min(DISPLAY_BRIGHTNESS_MAX, Math.round(numericValue)));
+  return Math.max(MAP_LIGHT_MIN, Math.min(MAP_LIGHT_MAX, Math.round(numericValue)));
 }
 
-function getInitialDisplayBrightness() {
+function getInitialMapLight() {
   if (typeof window === "undefined") {
-    return DISPLAY_BRIGHTNESS_DEFAULT;
+    return MAP_LIGHT_DEFAULT;
   }
   try {
-    const storedValue = window.localStorage.getItem(DISPLAY_BRIGHTNESS_STORAGE_KEY);
-    return storedValue == null ? DISPLAY_BRIGHTNESS_DEFAULT : clampDisplayBrightness(storedValue);
+    const storedValue = window.localStorage.getItem(MAP_LIGHT_STORAGE_KEY);
+    return storedValue == null ? MAP_LIGHT_DEFAULT : clampMapLight(storedValue);
   } catch {
-    return DISPLAY_BRIGHTNESS_DEFAULT;
+    return MAP_LIGHT_DEFAULT;
   }
 }
 
@@ -1092,15 +1095,15 @@ function App() {
   const [gmSecretDcInput, setGmSecretDcInput] = useState("");
   const [gmSecretDoorDefaultDc, setGmSecretDoorDefaultDc] = useState(2);
   const [pendingLargeTileEdit, setPendingLargeTileEdit] = useState(null);
-  const [displayBrightness, setDisplayBrightness] = useState(getInitialDisplayBrightness);
+  const [mapLight, setMapLight] = useState(getInitialMapLight);
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(DISPLAY_BRIGHTNESS_STORAGE_KEY, String(displayBrightness));
+      window.localStorage.setItem(MAP_LIGHT_STORAGE_KEY, String(mapLight));
     } catch {
       // Local storage is a convenience only; the slider should keep working without it.
     }
-  }, [displayBrightness]);
+  }, [mapLight]);
 
   useEffect(() => {
     if (!meta || customForm.coreDeckId || meta.decks.length === 0) {
@@ -3594,16 +3597,20 @@ function App() {
     );
   }
 
-  const displayBrightnessScale = displayBrightness / 100;
-  const displayBrightnessLift = Math.max(0, (displayBrightness - 100) / (DISPLAY_BRIGHTNESS_MAX - 100) * 0.22);
-  const displayBrightnessStyle = {
-    "--display-brightness": displayBrightnessScale.toFixed(2),
-    "--display-brightness-lift": displayBrightnessLift.toFixed(3),
+  const mapLightScale = MAP_LIGHT_FILTER_BASE * (mapLight / MAP_LIGHT_DEFAULT);
+  const mapLightAboveBaseRatio = (mapLight - MAP_LIGHT_DEFAULT) / (MAP_LIGHT_MAX - MAP_LIGHT_DEFAULT);
+  const mapLightBelowBaseRatio = (mapLight - MAP_LIGHT_MIN) / (MAP_LIGHT_DEFAULT - MAP_LIGHT_MIN);
+  const mapLightLift = mapLight >= MAP_LIGHT_DEFAULT
+    ? MAP_LIGHT_BASE_LIFT + mapLightAboveBaseRatio * (MAP_LIGHT_MAX_LIFT - MAP_LIGHT_BASE_LIFT)
+    : mapLightBelowBaseRatio * MAP_LIGHT_BASE_LIFT;
+  const mapLightStyle = {
+    "--display-brightness": mapLightScale.toFixed(2),
+    "--display-brightness-lift": mapLightLift.toFixed(3),
   };
   const visibleWoundNotice = woundEventWithCurrentToughness(woundNotice, snapshot?.enemies);
 
   return (
-    <div className="shell" style={displayBrightnessStyle}>
+    <div className="shell" style={mapLightStyle}>
       <div className="shell-noise" />
 
       <header className="topbar">
@@ -3686,17 +3693,17 @@ function App() {
             </button>
           </div>
           <label className="brightness-control">
-            <span>Light</span>
+            <span>Map light</span>
             <input
-              aria-label="Display brightness"
+              aria-label="Map light"
               type="range"
-              min={DISPLAY_BRIGHTNESS_MIN}
-              max={DISPLAY_BRIGHTNESS_MAX}
-              step={DISPLAY_BRIGHTNESS_STEP}
-              value={displayBrightness}
-              onChange={(event) => setDisplayBrightness(clampDisplayBrightness(event.target.value))}
+              min={MAP_LIGHT_MIN}
+              max={MAP_LIGHT_MAX}
+              step={MAP_LIGHT_STEP}
+              value={mapLight}
+              onChange={(event) => setMapLight(clampMapLight(event.target.value))}
             />
-            <output>{displayBrightness}%</output>
+            <output>{mapLight}%</output>
           </label>
           {activeView === APP_VIEWS.BATTLE ? (
             <>

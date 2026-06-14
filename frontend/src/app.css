@@ -93,7 +93,7 @@ button {
 }
 
 .shell {
-  --display-brightness: 1.15;
+  --display-brightness: 1;
   --display-brightness-lift: 0;
   position: relative;
   height: 100vh;
@@ -125,13 +125,6 @@ button {
 .status-banner {
   position: relative;
   z-index: 1;
-}
-
-.topbar,
-.main-grid,
-.modal-overlay,
-.screen-state {
-  filter: brightness(var(--display-brightness, 1));
 }
 
 .command-desk {
@@ -862,6 +855,7 @@ button:disabled {
   touch-action: none;
   cursor: grab;
   user-select: none;
+  filter: brightness(var(--display-brightness, 1));
 }
 
 .battle-map-surface[data-gm-interaction-mode="draw"] {
@@ -5157,7 +5151,6 @@ button.draw-card:hover {
   height: 100%;
   gap: 10px;
   color: var(--text);
-  filter: brightness(var(--display-brightness, 1));
 }
 
 .scenario-empty {
