@@ -1104,6 +1104,9 @@ function drawUnit(PIXI, layer, entity, entityState, cellSize, texture, options =
       width: 3,
     });
   }
+  if (entityState.isTargetable) {
+    base.circle(0, 0, radius + 8).stroke({ color: 0x7db97f, alpha: 0.74, width: 3 });
+  }
 
   base
     .circle(0, 0, radius)
@@ -1171,6 +1174,48 @@ function drawUnit(PIXI, layer, entity, entityState, cellSize, texture, options =
 
   layer.addChild(token);
   return token;
+}
+
+function drawGrapplesLayer(renderer, grappleOverlays, actionTargeting, cellSize) {
+  if (!renderer) {
+    return;
+  }
+  const { PIXI, layers } = renderer;
+  clearLayer(layers.grapples);
+  const validIds = new Set(actionTargeting?.validGrappleIds || []);
+  for (const overlay of grappleOverlays) {
+    const targetable = actionTargeting ? validIds.has(overlay.id) : true;
+    const line = new PIXI.Graphics();
+    line
+      .moveTo(overlay.from.x, overlay.from.y)
+      .lineTo(overlay.to.x, overlay.to.y)
+      .stroke({ color: targetable ? 0xd8b66a : 0x8a6a45, alpha: actionTargeting ? 0.58 : 0.38, width: Math.max(2, cellSize * 0.06) });
+    layers.grapples.addChild(line);
+
+    const marker = new PIXI.Graphics();
+    marker
+      .circle(overlay.center.x, overlay.center.y, Math.max(8, cellSize * 0.18))
+      .fill({ color: 0x0d0907, alpha: 0.88 })
+      .stroke({ color: targetable ? 0xd8b66a : 0x8a6a45, alpha: targetable ? 0.92 : 0.48, width: 2 });
+    if (targetable) {
+      marker.circle(overlay.center.x, overlay.center.y, Math.max(12, cellSize * 0.28)).stroke({ color: 0x7db97f, alpha: 0.48, width: 2 });
+    }
+    layers.grapples.addChild(marker);
+
+    const label = new PIXI.Text({
+      text: "G",
+      style: {
+        fill: 0xf0cf85,
+        fontFamily: "Inter, Segoe UI, sans-serif",
+        fontSize: Math.max(8, Math.round(cellSize * 0.22)),
+        fontWeight: "800",
+      },
+      anchor: 0.5,
+    });
+    label.position.set(overlay.center.x, overlay.center.y);
+    layers.grapples.addChild(label);
+  }
+  renderPixi(renderer);
 }
 
 function prefersReducedMotion() {
@@ -1344,7 +1389,7 @@ function drawSelectionLayer(renderer, firstCell, secondCell, cellSize) {
   renderPixi(renderer);
 }
 
-function drawUnitsLayer(renderer, placedEntities, selectedId, selectedUnitIds, activeTurnId, cellSize) {
+function drawUnitsLayer(renderer, placedEntities, selectedId, selectedUnitIds, activeTurnId, cellSize, targetableUnitIds = new Set()) {
   if (!renderer) {
     return;
   }
@@ -1362,6 +1407,7 @@ function drawUnitsLayer(renderer, placedEntities, selectedId, selectedUnitIds, a
         {
           isSelected: entity.instance_id === selectedId || selectedSet.has(entity.instance_id),
           isActive: entity.instance_id === activeTurnId,
+          isTargetable: targetableUnitIds.has(entity.instance_id),
         },
         cellSize,
         entity.image_url ? textures.get(entity.image_url) : null,
@@ -1448,6 +1494,8 @@ function BattleMapSurface({
   gmDungeonDrawSubmode = "terrain",
   gmDungeonWallPalette = "wall",
   selectedUnitIds = [],
+  grapples = [],
+  actionTargeting = null,
   highlightedRoomId = null,
   drawPulse,
   busy,
@@ -1463,6 +1511,7 @@ function BattleMapSurface({
   onWallEdit,
   onSetPlayerSpawn,
   onSecretDoorClick,
+  onActionTarget,
   onUnitContextMenu,
   onUnitDoubleClick,
 }) {
@@ -1502,6 +1551,34 @@ function BattleMapSurface({
   const placedEntities = useMemo(
     () => entities.filter((entity) => hasGridPosition(entity, room, dungeon)),
     [entities, room.columns, room.rows, dungeon],
+  );
+  const entityById = useMemo(
+    () => new Map(placedEntities.map((entity) => [entity.instance_id, entity])),
+    [placedEntities],
+  );
+  const targetableUnitIds = useMemo(() => new Set(actionTargeting?.validTargetIds || []), [actionTargeting?.validTargetIds]);
+  const targetableGrappleIds = useMemo(() => new Set(actionTargeting?.validGrappleIds || []), [actionTargeting?.validGrappleIds]);
+  const grappleOverlays = useMemo(
+    () =>
+      (grapples || [])
+        .map((grapple) => {
+          const grappler = entityById.get(grapple.grapplerId);
+          const target = entityById.get(grapple.targetId);
+          if (!grappler || !target) {
+            return null;
+          }
+          const from = cellToWorld(grappler.grid_x, grappler.grid_y, cellSize);
+          const to = cellToWorld(target.grid_x, target.grid_y, cellSize);
+          return {
+            ...grapple,
+            from,
+            to,
+            center: { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 },
+            hitRadius: Math.max(14, cellSize * 0.34),
+          };
+        })
+        .filter(Boolean),
+    [grapples, entityById, cellSize],
   );
   const entitiesByPosition = useMemo(() => {
     const next = new Map();
@@ -1650,6 +1727,7 @@ function BattleMapSurface({
           wallPreview: new PIXI.Graphics(),
           selection: new PIXI.Graphics(),
           highlights: new PIXI.Graphics(),
+          grapples: new PIXI.Container(),
           units: new PIXI.Container(),
           dragPreview: new PIXI.Container(),
           effects: new PIXI.Container(),
@@ -1667,6 +1745,7 @@ function BattleMapSurface({
           layers.wallPreview,
           layers.selection,
           layers.highlights,
+          layers.grapples,
           layers.units,
           layers.dragPreview,
           layers.effects,
@@ -1809,8 +1888,12 @@ function BattleMapSurface({
   ]);
 
   useEffect(() => {
-    drawUnitsLayer(rendererRef.current, placedEntities, selectedId, selectedUnitIds, activeTurnId, cellSize);
-  }, [pixiReady, textureVersion, placedEntities, selectedId, selectedUnitIds, activeTurnId, cellSize]);
+    drawGrapplesLayer(rendererRef.current, grappleOverlays, actionTargeting, cellSize);
+  }, [pixiReady, grappleOverlays, actionTargeting, cellSize]);
+
+  useEffect(() => {
+    drawUnitsLayer(rendererRef.current, placedEntities, selectedId, selectedUnitIds, activeTurnId, cellSize, targetableUnitIds);
+  }, [pixiReady, textureVersion, placedEntities, selectedId, selectedUnitIds, activeTurnId, cellSize, targetableUnitIds]);
 
   useEffect(() => {
     drawDragPreviewLayer(rendererRef.current, unitDragPreview, cellSize);
@@ -1993,6 +2076,23 @@ function BattleMapSurface({
       x: point.x - metrics.left - cameraRef.current.x,
       y: point.y - metrics.top - cameraRef.current.y,
     };
+  }
+
+  function grappleFromPointer(event) {
+    if (!grappleOverlays.length) {
+      return null;
+    }
+    const point = worldPointFromPointer(event);
+    let best = null;
+    let bestDistance = Infinity;
+    for (const overlay of grappleOverlays) {
+      const distance = Math.hypot(point.x - overlay.center.x, point.y - overlay.center.y);
+      if (distance <= overlay.hitRadius && distance < bestDistance) {
+        best = overlay;
+        bestDistance = distance;
+      }
+    }
+    return best;
   }
 
   function partyDragMembers() {
@@ -2444,6 +2544,14 @@ function BattleMapSurface({
       }
     }
 
+    if (actionTargeting && !busy && (isLeftMouse || pointerType === "touch")) {
+      const occupant = cell ? getTopSelectableEntity(getEntitiesAtPosition(entitiesByPosition, cell)) : null;
+      if (occupant || grappleFromPointer(event)) {
+        event.preventDefault();
+        return;
+      }
+    }
+
     if (isMultiSelectMode && !busy && (isLeftMouse || pointerType === "touch") && cell) {
       const occupant = getTopSelectableEntity(getEntitiesAtPosition(entitiesByPosition, cell));
       const selectedSet = new Set(currentSelectionIds());
@@ -2738,7 +2846,8 @@ function BattleMapSurface({
     }
     surfaceRef.current?.releasePointerCapture?.(pointerId);
 
-    if (!clickCell) {
+    const clickedGrapple = grappleFromPointer(event);
+    if (!clickCell && !clickedGrapple) {
       return;
     }
 
@@ -2753,6 +2862,38 @@ function BattleMapSurface({
     const isGmDungeonSelectMode = mapMode === "gm-dungeon" && gmDungeonInteractionMode === "select";
     const canSelectSecretDoorEdge = isGmDungeonSelectMode || mapMode === "gm-reposition";
     const isMultiSelectMode = isGmDungeonSelectMode || mapMode === "gm-reposition";
+
+    if (actionTargeting) {
+      if (clickedGrapple) {
+        onActionTarget?.({
+          type: "grapple",
+          grappleId: clickedGrapple.id,
+          targetId: clickedGrapple.targetId,
+          valid: targetableGrappleIds.has(clickedGrapple.id),
+        });
+        return;
+      }
+      if (occupant) {
+        onActionTarget?.({
+          type: "unit",
+          instanceId: occupant.instance_id,
+          valid: targetableUnitIds.has(occupant.instance_id),
+        });
+        return;
+      }
+      onActionTarget?.({ type: "empty", cell: clickCell, valid: false });
+      return;
+    }
+
+    if (!isMultiSelectMode && mapMode === "idle" && clickedGrapple) {
+      onActionTarget?.({
+        type: "grapple",
+        grappleId: clickedGrapple.id,
+        targetId: clickedGrapple.targetId,
+        valid: true,
+      });
+      return;
+    }
 
     if (canSelectSecretDoorEdge && !occupant && onSecretDoorClick) {
       const edge = edgeFromPointer(event);
@@ -2960,7 +3101,7 @@ function BattleMapSurface({
   const zoomPercent = Math.round((cellSize / MAP_ZOOM.defaultSize) * 100);
   const reachableNormalCount = countReachableByKind(visibleReachableCells, "normal");
   const reachableDashCount = countReachableByKind(visibleReachableCells, "dash");
-  const surfaceClassName = `battle-map-surface ${isPanning ? "battle-map-surface-panning" : ""}`.trim();
+  const surfaceClassName = `battle-map-surface ${isPanning ? "battle-map-surface-panning" : ""} ${actionTargeting ? "battle-map-surface-targeting" : ""}`.trim();
 
   return (
     <div className="map-viewport-shell">
@@ -2995,6 +3136,9 @@ function BattleMapSurface({
         data-map-mode={mapMode}
         data-gm-interaction-mode={mapMode === "gm-dungeon" ? gmDungeonInteractionMode : mapMode === "gm-reposition" ? "select" : ""}
         data-selected-unit-ids={(selectedUnitIds || []).join(",")}
+        data-action-target-mode={actionTargeting?.action || ""}
+        data-action-target-ids={(actionTargeting?.validTargetIds || []).join(",")}
+        data-action-target-grapple-ids={(actionTargeting?.validGrappleIds || []).join(",")}
         data-reachable-normal={reachableNormalCount}
         data-reachable-dash={reachableDashCount}
         data-draw-pulse-entity-id={drawPulse?.entityId || ""}

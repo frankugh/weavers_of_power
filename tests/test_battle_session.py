@@ -2532,6 +2532,50 @@ class BattleSessionTests(unittest.TestCase):
         self.assertEqual(len(player.deck_state.hand), 1)
         self.assertIn("Mira temporary toughness expired.", session.combat_log)
 
+    def test_strengthen_can_target_adjacent_player_and_charges_actor(self) -> None:
+        session = self.context.create_session("strengthen-target")
+        session.add_player(name="Wizard", toughness=4, power=3)
+        session.add_player(name="Fighter", toughness=5, power=1)
+        wizard_id, fighter_id = session.order
+        wizard = session.state.enemies[wizard_id]
+        fighter = session.state.enemies[fighter_id]
+        session._set_position(wizard, 0, 0)
+        session._set_position(fighter, 1, 0)
+        session.selected_id = wizard_id
+        fighter.toughness_current = 3
+
+        session.strengthen_pc(2, target_id=fighter_id)
+
+        self.assertEqual(session.selected_id, wizard_id)
+        self.assertEqual(wizard.actions_used, 1)
+        self.assertEqual(fighter.actions_used, 0)
+        self.assertEqual(fighter.toughness_current, 5)
+        self.assertIn("Wizard strengthens Fighter: +2 toughness (5/5)", session.combat_log)
+
+    def test_strengthen_range_is_adjacent_except_cleric_thirty_feet(self) -> None:
+        session = self.context.create_session("strengthen-range")
+        session.add_player(name="Mira", toughness=4, power=3)
+        session.add_player(name="Fighter", toughness=5, power=1)
+        mira_id, fighter_id = session.order
+        mira = session.state.enemies[mira_id]
+        fighter = session.state.enemies[fighter_id]
+        session._set_position(mira, 0, 0)
+        session._set_position(fighter, 2, 0)
+        session.selected_id = mira_id
+        fighter.toughness_current = 3
+
+        with self.assertRaisesRegex(Exception, "not within 5ft"):
+            session.strengthen_pc(1, target_id=fighter_id)
+
+        self.assertEqual(mira.actions_used, 0)
+        self.assertEqual(fighter.toughness_current, 3)
+
+        mira.character_profile = {"className": "Cleric"}
+        session.strengthen_pc(1, target_id=fighter_id)
+
+        self.assertEqual(mira.actions_used, 1)
+        self.assertEqual(fighter.toughness_current, 4)
+
     def test_guard_action_adds_guard_and_counts_as_action(self) -> None:
         session = self.context.create_session("guard-action")
         session.add_player(name="Mira")

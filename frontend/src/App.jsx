@@ -592,6 +592,23 @@ function hasGridPosition(entity, room, dungeon = null) {
   );
 }
 
+function gridDistance(first, second) {
+  if (!Number.isInteger(first?.grid_x) || !Number.isInteger(first?.grid_y) || !Number.isInteger(second?.grid_x) || !Number.isInteger(second?.grid_y)) {
+    return Infinity;
+  }
+  return Math.max(Math.abs(first.grid_x - second.grid_x), Math.abs(first.grid_y - second.grid_y));
+}
+
+function isClericEntity(entity) {
+  const className = String(entity?.character_profile?.className || "").trim().toLowerCase();
+  const deckId = String(entity?.core_deck_id || "").trim().toLowerCase();
+  return className === "cleric" || deckId.includes("cleric");
+}
+
+function strengthenRangeFor(entity) {
+  return isClericEntity(entity) ? 6 : 1;
+}
+
 function isTemplateLootable(entity) {
   return Boolean(
     entity &&
@@ -1018,12 +1035,15 @@ function App() {
   const [pcPickerTab, setPcPickerTab] = useState("premade");
   const [pcPickerCustom, setPcPickerCustom] = useState(EMPTY_PC_PICKER_CUSTOM);
   const [attackForm, setAttackForm] = useState(EMPTY_ATTACK_FORM);
+  const [attackTarget, setAttackTarget] = useState(null);
   const [healForm, setHealForm] = useState(EMPTY_HEAL_FORM);
   const [drawExactCount, setDrawExactCount] = useState(1);
   const [strengthenCount, setStrengthenCount] = useState(1);
+  const [strengthenTargetId, setStrengthenTargetId] = useState("");
   const [guardCount, setGuardCount] = useState(1);
   const [actionWarningAcknowledged, setActionWarningAcknowledged] = useState(false);
   const [pendingActionFn, setPendingActionFn] = useState(null);
+  const [actionTargeting, setActionTargeting] = useState(null);
   const [helpTargets, setHelpTargets] = useState([]);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [unitContextMenu, setUnitContextMenu] = useState(null);
@@ -1441,6 +1461,13 @@ function App() {
   }, [mapMode, canUsePartyWalk]);
 
   useEffect(() => {
+    if (actionTargeting && (activeView !== APP_VIEWS.BATTLE || actionTargeting.actorId !== selectedEntity?.instance_id)) {
+      setActionTargeting(null);
+      setStrengthenTargetId("");
+    }
+  }, [actionTargeting, activeView, selectedEntity?.instance_id]);
+
+  useEffect(() => {
     if (!RECTANGLE_PALETTES.has(gmDungeonPalette) && gmDungeonTool === GM_DUNGEON_TOOLS.RECTANGLE) {
       setGmDungeonTool(GM_DUNGEON_TOOLS.BRUSH);
     }
@@ -1520,6 +1547,24 @@ function App() {
       )
     : [];
   const canHelp = isPlayerSelected && canUseTurnAction && pcEntitiesInRange.length > 0;
+  const strengthenRangeCells = selectedEntity ? strengthenRangeFor(selectedEntity) : 1;
+  const strengthenTargetEntities = isPlayerSelected
+    ? orderedEnemies.filter(
+        (entity) =>
+          entity.is_player &&
+          !entity.is_down &&
+          (entity.instance_id === selectedEntity?.instance_id || gridDistance(selectedEntity, entity) <= strengthenRangeCells),
+      )
+    : [];
+  const strengthenTargetIds = strengthenTargetEntities.map((entity) => entity.instance_id);
+  const activeActionTargeting = actionTargeting?.actorId === selectedEntity?.instance_id ? actionTargeting : null;
+  const mapActionTargeting = activeActionTargeting
+    ? {
+        ...activeActionTargeting,
+        validTargetIds: activeActionTargeting.action === "strengthen" ? strengthenTargetIds : activeActionTargeting.validTargetIds || [],
+        validGrappleIds: activeActionTargeting.validGrappleIds || [],
+      }
+    : null;
 
   const currentPcRoomId = selectedEntity?.room_id ?? null;
   const roomAlreadySearched = Boolean(currentPcRoomId && (dungeon?.searchedRoomIds || []).includes(currentPcRoomId));
@@ -1589,6 +1634,10 @@ function App() {
   );
   const canAttackOrHeal = Boolean(visibleSelectedEntity && !selectedIsDown);
   const selectedTargetNoun = isPlayerSelected ? "player" : "enemy";
+  const attackTargetLabel = attackTarget?.label || selectedTargetNoun;
+  const strengthenTarget = strengthenTargetId
+    ? orderedEnemies.find((entity) => entity.instance_id === strengthenTargetId) || null
+    : selectedEntity;
   const canInspectSelectedLoot = Boolean(
     visibleSelectedEntity?.is_down &&
       !visibleSelectedEntity?.loot_rolled &&
@@ -1738,6 +1787,9 @@ function App() {
     setTemplateThreatMax("");
     setPendingDashMove(null);
     setPendingLargeTileEdit(null);
+    setActionTargeting(null);
+    setAttackTarget(null);
+    setStrengthenTargetId("");
     setDrawDetail(null);
     setPreviewEntityId(null);
     setWoundNotice(null);
@@ -2388,7 +2440,27 @@ function App() {
     setUnitContextMenu(null);
     setActionMenuOpen(false);
     setMapMode((m) => (m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
+    setAttackTarget(null);
     setAttackForm(EMPTY_ATTACK_FORM);
+    setModal("attack");
+  }
+
+  function openAttackForGrapple(grappleId) {
+    const grapple = (snapshot?.grapples || []).find((entry) => entry.id === grappleId);
+    if (!grapple) {
+      setNotice("Grapple no longer exists.");
+      return;
+    }
+    setUnitContextMenu(null);
+    setActionMenuOpen(false);
+    setMapMode((m) => (m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
+    setAttackTarget({
+      targetId: grapple.targetId,
+      targetMode: "grapple",
+      grappleId: grapple.id,
+      label: `${grapple.label || "Grapple"} on ${grapple.targetName || "target"}`,
+    });
+    setAttackForm({ ...EMPTY_ATTACK_FORM, targetMode: "grapple", grappleId: grapple.id });
     setModal("attack");
   }
 
@@ -2876,12 +2948,54 @@ function App() {
     );
   }
 
+  function cancelActionTargeting() {
+    setActionTargeting(null);
+    setStrengthenTargetId("");
+  }
+
+  function beginStrengthenTargeting() {
+    if (!selectedEntity) {
+      return;
+    }
+    setActionMenuOpen(false);
+    setUnitContextMenu(null);
+    setMapMode((current) => (current === MAP_MODES.GM_DUNGEON ? current : MAP_MODES.IDLE));
+    setStrengthenTargetId("");
+    setActionTargeting({
+      action: "strengthen",
+      actorId: selectedEntity.instance_id,
+      label: "Strengthen",
+      targetKind: "player",
+    });
+    setNotice(`Choose a Strengthen target (${strengthenRangeCells * 5}ft).`);
+  }
+
+  function handleActionTarget(target) {
+    if (!mapActionTargeting) {
+      if (target?.type === "grapple" && target.grappleId) {
+        openAttackForGrapple(target.grappleId);
+      }
+      return;
+    }
+    if (mapActionTargeting.action === "strengthen") {
+      if (target?.type !== "unit" || !strengthenTargetIds.includes(target.instanceId)) {
+        setNotice("Invalid Strengthen target.");
+        return;
+      }
+      setStrengthenTargetId(target.instanceId);
+      setStrengthenCount(1);
+      setActionTargeting(null);
+      setModal("strengthen");
+    }
+  }
+
   async function handleStrengthen(explicitX) {
     const x = explicitX !== undefined ? explicitX : Number(strengthenCount);
+    const targetId = strengthenTargetId || selectedEntity?.instance_id || "";
     closeModal();
     await applySnapshotRequest(
       `/api/battle/sessions/${snapshot.sid}/action/strengthen`,
-      { method: "POST", body: JSON.stringify({ x }) },
+      { method: "POST", body: JSON.stringify({ x, targetId }) },
       `Strengthened +${x}`,
     );
   }
@@ -3120,8 +3234,9 @@ function App() {
         body: JSON.stringify({
           damage: Number(attackForm.damage),
           modifiers,
+          targetId: attackTarget?.targetId || undefined,
           targetMode: attackForm.targetMode || "creature",
-          grappleId: attackForm.targetMode === "grapple" ? attackForm.grappleId || null : null,
+          grappleId: attackForm.targetMode === "grapple" ? attackForm.grappleId || attackTarget?.grappleId || null : null,
           burn: attackForm.statuses.burn,
           poison: attackForm.statuses.poison,
           slow: attackForm.statuses.slow,
@@ -3132,6 +3247,7 @@ function App() {
     );
     if (payload) {
       setAttackForm(EMPTY_ATTACK_FORM);
+      setAttackTarget(null);
       const woundEvent = combinedWoundEvent(payload.woundEvents, payload.enemies);
       if (woundEvent && Number(woundEvent.wounds) > 0) {
         setWoundNotice(woundEvent);
@@ -3714,6 +3830,8 @@ function App() {
               gmDungeonDrawSubmode={gmDungeonDrawSubmode}
               gmDungeonWallPalette={gmDungeonWallPalette}
               selectedUnitIds={selectedUnitIds}
+              grapples={snapshot.grapples || []}
+              actionTargeting={mapActionTargeting}
               highlightedRoomId={isGmDungeonMode ? highlightedRoomId : null}
               drawPulse={drawReveal ? { entityId: drawReveal.entityId, key: drawReveal.key } : null}
               busy={busy}
@@ -3732,6 +3850,7 @@ function App() {
                 setGmSelectedSecretDoorKey((prev) => (prev === key ? null : key));
                 setGmSecretDcInput(String(dungeon?.walls?.[key]?.secret_dc ?? 2));
               }}
+              onActionTarget={handleActionTarget}
               onUnitContextMenu={handleUnitContextMenu}
               onUnitDoubleClick={handleUnitDoubleClick}
             />
@@ -4021,14 +4140,18 @@ function App() {
                 )}
                 {isPlayerSelected && canUseTurnAction && (
                   <button
-                    className="secondary-button"
+                    className={`secondary-button ${mapActionTargeting?.action === "strengthen" ? "move-button-active" : ""}`.trim()}
                     onClick={() => {
                       setActionMenuOpen(false);
-                      withActionCheck(() => { setStrengthenCount(1); setModal("strengthen"); });
+                      if (mapActionTargeting?.action === "strengthen") {
+                        cancelActionTargeting();
+                      } else {
+                        withActionCheck(beginStrengthenTargeting);
+                      }
                     }}
                     disabled={busy}
                   >
-                    Strengthen
+                    {mapActionTargeting?.action === "strengthen" ? "Cancel Strengthen" : "Strengthen"}
                   </button>
                 )}
                 {isPlayerSelected && canUseTurnAction && (
@@ -4911,8 +5034,12 @@ function App() {
 
       <ModalShell
         open={modal === "attack"}
-        title={`Attack ${selectedTargetNoun}`}
-        subtitle={`Applies damage and optional status effects to the selected ${selectedTargetNoun} card.`}
+        title={`Attack ${attackTargetLabel}`}
+        subtitle={
+          attackTarget
+            ? "Applies damage and optional status effects to the chosen map target."
+            : `Applies damage and optional status effects to the selected ${selectedTargetNoun} card.`
+        }
         onClose={closeModal}
         closeOnOutsideClick={false}
       >
@@ -6736,8 +6863,8 @@ function App() {
 
       <ModalShell
         open={modal === "strengthen"}
-        title="Strengthen"
-        subtitle={`+1 toughness per punt tot max toughness; overgebleven punten worden +1 draw bonus (max +3 totaal).${selectedEntity?.draw_bonus_pending > 0 ? ` Nu +${selectedEntity.draw_bonus_pending} beschikbaar.` : ""}${selectedEntity?.draw_bonus_next_turn > 0 ? ` Volgende beurt +${selectedEntity.draw_bonus_next_turn}.` : ""}`}
+        title={`Strengthen ${strengthenTarget?.name || selectedEntity?.name || ""}`.trim()}
+        subtitle={`Actor: ${selectedEntity?.name || "Selected unit"}. +1 toughness per punt tot max toughness; overgebleven punten worden temporary toughness.${selectedEntity?.draw_bonus_pending > 0 ? ` Nu +${selectedEntity.draw_bonus_pending} beschikbaar.` : ""}${selectedEntity?.draw_bonus_next_turn > 0 ? ` Volgende beurt +${selectedEntity.draw_bonus_next_turn}.` : ""}`}
         onClose={closeModal}
       >
         <div className="panel-body">
@@ -8429,6 +8556,8 @@ function BattleRoom({
   gmDungeonDrawSubmode,
   gmDungeonWallPalette,
   selectedUnitIds,
+  grapples = [],
+  actionTargeting = null,
   highlightedRoomId = null,
   drawPulse,
   busy,
@@ -8444,6 +8573,7 @@ function BattleRoom({
   onWallEdit,
   onSetPlayerSpawn,
   onSecretDoorClick,
+  onActionTarget,
   onUnitContextMenu,
   onUnitDoubleClick,
 }) {
@@ -8473,6 +8603,8 @@ function BattleRoom({
         gmDungeonDrawSubmode={gmDungeonDrawSubmode}
         gmDungeonWallPalette={gmDungeonWallPalette}
         selectedUnitIds={selectedUnitIds}
+        grapples={grapples}
+        actionTargeting={actionTargeting}
         highlightedRoomId={highlightedRoomId}
         drawPulse={drawPulse}
         busy={busy}
@@ -8488,6 +8620,7 @@ function BattleRoom({
         onWallEdit={onWallEdit}
         onSetPlayerSpawn={onSetPlayerSpawn}
         onSecretDoorClick={onSecretDoorClick}
+        onActionTarget={onActionTarget}
         onUnitContextMenu={onUnitContextMenu}
         onUnitDoubleClick={onUnitDoubleClick}
       />

@@ -876,6 +876,10 @@ button:disabled {
   cursor: grab;
 }
 
+.battle-map-surface.battle-map-surface-targeting {
+  cursor: crosshair;
+}
+
 .battle-map-surface::after {
   content: "";
   position: absolute;

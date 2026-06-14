@@ -55,6 +55,9 @@ htmlcov/
 .idea/
 *.iml
 
+# --- Local agent state ---
+.claude/
+
 # --- OS / Editor junk ---
 .DS_Store
 Thumbs.db

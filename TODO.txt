@@ -1,13 +1,11 @@
 
-- Als ik search room doe of vergelijkbare searches met char met physical cards dan zou ik niet moeten drawen maar een pop-up met aantal drawn succesen moeten krijgen. Miss 0-1-2-3 custom, beetje vergelijkbaar met strengthen schermpje
-
 2) Ik wilde fighter strenghtenen in wizz beurt, maar app ondersteund niet iemand anders strengthenen. Je kunt een adjacent unit strengthenen als je ernaast staat (of cleric kan het op 30 ft)
 
 14) quick attack met if ally is adjacent wordt niet goed geparsed / begrepen in battle maps
 
 18) Ik kan de grapple niet aanvallen
 
-19) Held prey is niet geïmplementeerd. De worg kon niet weglopen met een grappled fighter
+19) Held prey is niet geïmplementeerd in map. De worg kon niet weglopen met een grappled fighter
 
 20) Als ik door een ally veld loop en een opp atack krijg en mijn move wordt gestopt mag ik niet op het veld van de ally stoppen, dan moet ik terug naar het veld waar ik daarvoor stond (en dit triggered dan natuurlijk niet extra opp attacks)
 
@@ -15,10 +13,7 @@
 
 TODO:
 
-- Een modus met een soort flowchart waar je in elke flow flavour tekst, plaatjes, conditional events (traps / investigates / interactions) en enemies kan zetten. Bij enemies kun je 'start combat' zeggen en daar zit een default open veld met de units in, optioneel editable om er een room / dungeon van te maken'. De flowchart heeft op de blokken een label zichtbaar in de overview. Je ziet in welke je nu zit en welke aansluitend zijn, maar je kunt altijd naar elk punt in de flow. 
-Dan hebben we dus een flow overview scherm nodig in edit modus of play modus
-een event scherm in edit modus en play modus
-en zoals we al hebben het dungeon scherm edit en play modus
+
 
 -----
 
@@ -251,3 +246,12 @@ Rechterklik show unit bij PC toont een volledig overview van niet alleen het pla
 21) apply healing scherm als ik ernaast klik moet dit niet direct sluiten
 
 25) Als ik een combat end en er nog enemies zijn kan ik nu geen search room doen
+
+- Een modus met een soort flowchart waar je in elke flow flavour tekst, plaatjes, conditional events (traps / investigates / interactions) en enemies kan zetten. Bij enemies kun je 'start combat' zeggen en daar zit een default open veld met de units in, optioneel editable om er een room / dungeon van te maken'. De flowchart heeft op de blokken een label zichtbaar in de overview. Je ziet in welke je nu zit en welke aansluitend zijn, maar je kunt altijd naar elk punt in de flow.
+Dan hebben we dus een flow overview scherm nodig in edit modus of play modus
+een event scherm in edit modus en play modus
+en zoals we al hebben het dungeon scherm edit en play modus
+
+- Start combat via node begint in combat. Eigenlijk wil ik dit veranderen in load encounter of zoiets. map1 toont ook aan dat je niet altijd een map laad en direct in combat zit, daar begin je buiten combat
+
+- Als ik search room doe of vergelijkbare searches met char met physical cards dan zou ik niet moeten drawen maar een pop-up met aantal drawn succesen moeten krijgen. Miss 0-1-2-3 custom, beetje vergelijkbaar met strengthen schermpje

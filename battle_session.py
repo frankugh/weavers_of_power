@@ -4875,14 +4875,17 @@ class BattleSession:
         add_poison: bool,
         add_slow: bool,
         add_paralyze: bool,
+        target_id: Optional[str] = None,
         target_mode: str = "creature",
         grapple_id: Optional[str] = None,
     ) -> Optional[dict]:
-        entity = self._require_selected_entity()
+        entity = self.state.enemies.get(str(target_id)) if target_id else self._require_selected_entity()
+        if entity is None:
+            raise BattleSessionError("Attack target no longer exists.")
         if target_mode == "grapple":
             grapple = self.state.grapples.get(grapple_id or "") or self._preferred_grapple_for_target(entity.instance_id)
             if grapple is None or grapple.target_id != entity.instance_id:
-                raise BattleSessionError("Selected entity has no targetable Grapple.")
+                raise BattleSessionError("Attack target has no targetable Grapple.")
             dealt, lines = self._damage_grapple(grapple, max(0, int(damage)), source="Manual attack")
             for line in lines:
                 self._add_log(line)
@@ -5266,17 +5269,51 @@ class BattleSession:
         self._add_log(f"{entity.name} prepares (+1 draw bonus next turn, total: {entity.draw_bonus_next_turn})")
         self.autosave()
 
-    def strengthen_pc(self, x: int) -> None:
+    def _is_cleric_player(self, entity: EnemyInstance) -> bool:
+        profile = getattr(entity, "character_profile", {}) or {}
+        class_name = str(profile.get("className") or "").strip().lower()
+        deck_id = str(getattr(entity, "core_deck_id", "") or "").strip().lower()
+        return class_name == "cleric" or "cleric" in deck_id
+
+    def _strengthen_range_for(self, actor: EnemyInstance) -> int:
+        return 6 if self._is_cleric_player(actor) else 1
+
+    def _require_strengthen_target(self, actor: EnemyInstance, target_id: Optional[str]) -> EnemyInstance:
+        target = actor if not target_id else self.state.enemies.get(str(target_id))
+        if target is None:
+            raise BattleSessionError("Strengthen target no longer exists.")
+        if not self.is_player(target):
+            raise BattleSessionError("Strengthen can target only player characters.")
+        if self.is_down(target):
+            raise BattleSessionError("Down player characters cannot be strengthened.")
+        if target.instance_id == actor.instance_id:
+            return target
+        if actor.grid_x is None or actor.grid_y is None or target.grid_x is None or target.grid_y is None:
+            raise BattleSessionError("Both player characters must be on the map to target Strengthen.")
+        range_cells = self._strengthen_range_for(actor)
+        distance = self._grid_distance(int(actor.grid_x), int(actor.grid_y), int(target.grid_x), int(target.grid_y))
+        if distance > range_cells:
+            distance_ft = range_cells * 5
+            raise BattleSessionError(f"{target.name} is not within {distance_ft}ft of {actor.name}.")
+        return target
+
+    def strengthen_pc(self, x: int, target_id: Optional[str] = None) -> None:
         entity = self._require_selected_entity()
         if not self.is_player(entity):
             raise BattleSessionError("Strengthen is only available for player characters.")
+        target = self._require_strengthen_target(entity, target_id)
         x = max(1, int(x))
-        entity.toughness_current = entity.toughness_current + x
-        overflow = max(0, entity.toughness_current - entity.toughness_max)
+        target.toughness_current = target.toughness_current + x
+        overflow = max(0, target.toughness_current - target.toughness_max)
         self._charge_action(entity)
+        target_text = (
+            f"{entity.name} strengthened"
+            if target.instance_id == entity.instance_id
+            else f"{entity.name} strengthens {target.name}"
+        )
         self._add_log(
-            f"{entity.name} strengthened: +{x} toughness "
-            f"({entity.toughness_current}/{entity.toughness_max})"
+            f"{target_text}: +{x} toughness "
+            f"({target.toughness_current}/{target.toughness_max})"
             + (f", {overflow} temporary" if overflow else "")
         )
         self.autosave()

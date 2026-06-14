@@ -119,6 +119,7 @@ class DrawExactRequest(BaseModel):
 
 class ActionAmountRequest(BaseModel):
     x: int = Field(default=1, ge=1)
+    targetId: Optional[str] = None
 
 
 class HelpRequest(BaseModel):
@@ -152,6 +153,7 @@ class AttackRequest(BaseModel):
     poison: bool = False
     slow: bool = False
     paralyze: bool = False
+    targetId: Optional[str] = None
     targetMode: Literal["creature", "grapple"] = "creature"
     grappleId: str | None = None
 
@@ -639,7 +641,7 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
 
     @api_app.post("/api/battle/sessions/{sid}/action/strengthen")
     def strengthen_pc(sid: str, request: ActionAmountRequest):
-        return run_mutation(sid, lambda session: session.strengthen_pc(request.x))
+        return run_mutation(sid, lambda session: session.strengthen_pc(request.x, target_id=request.targetId))
 
     @api_app.post("/api/battle/sessions/{sid}/action/guard")
     def guard_pc(sid: str, request: ActionAmountRequest):
@@ -729,6 +731,7 @@ def register_battle_api(api_app, context: BattleSessionContext) -> None:
                 add_poison=request.poison,
                 add_slow=request.slow,
                 add_paralyze=request.paralyze,
+                target_id=request.targetId,
                 target_mode=request.targetMode,
                 grapple_id=request.grappleId,
             ),

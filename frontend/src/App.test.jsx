@@ -2438,6 +2438,82 @@ describe("App", () => {
     });
   });
 
+  it("opens a grapple attack from a map target without changing selection", async () => {
+    const user = userEvent.setup();
+    const grapple = {
+      id: "grapple-1",
+      grapplerId: "enemy-2",
+      targetId: "enemy-1",
+      grapplerName: "Wolf 1",
+      targetName: "Goblin 1",
+      toughnessCurrent: 5,
+      toughnessMax: 8,
+      createdOrder: 1,
+      label: "Grapple T 5/8",
+    };
+    const goblin = buildEnemy({
+      instance_id: "enemy-1",
+      name: "Goblin 1",
+      grid_x: 4,
+      grid_y: 3,
+      toughness_current: 10,
+      toughness_max: 10,
+      grappled_by: [grapple],
+      grappling: [],
+      statuses: { grappled: { stacks: 1 } },
+      status_text: "grappled(1)",
+    });
+    const wolf = buildEnemy({
+      instance_id: "enemy-2",
+      template_id: "wolf",
+      name: "Wolf 1",
+      grid_x: 5,
+      grid_y: 3,
+      toughness_current: 8,
+      toughness_max: 8,
+      grappled_by: [],
+      grappling: [grapple],
+    });
+    let postedAttack = null;
+
+    renderWithSnapshot(buildSnapshot({
+      selectedId: "enemy-2",
+      order: ["enemy-1", "enemy-2"],
+      enemies: [goblin, wolf],
+      grapples: [grapple],
+    }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/attack" && requestOptions?.method === "POST") {
+          postedAttack = JSON.parse(requestOptions.body);
+          return jsonResponse(buildSnapshot({
+            selectedId: "enemy-2",
+            order: ["enemy-1", "enemy-2"],
+            enemies: [goblin, wolf],
+            grapples: [grapple],
+          }));
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Goblin 1");
+    await findMapToken("Wolf 1");
+    pointerClickMapCell(4.5, 3, 79);
+
+    expect(await screen.findByText("Attack Grapple T 5/8 on Goblin 1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Apply attack" }));
+
+    await waitFor(() => {
+      expect(postedAttack).toMatchObject({
+        damage: 1,
+        targetId: "enemy-1",
+        targetMode: "grapple",
+        grappleId: "grapple-1",
+      });
+    });
+    expect(screen.getByText("Selected: Wolf 1")).toBeInTheDocument();
+  });
+
   it("posts quick attack from the action bar and shows player wounds", async () => {
     const user = userEvent.setup();
     const attacker = buildEnemy({
@@ -3064,6 +3140,79 @@ describe("App", () => {
     expect(guardBody).toEqual({ x: 3 });
     expect(await screen.findByText("1/2 acties")).toBeInTheDocument();
     expect(screen.getByText("Mira guards: +3 guard.")).toBeInTheDocument();
+  });
+
+  it("targets Strengthen from the map without changing the actor selection", async () => {
+    const user = userEvent.setup();
+    const wizard = buildEnemy({
+      instance_id: "wizard",
+      template_id: "player",
+      name: "Wizard",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 0,
+      grid_y: 0,
+      toughness_current: 4,
+      toughness_max: 4,
+      power_base: 3,
+      actions_used: 0,
+    });
+    const fighter = buildEnemy({
+      instance_id: "fighter",
+      template_id: "player",
+      name: "Fighter",
+      image_url: "/images/anonymous.png",
+      is_player: true,
+      grid_x: 1,
+      grid_y: 0,
+      toughness_current: 3,
+      toughness_max: 5,
+      power_base: 1,
+      actions_used: 0,
+    });
+    const baseSnapshot = buildSnapshot({
+      selectedId: "wizard",
+      activeTurnId: "wizard",
+      turnInProgress: true,
+      encounterStarted: true,
+      order: ["wizard", "fighter"],
+      enemies: [wizard, fighter],
+    });
+    const strengthenBodies = [];
+
+    renderWithSnapshot(baseSnapshot, {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/action/strengthen" && requestOptions?.method === "POST") {
+          strengthenBodies.push(JSON.parse(requestOptions.body));
+          return jsonResponse(buildSnapshot({
+            ...baseSnapshot,
+            enemies: [
+              { ...wizard, actions_used: 1 },
+              { ...fighter, toughness_current: 5 },
+            ],
+          }));
+        }
+        return undefined;
+      },
+    });
+
+    await findMapToken("Wizard");
+    await user.click(screen.getByRole("button", { name: "Strengthen" }));
+
+    const viewport = getMapViewport();
+    await waitFor(() => expect(viewport.dataset.actionTargetMode).toBe("strengthen"));
+    expect(viewport.dataset.actionTargetIds.split(",")).toEqual(expect.arrayContaining(["wizard", "fighter"]));
+
+    pointerClickMapCell(1, 0, 77);
+
+    const modal = (await screen.findByText("Strengthen Fighter")).closest(".modal-shell");
+    expect(within(modal).getByText(/Actor: Wizard/)).toBeInTheDocument();
+    await user.click(within(modal).getByRole("button", { name: "2" }));
+
+    await waitFor(() => {
+      expect(strengthenBodies).toEqual([{ x: 2, targetId: "fighter" }]);
+    });
+    expect(screen.getByText("Selected: Wizard")).toBeInTheDocument();
   });
 
   it("posts Hitdraw and shows success/fate/fail without energy results", async () => {
