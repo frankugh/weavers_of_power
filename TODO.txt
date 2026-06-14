@@ -1,19 +1,14 @@
 
 Protocol voor AI:  Je mag hier een todo weghalen als opgepakt, maar zet hem dan wel helemaal onderaan dit bestand onderop bij de voltooide taken
 
+
+- De search room knop was niet te vinden ook al zat ik buiten combat. Miss omdat er enemies zichtbaar waren?
+
 ----
 
 TODO:
 
-
-
------
-
 Equipment, loot, show unit:
-
-Als GM modus aan staat wil ik de optie hebben om stats en condities te wijzigen / om naam en plaatje te wijzigen / deck samenstelling te wijzigen. Hoe zou jij dit doen qua UX? 
-
-11) Ik kan de naam en stats van PC niet wijzigen na aanmaken. (Miss goed voor show unit scherm?)
 
 Hoe gaan we weapons/armor/gear/loot inventory bijhouden? 
 (loot iets bij show unit? En stats? En hoe met auto attacks en weapon modifiers?)
@@ -265,3 +260,9 @@ en zoals we al hebben het dungeon scherm edit en play modus
 - hitdraw bestaat niet meer, deze knop moet weg uit action bar
 
 - Character creation scherm past niet op scherm
+
+f Als GM modus aan staat wil ik de optie hebben om stats en condities te wijzigen / om naam en plaatje te wijzigen / deck samenstelling te wijzigen. Hoe zou jij dit doen qua UX? 
+
+- Gangup van Goblins in combat sim fixed
+
+- De secret door met DC 0 vond ik niet toen ik 0 successen had, maar die zou je moeten auto finden als je zoekt. 

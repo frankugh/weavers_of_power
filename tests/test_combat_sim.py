@@ -848,6 +848,113 @@ class CombatSimTests(unittest.TestCase):
         self.assertEqual(result["winner"], "draw")
         self.assertEqual(result["rounds"], 2)
 
+    def test_adjacent_ally_conditional_triggers_when_ally_alive_no_grid(self) -> None:
+        # Gang Up: "Attack 3. If an ally is adjacent to the target, Attack 4 instead."
+        # In the sim there is no grid, so adjacency falls back to "any alive ally on same team".
+        gang_up_card = Card(
+            id="gang_up",
+            title="Gang Up",
+            effects=(
+                Effect(type="attack", amount=3),
+                Effect(type="conditional_attack", amount=4, modifiers=("replace_attack", "if_target_adjacent_ally", "condition_any")),
+            ),
+        )
+        templates = {
+            "attacker": make_template("attacker", "Attacker", initiative=10, cards=(gang_up_card,)),
+            "ally": make_template("ally", "Ally", initiative=5, cards=(Card(id="wait", title="Wait", effects=(Effect(type="guard", amount=1),)),)),
+            "target": make_template("target", "Target", toughness=10, power=0),
+        }
+
+        result = simulate_combat_once(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[{"templateId": "attacker", "count": 1}, {"templateId": "ally", "count": 1}],
+            team_b=[{"templateId": "target", "count": 1}],
+            seed=1,
+            max_rounds=1,
+        )
+
+        gang_up_action = next(
+            action for turn in result["timeline"] for action in turn["actions"] if action.get("cardId") == "gang_up"
+        )
+        self.assertEqual(gang_up_action["baseDamage"], 3)
+        self.assertEqual(gang_up_action["selectedDamage"], 4, "conditional should trigger: ally present on same team")
+        self.assertEqual(gang_up_action["damage"], 4)
+        log_text = " ".join(gang_up_action["log"])
+        self.assertIn("conditional attack clause", log_text)
+
+    def test_adjacent_ally_conditional_does_not_trigger_in_solo_attack(self) -> None:
+        # Same Gang Up card but attacker is alone: no ally → base damage 3.
+        gang_up_card = Card(
+            id="gang_up_solo",
+            title="Gang Up Solo",
+            effects=(
+                Effect(type="attack", amount=3),
+                Effect(type="conditional_attack", amount=4, modifiers=("replace_attack", "if_target_adjacent_ally", "condition_any")),
+            ),
+        )
+        templates = {
+            "attacker": make_template("attacker", "Attacker", initiative=10, cards=(gang_up_card,)),
+            "target": make_template("target", "Target", toughness=10, power=0),
+        }
+
+        result = simulate_combat_once(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[{"templateId": "attacker", "count": 1}],
+            team_b=[{"templateId": "target", "count": 1}],
+            seed=1,
+            max_rounds=1,
+        )
+
+        action = next(
+            action for turn in result["timeline"] for action in turn["actions"] if action.get("cardId") == "gang_up_solo"
+        )
+        self.assertEqual(action["baseDamage"], 3)
+        self.assertEqual(action["selectedDamage"], 3, "conditional should not trigger: no ally present")
+        log_text = " ".join(action["log"])
+        self.assertIn("did not trigger", log_text)
+
+    def test_conditional_attack_not_triggered_log_line_is_present(self) -> None:
+        # When a conditional attack does NOT trigger, the log should explain why.
+        templates = {
+            "grappler": make_template(
+                "grappler",
+                "Grappler",
+                initiative=10,
+                cards=(
+                    Card(
+                        id="dirty_stab",
+                        title="Dirty Stab",
+                        effects=(
+                            Effect(type="attack", amount=3),
+                            Effect(type="conditional_attack", amount=4, modifiers=("replace_attack", "if_target_grappled", "condition_any")),
+                        ),
+                    ),
+                ),
+            ),
+            "target": make_template("target", "Target", toughness=10, power=0),
+        }
+
+        result = simulate_combat_once(
+            templates=templates,
+            decks={},
+            card_index=card_index(templates),
+            team_a=[{"templateId": "grappler", "count": 1}],
+            team_b=[{"templateId": "target", "count": 1}],
+            seed=1,
+            max_rounds=1,
+        )
+
+        action = next(
+            action for turn in result["timeline"] for action in turn["actions"] if action.get("cardId") == "dirty_stab"
+        )
+        self.assertEqual(action["selectedDamage"], 3, "target is not grappled so conditional should not trigger")
+        log_text = " ".join(action["log"])
+        self.assertIn("did not trigger", log_text)
+
 
 if __name__ == "__main__":
     unittest.main()

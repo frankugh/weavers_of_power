@@ -2827,7 +2827,7 @@ class BattleSession:
         outcome = "nothing"
         edge_keys: list[str] = []
 
-        if score > 0 and candidates:
+        if candidates:
             discovered_edges = [
                 target["edge_key"]
                 for target in candidates
@@ -4685,6 +4685,12 @@ class BattleSession:
         self.pending_opportunity = None
         self.turn_skip_notice = []
         self.round = 1
+        pc_id = next(
+            (iid for iid in self.order if self.is_player(self.state.enemies[iid])),
+            None,
+        )
+        if pc_id:
+            self.selected_id = pc_id
         if self.dungeon:
             self.dungeon.pending_encounter_room_ids.clear()
         if active_scenario_map_node_id:

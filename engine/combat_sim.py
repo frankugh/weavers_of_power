@@ -818,9 +818,15 @@ def _apply_attack_effect(
             f"G {log.guard_before}->{log.guard_after}, AR {log.armor_before}->{log.armor_after}."
         ),
     ]
+    has_conditional = any(
+        e.type == "conditional_attack" and "replace_attack" in e.modifiers
+        for e in card.effects
+    )
     if selected_damage != base_damage:
         lines.insert(1, f"{target.entity.name} meets a conditional attack clause; damage changes from {base_damage} to {selected_damage}.")
-    insert_at = 1 + (1 if selected_damage != base_damage else 0)
+    elif has_conditional:
+        lines.insert(1, f"{attacker.entity.name}'s conditional attack did not trigger (condition not met); using base damage {base_damage}.")
+    insert_at = 1 + (1 if selected_damage != base_damage or has_conditional else 0)
     if prone_adjustment > 0:
         lines.insert(insert_at, f"{target.entity.name} is Prone; melee damage increases by {prone_adjustment} to {damage_before_reduction}.")
         insert_at += 1
@@ -897,7 +903,13 @@ def _target_matches_conditional_attack(state: SimState, attacker: SimUnit, targe
 
 def _target_has_adjacent_ally(state: SimState, attacker: SimUnit, target: EnemyInstance) -> bool:
     if getattr(target, "grid_x", None) is None or getattr(target, "grid_y", None) is None:
-        return False
+        # No grid in sim: assume adjacency when any other alive ally exists on the attacker's team.
+        return any(
+            candidate.team == attacker.team
+            and not _is_down(candidate.entity)
+            and candidate.entity.instance_id != attacker.entity.instance_id
+            for candidate in state.units
+        )
     for candidate in state.units:
         if candidate.entity.instance_id in {attacker.entity.instance_id, target.instance_id}:
             continue

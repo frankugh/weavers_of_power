@@ -5135,6 +5135,16 @@ button.draw-card:hover {
   color: var(--text);
 }
 
+.combat-unit-stats .stat-delta-down {
+  border-color: rgba(220, 80, 80, 0.45);
+  color: #e57373;
+}
+
+.combat-unit-stats .stat-delta-up {
+  border-color: rgba(80, 180, 100, 0.45);
+  color: #81c784;
+}
+
 .combat-unit-draw span {
   border-color: rgba(98, 201, 210, 0.24);
   color: var(--active-text);

@@ -3896,6 +3896,26 @@ class WallEdgeDoorTests(unittest.TestCase):
         self.assertEqual((player.grid_x, player.grid_y), (1, 0))
         self.assertEqual((blocker.grid_x, blocker.grid_y), (2, 0))
 
+    def test_room_search_dc0_auto_discovers_with_zero_successes(self) -> None:
+        session = self._make_dungeon("secret-dc0", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("secret_door", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        session.dungeon.walls["0,0,e"].secret_dc = 0
+
+        session.add_player()
+        player = session.state.enemies[session.selected_id]
+        player.grid_x, player.grid_y = 0, 0
+        player.room_id = session._room_id_for_position(0, 0)
+        player.deck_state.hand = []
+        player.deck_state.discard_pile = []
+        player.deck_state.draw_pile = ["hf_void_fail", "hf_void_fail", "hf_void_fail"]
+
+        session.start_room_search()
+        result = session.resolve_room_search(use_willpower=False)
+
+        self.assertEqual(result["searchResolved"]["outcome"], "discovered", "DC 0 should auto-discover on 0 successes")
+        self.assertTrue(session.dungeon.walls["0,0,e"].secret_discovered)
+
     def test_physical_room_search_waits_for_manual_successes(self) -> None:
         session = self._make_dungeon("physical-search", [[0, 0], [1, 0]])
         session.edit_dungeon_walls("secret_door", [{"x": 0, "y": 0, "side": "e"}])

@@ -1747,6 +1747,13 @@ function App() {
       !roomAlreadySearched &&
       !pendingSearch
   );
+  const searchBlockReason = !isPlayerSelected || selectedIsDown || !dungeon ? null
+    : roomAlreadySearched ? null
+    : pendingSearch ? "A search is already in progress."
+    : combatIsRunning ? "Search is only available outside combat."
+    : pendingOpportunity ? "Resolve the pending opportunity attack first."
+    : pendingEncounterRoomIds.length > 0 ? "Resolve the pending encounter first."
+    : null;
 
   const adjacentSuspects = useMemo(() => {
     if (!canUseInvestigateAction) return [];
@@ -4585,6 +4592,16 @@ function App() {
                     type="button"
                     onClick={() => { setActionMenuOpen(false); handleStartSearch(); }}
                     disabled={busy}
+                  >
+                    Search Room
+                  </button>
+                )}
+                {!canSearch && searchBlockReason && (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled
+                    title={searchBlockReason}
                   >
                     Search Room
                   </button>
@@ -8801,11 +8818,13 @@ function CombatSimDetails({ result, mode, turnIndex, currentTurn, visibleUnits, 
           title={isTurnMode ? "Team A" : "Final Team A"}
           units={(visibleUnits || []).filter((unit) => unit.team === "A")}
           activeActorId={currentTurn?.actorId}
+          beforeUnits={currentTurn?.beforeUnits}
         />
         <CombatSimUnitTable
           title={isTurnMode ? "Team B" : "Final Team B"}
           units={(visibleUnits || []).filter((unit) => unit.team === "B")}
           activeActorId={currentTurn?.actorId}
+          beforeUnits={currentTurn?.beforeUnits}
         />
       </div>
 
@@ -8816,11 +8835,25 @@ function CombatSimDetails({ result, mode, turnIndex, currentTurn, visibleUnits, 
   );
 }
 
-function CombatSimUnitTable({ title, units, activeActorId = null }) {
+function StatSpan({ label, current, max, before }) {
+  const delta = before != null ? current - before : 0;
+  const cls = delta < 0 ? " stat-delta-down" : delta > 0 ? " stat-delta-up" : "";
+  const deltaText = delta !== 0 ? (delta > 0 ? ` +${delta}` : ` ${delta}`) : "";
+  return (
+    <span className={cls.trim()}>
+      {label} {current}/{max}{deltaText}
+    </span>
+  );
+}
+
+function CombatSimUnitTable({ title, units, activeActorId = null, beforeUnits = null }) {
+  const beforeById = beforeUnits ? new Map(beforeUnits.map((u) => [u.id, u])) : null;
   return (
     <Panel title={title}>
       <div className="combat-unit-list">
-        {units.map((unit) => (
+        {units.map((unit) => {
+          const before = beforeById?.get(unit.id);
+          return (
           <div
             className={`combat-unit-row ${unit.isDown ? "combat-unit-down" : ""} ${activeActorId === unit.id ? "combat-unit-active" : ""}`.trim()}
             key={unit.id}
@@ -8836,10 +8869,10 @@ function CombatSimUnitTable({ title, units, activeActorId = null }) {
               </div>
             </div>
             <div className="combat-unit-stats">
-              <span>T {unit.toughnessCurrent}/{unit.toughnessMax}</span>
-              <span>AR {unit.armorCurrent}/{unit.armorMax}</span>
-              <span>MAR {unit.magicArmorCurrent}/{unit.magicArmorMax}</span>
-              <span>G {unit.guardCurrent}/{unit.guardBase}</span>
+              <StatSpan label="T" current={unit.toughnessCurrent} max={unit.toughnessMax} before={before?.toughnessCurrent} />
+              <StatSpan label="AR" current={unit.armorCurrent} max={unit.armorMax} before={before?.armorCurrent} />
+              <StatSpan label="MAR" current={unit.magicArmorCurrent} max={unit.magicArmorMax} before={before?.magicArmorCurrent} />
+              <StatSpan label="G" current={unit.guardCurrent} max={unit.guardBase} before={before?.guardCurrent} />
               <span>Draw {unit.draw}</span>
               <span>{unit.initiativeText}</span>
             </div>
@@ -8868,7 +8901,8 @@ function CombatSimUnitTable({ title, units, activeActorId = null }) {
             ) : null}
             <ProgressBar label="Toughness" value={percent(unit.toughnessCurrent, unit.toughnessMax)} compact />
           </div>
-        ))}
+          );
+        })}
         {!units.length ? <div className="subtle-copy">No units.</div> : null}
       </div>
     </Panel>
