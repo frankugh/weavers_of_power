@@ -521,16 +521,33 @@ def _parse_action_effects(body: str) -> tuple[tuple[Effect, ...], tuple[str, ...
 
 def _iter_conditional_attack_matches(body: str) -> list[dict[str, str]]:
     matches: list[dict[str, str]] = []
-    pattern = re.compile(
-        r"\bif\s+(?:the\s+)?target\s+(?:(?:is|has|is affected by)\s+)?(?:already\s+)?"
-        r"(?P<conditions>.+?)\s*,?\s+"
-        r"(?:deal\s+)?(?:attack\s+(?P<attack_amount>\d+)|(?P<damage_amount>\d+)\s*(?:dmg|damage))\s+instead\b",
-        flags=re.I,
+    patterns = (
+        re.compile(
+            r"\bif\s+(?:the\s+)?target\s+(?:(?:is|has|is affected by)\s+)?(?:already\s+)?"
+            r"(?P<conditions>.+?)\s*,?\s+"
+            r"(?:deal\s+)?(?:attack\s+(?P<attack_amount>\d+)|(?P<damage_amount>\d+)\s*(?:dmg|damage))\s+instead\b",
+            flags=re.I,
+        ),
+        re.compile(
+            r"\bif\s+"
+            r"(?P<conditions>"
+            r"(?:(?:an?\s+|another\s+)?(?:ally|allied|friendly|friend|[a-z][\w-]*)\s+(?:is\s+)?adjacent(?:\s+to\s+(?:the\s+)?target)?)"
+            r"|(?:(?:the\s+)?target\s+has\s+(?:an?\s+)?adjacent\s+(?:ally|allied|friendly|friend|[a-z][\w-]*))"
+            r")"
+            r"\s*,?\s+(?:deal\s+)?(?:attack\s+(?P<attack_amount>\d+)|(?P<damage_amount>\d+)\s*(?:dmg|damage))\s+instead\b",
+            flags=re.I,
+        ),
     )
-    for match in pattern.finditer(body):
-        amount = match.group("attack_amount") or match.group("damage_amount")
-        if amount:
-            matches.append({"text": match.group(0), "conditions": match.group("conditions"), "amount": amount})
+    seen: set[str] = set()
+    for pattern in patterns:
+        for match in pattern.finditer(body):
+            text = match.group(0)
+            if text in seen:
+                continue
+            amount = match.group("attack_amount") or match.group("damage_amount")
+            if amount:
+                matches.append({"text": text, "conditions": match.group("conditions"), "amount": amount})
+                seen.add(text)
     return matches
 
 
@@ -547,7 +564,7 @@ def _parse_conditional_attack_conditions(condition_text: str) -> list[str]:
     modifiers: list[str] = []
     for piece in pieces:
         normalized = re.sub(r"\balready\b", "", piece, flags=re.I)
-        normalized = re.sub(r"\b(?:is|has|the|target|a|an)\b", "", normalized, flags=re.I)
+        normalized = re.sub(r"\b(?:another|is|has|the|target|a|an|to)\b", "", normalized, flags=re.I)
         normalized = re.sub(r"\s+", " ", normalized).strip().lower()
         condition = _condition_modifier_for_text(normalized)
         if condition is None:
@@ -558,6 +575,8 @@ def _parse_conditional_attack_conditions(condition_text: str) -> list[str]:
 
 def _condition_modifier_for_text(text: str) -> str | None:
     compact = text.strip().lower()
+    if "adjacent" in compact and compact != "adjacent":
+        return "if_target_adjacent_ally"
     if re.fullmatch(r"grappled?|in a grapple", compact):
         return "if_target_grappled"
     if compact == "prone":

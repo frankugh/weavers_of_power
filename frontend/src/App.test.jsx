@@ -881,6 +881,12 @@ describe("App", () => {
     await user.type(within(modal).getByLabelText("T"), "12");
     await user.type(within(modal).getByLabelText(/Alertness/), "8");
     await user.clear(within(modal).getByLabelText("A1 action text"));
+    await user.type(
+      within(modal).getByLabelText("A1 action text"),
+      "Pack - Attack 3. If an ally is adjacent to the target, Attack 6 instead.",
+    );
+    expect(within(modal).getByText(/If target Has Adjacent Ally: Attack 6 instead/)).toBeInTheDocument();
+    await user.clear(within(modal).getByLabelText("A1 action text"));
     await user.type(within(modal).getByLabelText("A1 action text"), "Mega - Attack 9 sunder 2, overwhelm, shatter");
     expect(within(modal).getByText("Attack 9 (Sunder 2, Overwhelm, Shatter)")).toBeInTheDocument();
     await user.click(within(modal).getByRole("button", { name: "Done" }));

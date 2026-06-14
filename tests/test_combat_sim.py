@@ -116,6 +116,10 @@ class CombatSimTests(unittest.TestCase):
             action_result="A2",
             action_text="Venom Bite - Attack 3. If the target is poisoned, deal Attack 7 instead.",
         )
+        pack = parse_creature_action(
+            action_result="A4",
+            action_text="Pack Strike - Attack 3. If an ally is adjacent to the target, Attack 6 instead.",
+        )
         unknown = parse_creature_action(
             action_result="A3",
             action_text="Vengeful Strike - Attack 3. If the target is bloodied, Attack 7 instead.",
@@ -131,6 +135,8 @@ class CombatSimTests(unittest.TestCase):
             ],
         )
         self.assertEqual(poison["effects"][1]["modifiers"], ["replace_attack", "if_target_poisoned", "condition_any"])
+        self.assertEqual(pack["coverageStatus"], "full")
+        self.assertEqual(pack["effects"][1]["modifiers"], ["replace_attack", "if_target_adjacent_ally", "condition_any"])
         self.assertFalse(any(effect["type"] == "conditional_attack" for effect in unknown["effects"]))
         self.assertEqual(unknown["coverageStatus"], "warning")
 

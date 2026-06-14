@@ -6997,10 +6997,10 @@ function parseCombatActionPreview(result, actionText, sourceAction = {}) {
     effects.push({ type: "attack", amount: Number(attack[1]), modifiers: parseCombatAttackModifiers(body) });
     simplified = `${simplified.slice(0, attack.index)}${simplified.slice((attack.index || 0) + attack[0].length)}`;
   }
-  for (const match of body.matchAll(/\bif\s+(?:the\s+)?target\s+(?:(?:is|has|is affected by)\s+)?(?:already\s+)?(.+?)\s*,?\s+(?:deal\s+)?(?:attack\s+(\d+)|(\d+)\s*(?:dmg|damage))\s+instead\b/gi)) {
-    const conditionText = match[1] || "";
+  for (const match of combatConditionalAttackMatches(body)) {
+    const conditionText = match.conditionText || "";
     const conditionModifiers = parseCombatConditionalAttackConditions(conditionText);
-    const amount = Number(match[2] || match[3] || 0);
+    const amount = Number(match.amount || 0);
     if (conditionModifiers.length && amount > 0) {
       effects.push({
         type: "conditional_attack",
@@ -7011,7 +7011,7 @@ function parseCombatActionPreview(result, actionText, sourceAction = {}) {
           conditionTextUsesAll(conditionText) ? "condition_all" : "condition_any",
         ],
       });
-      simplified = simplified.replace(match[0], "");
+      simplified = simplified.replace(match.text, "");
     }
   }
   for (const match of body.matchAll(/\bcharged?\s+(\d+)\b/gi)) {
@@ -7100,6 +7100,24 @@ function parseCombatActionPreview(result, actionText, sourceAction = {}) {
     coverage: { status: coverageStatus, label: combatCoverageLabel(coverageStatus), notes: manualNotes },
     coverageStatus,
   };
+}
+
+function combatConditionalAttackMatches(body) {
+  const matches = [];
+  const seen = new Set();
+  const patterns = [
+    /\bif\s+(?:the\s+)?target\s+(?:(?:is|has|is affected by)\s+)?(?:already\s+)?(.+?)\s*,?\s+(?:deal\s+)?(?:attack\s+(\d+)|(\d+)\s*(?:dmg|damage))\s+instead\b/gi,
+    /\bif\s+((?:(?:an?\s+|another\s+)?(?:ally|allied|friendly|friend|[a-z][\w-]*)\s+(?:is\s+)?adjacent(?:\s+to\s+(?:the\s+)?target)?)|(?:(?:the\s+)?target\s+has\s+(?:an?\s+)?adjacent\s+(?:ally|allied|friendly|friend|[a-z][\w-]*)))\s*,?\s+(?:deal\s+)?(?:attack\s+(\d+)|(\d+)\s*(?:dmg|damage))\s+instead\b/gi,
+  ];
+  patterns.forEach((pattern) => {
+    for (const match of body.matchAll(pattern)) {
+      if (seen.has(match[0])) continue;
+      const amount = match[2] || match[3] || 0;
+      matches.push({ text: match[0], conditionText: match[1] || "", amount });
+      seen.add(match[0]);
+    }
+  });
+  return matches;
 }
 
 function parseCombatAttackModifiers(body) {
@@ -7445,6 +7463,7 @@ function formatCombatEffect(effect) {
 }
 
 function formatCombatConditionModifier(modifier) {
+  if (modifier === "if_target_adjacent_ally") return "Has Adjacent Ally";
   return titleCaseFromSnake(String(modifier).replace(/^if_target_/, ""));
 }
 
@@ -7458,7 +7477,7 @@ function parseCombatConditionalAttackConditions(conditionText) {
     .map((piece) =>
       piece
         .replace(/\balready\b/gi, "")
-        .replace(/\b(?:is|has|the|target|a|an)\b/gi, "")
+        .replace(/\b(?:another|is|has|the|target|a|an|to)\b/gi, "")
         .replace(/\s+/g, " ")
         .trim()
         .toLowerCase(),
@@ -7474,6 +7493,7 @@ function parseCombatConditionalAttackConditions(conditionText) {
 }
 
 function combatConditionModifierForText(text) {
+  if (text.includes("adjacent") && text !== "adjacent") return "if_target_adjacent_ally";
   if (/^(grappled?|in a grapple)$/.test(text)) return "if_target_grappled";
   if (text === "prone") return "if_target_prone";
   if (["poisoned", "poison"].includes(text)) return "if_target_poisoned";

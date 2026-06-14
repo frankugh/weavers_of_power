@@ -1723,6 +1723,56 @@ class BattleSessionTests(unittest.TestCase):
         self.assertIn("Attack 7", result["quickAttackNotice"])
         self.assertIn("conditional attack", session.combat_log[1])
 
+    def test_quick_attack_supports_adjacent_ally_condition_on_map(self) -> None:
+        session = self.context.create_session("quick-pack-condition")
+        session.add_enemy_from_template("C_WOLF")
+        attacker_id = session.selected_id
+        attacker = session.state.enemies[attacker_id]
+        session.add_enemy_from_template("C_WOLF")
+        ally_id = session.selected_id
+        ally = session.state.enemies[ally_id]
+        session.add_player(name="Mira", toughness=10, armor=0, magic_armor=0, power=0)
+        target_id = session.selected_id
+        target = session.state.enemies[target_id]
+        target.toughness_current = 10
+        target.toughness_max = 10
+        target.guard_current = 0
+        target.armor_current = 0
+        self.context.card_index["test_pack_strike"] = Card(
+            id="test_pack_strike",
+            title="Pack Strike",
+            effects=(
+                Effect(type="attack", amount=3),
+                Effect(
+                    type="conditional_attack",
+                    amount=6,
+                    modifiers=("replace_attack", "if_target_adjacent_ally", "condition_any"),
+                ),
+            ),
+        )
+        attacker.deck_state.hand = ["test_pack_strike"]
+        session.active_turn_id = attacker_id
+        session.turn_in_progress = True
+        session._set_position(attacker, 0, 0)
+        session._set_position(target, 1, 0)
+        session._set_position(ally, 4, 4)
+        session.select(target_id)
+
+        first = session.apply_quick_attack_from_active_draw()
+
+        self.assertEqual(target.toughness_current, 7)
+        self.assertIn("Attack 3", first["quickAttackNotice"])
+
+        attacker.quick_attack_used = False
+        target.toughness_current = 10
+        session._set_position(ally, 1, 1)
+
+        second = session.apply_quick_attack_from_active_draw()
+
+        self.assertEqual(target.toughness_current, 4)
+        self.assertIn("Attack 6", second["quickAttackNotice"])
+        self.assertTrue(any("conditional attack" in entry for entry in session.combat_log))
+
     def test_quick_attack_applies_prone_melee_and_ranged_damage_adjustments(self) -> None:
         session = self.context.create_session("quick-prone-advantage")
         session.add_enemy_from_template("C_WOLF")

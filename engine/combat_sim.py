@@ -661,7 +661,7 @@ def _run_unit_turn(
                     if target_unit is None:
                         continue
                     base_damage = int(effect.amount)
-                    selected_damage = _conditional_attack_amount(state, card, target_unit.entity, base_damage)
+                    selected_damage = _conditional_attack_amount(state, unit, card, target_unit.entity, base_damage)
                     prone_adjustment = _prone_attack_damage_adjustment(target_unit.entity, effect.modifiers)
                     damage_before_reduction = max(0, selected_damage + prone_adjustment)
                     damage = _effective_attack_damage(state, entity, damage_before_reduction, target_is_grapple=False)
@@ -858,19 +858,19 @@ def _apply_attack_effect(
     }
 
 
-def _conditional_attack_amount(state: SimState, card: Card, target: EnemyInstance, base_damage: int) -> int:
+def _conditional_attack_amount(state: SimState, attacker: SimUnit, card: Card, target: EnemyInstance, base_damage: int) -> int:
     amount = int(base_damage)
     for effect in card.effects:
         if effect.type != "conditional_attack":
             continue
         if "replace_attack" not in effect.modifiers:
             continue
-        if _target_matches_conditional_attack(state, target, effect.modifiers):
+        if _target_matches_conditional_attack(state, attacker, target, effect.modifiers):
             amount = int(effect.amount)
     return amount
 
 
-def _target_matches_conditional_attack(state: SimState, target: EnemyInstance, modifiers: Iterable[str]) -> bool:
+def _target_matches_conditional_attack(state: SimState, attacker: SimUnit, target: EnemyInstance, modifiers: Iterable[str]) -> bool:
     modifier_set = set(modifiers or ())
     statuses = getattr(target, "statuses", {}) or {}
     checks: list[bool] = []
@@ -888,9 +888,27 @@ def _target_matches_conditional_attack(state: SimState, target: EnemyInstance, m
         checks.append(_status_present(statuses, "paralyzed", "paralysed", "paralyze", "paralyse"))
     if "if_target_stunned" in modifier_set:
         checks.append(_status_present(statuses, "stun", "stunned"))
+    if "if_target_adjacent_ally" in modifier_set:
+        checks.append(_target_has_adjacent_ally(state, attacker, target))
     if not checks:
         return False
     return all(checks) if "condition_all" in modifier_set else any(checks)
+
+
+def _target_has_adjacent_ally(state: SimState, attacker: SimUnit, target: EnemyInstance) -> bool:
+    if getattr(target, "grid_x", None) is None or getattr(target, "grid_y", None) is None:
+        return False
+    for candidate in state.units:
+        if candidate.entity.instance_id in {attacker.entity.instance_id, target.instance_id}:
+            continue
+        if candidate.team != attacker.team or _is_down(candidate.entity):
+            continue
+        if getattr(candidate.entity, "grid_x", None) is None or getattr(candidate.entity, "grid_y", None) is None:
+            continue
+        distance = max(abs(int(candidate.entity.grid_x) - int(target.grid_x)), abs(int(candidate.entity.grid_y) - int(target.grid_y)))
+        if distance == 1:
+            return True
+    return False
 
 
 def _status_present(statuses: dict, *keys: str) -> bool:
@@ -1614,6 +1632,8 @@ def _format_modifier(modifier: str) -> str:
 
 
 def _format_condition_modifier(modifier: str) -> str:
+    if modifier == "if_target_adjacent_ally":
+        return "has adjacent ally"
     return modifier.removeprefix("if_target_").replace("_", " ")
 
 

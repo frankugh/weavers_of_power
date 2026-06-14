@@ -5011,7 +5011,7 @@ class BattleSession:
                 target_name = f"Grapple on {attacker.name}"
                 target_id = grapple_target.id
             elif target is not None:
-                selected_damage = self._conditional_attack_amount_for_target(target, step.damage, step.conditional_attack_effects)
+                selected_damage = self._conditional_attack_amount_for_target(attacker, target, step.damage, step.conditional_attack_effects)
                 if selected_damage != step.damage:
                     self._add_log(
                         f"{target.name} meets a conditional attack clause; {attacker.name}'s attack damage changes "
@@ -6065,6 +6065,7 @@ class BattleSession:
 
     def _conditional_attack_amount_for_target(
         self,
+        attacker: EnemyInstance,
         target: EnemyInstance,
         base_damage: int,
         effects: tuple[Effect, ...],
@@ -6073,11 +6074,11 @@ class BattleSession:
         for effect in effects:
             if "replace_attack" not in effect.modifiers:
                 continue
-            if self._target_matches_conditional_attack(target, effect.modifiers):
+            if self._target_matches_conditional_attack(attacker, target, effect.modifiers):
                 amount = int(effect.amount)
         return amount
 
-    def _target_matches_conditional_attack(self, target: EnemyInstance, modifiers: tuple[str, ...]) -> bool:
+    def _target_matches_conditional_attack(self, attacker: EnemyInstance, target: EnemyInstance, modifiers: tuple[str, ...]) -> bool:
         modifier_set = set(modifiers or ())
         statuses = getattr(target, "statuses", {}) or {}
         checks: list[bool] = []
@@ -6095,9 +6096,34 @@ class BattleSession:
             checks.append(self._status_present(statuses, "paralyzed", "paralysed", "paralyze", "paralyse"))
         if "if_target_stunned" in modifier_set:
             checks.append(self._status_present(statuses, "stun", "stunned"))
+        if "if_target_adjacent_ally" in modifier_set:
+            checks.append(self._target_has_adjacent_ally(attacker, target))
         if not checks:
             return False
         return all(checks) if "condition_all" in modifier_set else any(checks)
+
+    def _target_has_adjacent_ally(self, attacker: EnemyInstance, target: EnemyInstance) -> bool:
+        for candidate in self.state.enemies.values():
+            if candidate.instance_id in {attacker.instance_id, target.instance_id}:
+                continue
+            if self.is_player(candidate) != self.is_player(attacker):
+                continue
+            if self.is_down(candidate) or not self._has_position(candidate) or not self._has_position(target):
+                continue
+            if self._entities_adjacent_for_condition(candidate, target):
+                return True
+        return False
+
+    def _entities_adjacent_for_condition(self, first: EnemyInstance, second: EnemyInstance) -> bool:
+        ax, ay = int(first.grid_x), int(first.grid_y)
+        bx, by = int(second.grid_x), int(second.grid_y)
+        dx = abs(ax - bx)
+        dy = abs(ay - by)
+        if max(dx, dy) != 1:
+            return False
+        if dx == 0 or dy == 0:
+            return not self._wall_blocks_orthogonal(ax, ay, bx, by)
+        return not self._diagonal_touches_any_wall(ax, ay, bx, by)
 
     @staticmethod
     def _status_present(statuses: dict, *keys: str) -> bool:
@@ -6195,6 +6221,8 @@ class BattleSession:
 
     @staticmethod
     def _format_condition_modifier(modifier: str) -> str:
+        if modifier == "if_target_adjacent_ally":
+            return "has adjacent ally"
         return modifier.removeprefix("if_target_").replace("_", " ")
 
     @staticmethod
