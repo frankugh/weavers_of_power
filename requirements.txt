@@ -2,4 +2,3 @@ nicegui
 fastapi
 python-multipart
 openpyxl>=3.1,<4
-ve
