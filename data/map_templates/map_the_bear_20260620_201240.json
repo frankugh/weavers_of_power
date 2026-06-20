@@ -3212,7 +3212,7 @@
       "title": "Info",
       "text": "A group of Goblins and a large Warg inhabit this room",
       "trigger": "auto",
-      "interactionRange": "same_room"
+      "interactionRange": "visible"
     },
     {
       "id": "info_8996f594",
@@ -3220,8 +3220,8 @@
       "y": 3,
       "title": "Info",
       "text": "A sinister voice commands two of his companions. The voice stems from a Goblin with clearly magical powers. A weaver of sorts.",
-      "trigger": "click",
-      "interactionRange": "same_room"
+      "trigger": "auto",
+      "interactionRange": "visible"
     }
   ],
   "search_check": {
@@ -3236,7 +3236,7 @@
   },
   "units": [
     {
-      "instance_id": "unit_45d145cd",
+      "instance_id": "unit_4602bda2",
       "template_id": "C_GOBLIN",
       "name": "Goblin 10",
       "image": "Changelings/Greenskins/C_GOBLIN.png",
@@ -3316,7 +3316,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_580cd599",
+      "instance_id": "unit_fdfcb623",
       "template_id": "C_GOBLIN",
       "name": "Goblin 11",
       "image": "Changelings/Greenskins/C_GOBLIN.png",
@@ -3396,7 +3396,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_5df5685d",
+      "instance_id": "unit_cb473ebf",
       "template_id": "C_GOBLIN",
       "name": "Goblin 12",
       "image": "Changelings/Greenskins/C_GOBLIN.png",
@@ -3476,7 +3476,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_6c08aaf6",
+      "instance_id": "unit_0f39df80",
       "template_id": "C_GOBLIN",
       "name": "Goblin 13",
       "image": "Changelings/Greenskins/C_GOBLIN.png",
@@ -3556,7 +3556,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_798af88a",
+      "instance_id": "unit_1098f0ba",
       "template_id": "C_GOBLIN",
       "name": "Goblin 14",
       "image": "Changelings/Greenskins/C_GOBLIN.png",
@@ -3636,7 +3636,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_5bdbf6b3",
+      "instance_id": "unit_7eff0685",
       "template_id": "C_GOBLIN_ARCHER",
       "name": "Goblin Archer 1",
       "image": "Changelings/Greenskins/C_GOBLIN_ARCHER.png",
@@ -3716,7 +3716,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_6b1e6f7f",
+      "instance_id": "unit_268f86a3",
       "template_id": "C_GOBLIN_ARCHER",
       "name": "Goblin Archer 2",
       "image": "Changelings/Greenskins/C_GOBLIN_ARCHER.png",
@@ -3796,7 +3796,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_a6985754",
+      "instance_id": "unit_21a23cdc",
       "template_id": "C_WORG",
       "name": "Worg 1",
       "image": "Changelings/Beasts_and_Predators/C_WORG.png",
@@ -3876,7 +3876,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_ee1ecf4d",
+      "instance_id": "unit_f01d422a",
       "template_id": "C_GOBLIN_HEXER",
       "name": "Goblin Hexer 1",
       "image": "Changelings/Greenskins/C_GOBLIN_HEXER.png",
@@ -3956,7 +3956,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_b51686ff",
+      "instance_id": "unit_8a923f08",
       "template_id": "C_HOBGOBLIN",
       "name": "Hobgoblin 1",
       "image": "Changelings/Greenskins/C_HOBGOBLIN.png",
@@ -4036,7 +4036,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_dabb6696",
+      "instance_id": "unit_4c669602",
       "template_id": "C_HOBGOBLIN",
       "name": "Hobgoblin 2",
       "image": "Changelings/Greenskins/C_HOBGOBLIN.png",
@@ -4116,7 +4116,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_dd84ff60",
+      "instance_id": "unit_a8fe575b",
       "template_id": "C_GOBLIN_HEXER",
       "name": "Goblin Hexer 2",
       "image": "Changelings/Greenskins/C_GOBLIN_HEXER.png",
@@ -4196,7 +4196,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_7c41c45f",
+      "instance_id": "unit_50f08443",
       "template_id": "C_GOBLIN",
       "name": "Goblin 15",
       "image": "Changelings/Greenskins/C_GOBLIN.png",
@@ -4276,7 +4276,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_b4dc7caa",
+      "instance_id": "unit_c8b096cc",
       "template_id": "TT_POSSESSED_GREAT_BEAR",
       "name": "Possessed Great Bear 1",
       "image": null,
@@ -4356,7 +4356,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_546d3fce",
+      "instance_id": "unit_afc55246",
       "template_id": "TRD_SKELETON",
       "name": "Skeleton 1",
       "image": "The_Restless_Dead/The_Restless_Dead/TRD_SKELETON.png",
@@ -4437,5 +4437,5 @@
     }
   ],
   "name": "map_the_bear",
-  "saved_at": "2026-06-20T20:12:40"
+  "saved_at": "2026-06-20T21:36:10"
 }

@@ -354,7 +354,7 @@ class InfoMarkerRequest(BaseModel):
     title: str = "Info"
     text: str = ""
     trigger: Literal["auto", "click", "check"] = "click"
-    interactionRange: Literal["same_room", "adjacent"] = "same_room"
+    interactionRange: Literal["same_room", "adjacent", "visible"] = "same_room"
     check: Optional[dict[str, Any]] = None
 
 

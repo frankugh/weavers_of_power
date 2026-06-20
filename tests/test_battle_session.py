@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from battle_session import BattleSession, BattleSessionContext
+from battle_session import BattleSession, BattleSessionContext, BattleSessionError
 from engine.combat import WOUND_CARD_ID, apply_attack
 from engine.character_builder import build_character_profile
 from engine.loader import load_decks, load_enemies
@@ -4068,6 +4068,41 @@ class WallEdgeDoorTests(unittest.TestCase):
         template = self.context.get_map_template(saved["id"])
         self.assertEqual(len(template["info_markers"]), 2)
         self.assertNotIn("info_marker_states", template)
+
+    def test_visible_range_info_marker_can_open_outside_same_room(self) -> None:
+        session = self._make_dungeon("visible-info-marker", [[0, 0], [1, 0]])
+        session.edit_dungeon_walls("wall", [{"x": 0, "y": 0, "side": "e"}])
+        session.analyze_dungeon()
+        marker_room = session._room_id_for_position(1, 0)
+        self.assertIsNotNone(marker_room)
+        session.dungeon.revealed_room_ids = [marker_room]
+        session.add_player(name="Mira")
+        player = session.state.enemies[session.selected_id]
+        session._set_position(player, 0, 0)
+
+        same_room = session.upsert_info_marker({
+            "x": 1,
+            "y": 0,
+            "title": "Far note",
+            "text": "This should need the same room.",
+            "trigger": "click",
+            "interactionRange": "same_room",
+        })["infoMarker"]["id"]
+        with self.assertRaisesRegex(BattleSessionError, "same room"):
+            session.open_info_marker(same_room)
+
+        visible = session.upsert_info_marker({
+            "x": 1,
+            "y": 0,
+            "title": "Visible note",
+            "text": "This can be reread while visible.",
+            "trigger": "click",
+            "interactionRange": "visible",
+        })["infoMarker"]["id"]
+        opened = session.open_info_marker(visible)
+
+        self.assertEqual(opened["flavourText"], "This can be reread while visible.")
+        self.assertTrue(session.dungeon.info_marker_states[visible]["opened"])
 
     # ------------------------------------------------------------------ persistence
 

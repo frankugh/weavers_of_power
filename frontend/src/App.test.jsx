@@ -6791,6 +6791,10 @@ describe("App", () => {
     const modalShell = screen.getByText("New info marker").closest(".modal-shell");
     await user.clear(within(modalShell).getByLabelText("Title"));
     await user.type(within(modalShell).getByLabelText("Title"), "Old mural");
+    expect(within(modalShell).getByLabelText("Range")).toHaveValue("same_room");
+    await user.selectOptions(within(modalShell).getByLabelText("Trigger"), "auto");
+    expect(within(modalShell).getByLabelText("Range")).toHaveValue("visible");
+    expect(within(modalShell).getByLabelText("Range")).toBeDisabled();
     await user.type(within(modalShell).getByLabelText("Flavour text"), "The mural shows a fallen sun.");
     await user.click(within(modalShell).getByRole("button", { name: "Save marker" }));
 
@@ -6800,8 +6804,8 @@ describe("App", () => {
       y: 0,
       title: "Old mural",
       text: "The mural shows a fallen sun.",
-      trigger: "click",
-      interactionRange: "same_room",
+      trigger: "auto",
+      interactionRange: "visible",
     }));
   });
 

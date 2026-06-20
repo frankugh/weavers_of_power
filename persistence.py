@@ -120,8 +120,10 @@ def _normalize_info_marker(raw: Any) -> Optional[Dict[str, Any]]:
     if trigger not in {"auto", "click", "check"}:
         trigger = "click"
     interaction_range = str(raw.get("interactionRange") or raw.get("interaction_range") or "same_room").strip()
-    if interaction_range not in {"same_room", "adjacent"}:
+    if interaction_range not in {"same_room", "adjacent", "visible"}:
         interaction_range = "same_room"
+    if trigger == "auto":
+        interaction_range = "visible"
     marker = {
         "id": marker_id,
         "x": x,

@@ -2262,8 +2262,10 @@ class BattleSession:
         if trigger not in {"auto", "click", "check"}:
             trigger = "click"
         interaction_range = str(raw.get("interactionRange") or raw.get("interaction_range") or "same_room").strip()
-        if interaction_range not in {"same_room", "adjacent"}:
+        if interaction_range not in {"same_room", "adjacent", "visible"}:
             interaction_range = "same_room"
+        if trigger == "auto":
+            interaction_range = "visible"
         marker = {
             "id": marker_id,
             "x": x,
@@ -2366,6 +2368,8 @@ class BattleSession:
             raise BattleSessionError("Selected player is not on the map.")
         if not self._info_marker_visible_to_players(marker):
             raise BattleSessionError("This info marker is not visible yet.")
+        if marker.get("interactionRange") == "visible":
+            return entity
         distance = max(abs(int(entity.grid_x) - int(marker.get("x"))), abs(int(entity.grid_y) - int(marker.get("y"))))
         if marker.get("interactionRange") == "adjacent":
             if distance > 1:

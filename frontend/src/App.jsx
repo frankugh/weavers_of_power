@@ -291,6 +291,9 @@ function normalizeCheckConfig(value) {
 
 function createInfoMarkerForm(marker = {}, cell = null) {
   const trigger = ["auto", "click", "check"].includes(marker.trigger) ? marker.trigger : "click";
+  const interactionRange = ["same_room", "adjacent", "visible"].includes(marker.interactionRange)
+    ? marker.interactionRange
+    : "same_room";
   return {
     id: marker.id || "",
     x: nonnegativeInt(marker.x ?? cell?.x ?? 0),
@@ -298,7 +301,7 @@ function createInfoMarkerForm(marker = {}, cell = null) {
     title: marker.title || "Info",
     text: marker.text || "",
     trigger,
-    interactionRange: marker.interactionRange === "adjacent" ? "adjacent" : "same_room",
+    interactionRange: trigger === "auto" ? "visible" : interactionRange,
     check: normalizeCheckConfig(marker.check),
   };
 }
@@ -2525,6 +2528,7 @@ function App() {
       ...infoMarkerForm,
       x: Number(infoMarkerForm.x),
       y: Number(infoMarkerForm.y),
+      interactionRange: infoMarkerForm.trigger === "auto" ? "visible" : infoMarkerForm.interactionRange,
       check: normalizeCheckConfig(infoMarkerForm.check),
     };
     if (!body.id) delete body.id;
@@ -7133,7 +7137,14 @@ function App() {
                 <span>Trigger</span>
                 <select
                   value={infoMarkerForm.trigger}
-                  onChange={(event) => setInfoMarkerForm((current) => ({ ...current, trigger: event.target.value }))}
+                  onChange={(event) => {
+                    const trigger = event.target.value;
+                    setInfoMarkerForm((current) => ({
+                      ...current,
+                      trigger,
+                      interactionRange: trigger === "auto" ? "visible" : current.interactionRange === "visible" ? "same_room" : current.interactionRange,
+                    }));
+                  }}
                 >
                   <option value="auto">Auto when visible</option>
                   <option value="click">Click</option>
@@ -7147,6 +7158,7 @@ function App() {
                   onChange={(event) => setInfoMarkerForm((current) => ({ ...current, interactionRange: event.target.value }))}
                   disabled={infoMarkerForm.trigger === "auto"}
                 >
+                  <option value="visible">Visible</option>
                   <option value="same_room">Same room</option>
                   <option value="adjacent">Adjacent</option>
                 </select>
