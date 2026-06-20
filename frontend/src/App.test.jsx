@@ -618,6 +618,7 @@ describe("App", () => {
 
   it("opens the scenario library, creates a template, and starts a run", async () => {
     const user = userEvent.setup();
+    const sceneMarkdown = "# Opening\n\n**Read aloud:** The door opens.\n\n- Track the smoke";
     const scenarioDefinition = {
       id: "scenario_1",
       name: "API Scenario",
@@ -629,10 +630,18 @@ describe("App", () => {
           label: "Start",
           position: { x: 100, y: 100 },
           defaultPhaseId: "phase_default",
-          phases: [{ id: "phase_default", label: "Default", text: "Opening text" }],
+          phases: [{ id: "phase_default", label: "Default", text: sceneMarkdown }],
+        },
+        {
+          id: "village",
+          type: "scene",
+          label: "Village",
+          position: { x: 300, y: 100 },
+          defaultPhaseId: "phase_default",
+          phases: [{ id: "phase_default", label: "Default", text: "Village text" }],
         },
       ],
-      edges: [],
+      edges: [{ id: "edge_start_village", from: "start", to: "village", label: "Road" }],
     };
     const attachedSnapshot = buildSnapshot({
       scenario: {
@@ -710,9 +719,30 @@ describe("App", () => {
 
     await screen.findByText("Edit Template");
     expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Opening" })).toBeInTheDocument();
+    const scenarioLine = document.querySelector(".scenario-edge line");
+    expect(Number(scenarioLine?.getAttribute("x1"))).toBe(250);
+    expect(Number(scenarioLine?.getAttribute("y1"))).toBe(133);
+    expect(Number(scenarioLine?.getAttribute("x2"))).toBe(300);
+    expect(Number(scenarioLine?.getAttribute("y2"))).toBe(133);
+    await user.click(screen.getByRole("button", { name: "Edit Node" }));
+
+    const modeGroup = screen.getByRole("group", { name: "Scene text mode" });
+    expect(screen.getByRole("textbox", { name: "Scene text" })).toHaveValue(sceneMarkdown);
+    await user.click(within(modeGroup).getByRole("button", { name: "Markdown" }));
+    const preview = screen.getByLabelText("Markdown preview");
+    expect(within(preview).getByRole("heading", { name: "Opening" })).toBeInTheDocument();
+    expect(within(preview).getByText("Read aloud:").tagName.toLowerCase()).toBe("strong");
+    expect(within(preview).getByText("Track the smoke")).toBeInTheDocument();
+    await user.click(within(modeGroup).getByRole("button", { name: "Plain" }));
+    expect(screen.queryByLabelText("Markdown preview")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
     await user.click(screen.getByRole("button", { name: "Start Run" }));
 
-    await screen.findByText("Opening text");
+    expect(await screen.findByRole("heading", { name: "Opening" })).toBeInTheDocument();
+    expect(screen.getByText("Read aloud:").tagName.toLowerCase()).toBe("strong");
+    expect(screen.getByText("Track the smoke")).toBeInTheDocument();
     expect(global.fetch).toHaveBeenCalledWith(
       "/api/battle/sessions/sid-123/scenario/start-run",
       expect.objectContaining({ method: "POST" }),

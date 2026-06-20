@@ -94,6 +94,10 @@ class BattleApiTests(unittest.TestCase):
         self.assertIn("effects", templates_by_id["C_GOBLIN"]["simActions"][0])
         self.assertIn("coverageStatus", templates_by_id["C_GOBLIN"]["simActions"][0])
         self.assertEqual(templates_by_id["C_WOLF"]["category"], "Changelings")
+        possessed_bear = templates_by_id["TT_POSSESSED_GREAT_BEAR"]
+        self.assertEqual(possessed_bear["imagePath"], "The_Touched/Possessed/TT_POSSESSED_GREAT_BEAR.png")
+        self.assertEqual(possessed_bear["imageUrl"], "/images/The_Touched/Possessed/TT_POSSESSED_GREAT_BEAR.png")
+        self.assertFalse(possessed_bear["imageMissing"])
 
     def test_scenario_and_map_template_api_supports_play_runtime(self) -> None:
         map_response = self.client.post(

@@ -136,10 +136,29 @@ function nodeCenter(node) {
   return { x: (node.position?.x ?? 0) + NODE_W / 2, y: (node.position?.y ?? 0) + NODE_H / 2 };
 }
 
+function nodeBoundaryPoint(node, toward) {
+  const center = nodeCenter(node);
+  const dx = toward.x - center.x;
+  const dy = toward.y - center.y;
+  if (dx === 0 && dy === 0) {
+    return center;
+  }
+
+  const scaleX = dx === 0 ? Infinity : (NODE_W / 2) / Math.abs(dx);
+  const scaleY = dy === 0 ? Infinity : (NODE_H / 2) / Math.abs(dy);
+  const scale = Math.min(scaleX, scaleY);
+  return {
+    x: center.x + dx * scale,
+    y: center.y + dy * scale,
+  };
+}
+
 function edgePoints(fromNode, toNode) {
   const a = nodeCenter(fromNode);
   const b = nodeCenter(toNode);
-  return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+  const start = nodeBoundaryPoint(fromNode, b);
+  const end = nodeBoundaryPoint(toNode, a);
+  return { x1: start.x, y1: start.y, x2: end.x, y2: end.y };
 }
 
 function templateCategory(template) {
@@ -165,6 +184,213 @@ function unique(values) {
 
 function findTemplate(meta, templateId) {
   return (meta?.enemyTemplates || []).find((template) => template.id === templateId) || null;
+}
+
+function isSafeMarkdownUrl(value) {
+  const url = String(value || "").trim();
+  return /^(https?:\/\/|mailto:|\/(?!\/)|#)/i.test(url);
+}
+
+function renderInlineMarkdown(text, keyPrefix) {
+  const source = String(text ?? "");
+  const tokenPattern = /(\[([^\]]+)\]\(([^)\s]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|\*([^*]+)\*)/g;
+  const nodes = [];
+  let lastIndex = 0;
+  let match;
+
+  while ((match = tokenPattern.exec(source)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(source.slice(lastIndex, match.index));
+    }
+
+    const key = `${keyPrefix}-inline-${match.index}`;
+    if (match[2] != null) {
+      const label = match[2];
+      const url = String(match[3] || "").trim();
+      if (isSafeMarkdownUrl(url)) {
+        const external = /^https?:\/\//i.test(url);
+        nodes.push(
+          <a key={key} href={url} target={external ? "_blank" : undefined} rel={external ? "noreferrer" : undefined}>
+            {label}
+          </a>,
+        );
+      } else {
+        nodes.push(match[0]);
+      }
+    } else if (match[4] != null) {
+      nodes.push(<strong key={key}>{match[4]}</strong>);
+    } else if (match[5] != null) {
+      nodes.push(<code key={key}>{match[5]}</code>);
+    } else if (match[6] != null) {
+      nodes.push(<em key={key}>{match[6]}</em>);
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < source.length) {
+    nodes.push(source.slice(lastIndex));
+  }
+  return nodes;
+}
+
+function renderMarkdownLines(lines, keyPrefix) {
+  return lines.flatMap((line, index) => {
+    const inline = renderInlineMarkdown(line, `${keyPrefix}-${index}`);
+    return index === 0 ? inline : [<br key={`${keyPrefix}-br-${index}`} />, ...inline];
+  });
+}
+
+function parseMarkdownBlocks(text) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  const blocks = [];
+  let paragraph = [];
+  let list = null;
+  let quote = [];
+  let code = null;
+
+  function flushParagraph() {
+    if (paragraph.length) {
+      blocks.push({ type: "paragraph", lines: paragraph });
+      paragraph = [];
+    }
+  }
+
+  function flushList() {
+    if (list?.items?.length) {
+      blocks.push(list);
+    }
+    list = null;
+  }
+
+  function flushQuote() {
+    if (quote.length) {
+      blocks.push({ type: "quote", lines: quote });
+      quote = [];
+    }
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\s+$/, "");
+    const trimmed = line.trim();
+
+    if (code) {
+      if (/^```/.test(trimmed)) {
+        blocks.push(code);
+        code = null;
+      } else {
+        code.lines.push(rawLine);
+      }
+      continue;
+    }
+
+    if (/^```/.test(trimmed)) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      code = { type: "code", lines: [] };
+      continue;
+    }
+
+    if (!trimmed) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      continue;
+    }
+
+    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      blocks.push({ type: "heading", level: heading[1].length, text: heading[2] });
+      continue;
+    }
+
+    if (/^(-{3,}|\*{3,})$/.test(trimmed)) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      blocks.push({ type: "rule" });
+      continue;
+    }
+
+    const unordered = /^\s*[-*]\s+(.+)$/.exec(line);
+    const ordered = /^\s*\d+\.\s+(.+)$/.exec(line);
+    if (unordered || ordered) {
+      flushParagraph();
+      flushQuote();
+      const type = unordered ? "ul" : "ol";
+      if (!list || list.type !== type) {
+        flushList();
+        list = { type, items: [] };
+      }
+      list.items.push(unordered ? unordered[1] : ordered[1]);
+      continue;
+    }
+
+    const quoteLine = /^\s*>\s?(.*)$/.exec(line);
+    if (quoteLine) {
+      flushParagraph();
+      flushList();
+      quote.push(quoteLine[1]);
+      continue;
+    }
+
+    flushList();
+    flushQuote();
+    paragraph.push(trimmed);
+  }
+
+  if (code) {
+    blocks.push(code);
+  }
+  flushParagraph();
+  flushList();
+  flushQuote();
+  return blocks;
+}
+
+function MarkdownText({ text, className = "" }) {
+  const blocks = useMemo(() => parseMarkdownBlocks(text), [text]);
+  if (!blocks.length) return null;
+
+  return (
+    <div className={["scenario-markdown-body", className].filter(Boolean).join(" ")}>
+      {blocks.map((block, index) => {
+        const key = `markdown-block-${index}`;
+        if (block.type === "heading") {
+          const Heading = `h${block.level}`;
+          return <Heading key={key}>{renderInlineMarkdown(block.text, key)}</Heading>;
+        }
+        if (block.type === "ul" || block.type === "ol") {
+          const List = block.type;
+          return (
+            <List key={key}>
+              {block.items.map((item, itemIndex) => (
+                <li key={`${key}-item-${itemIndex}`}>{renderMarkdownLines([item], `${key}-item-${itemIndex}`)}</li>
+              ))}
+            </List>
+          );
+        }
+        if (block.type === "quote") {
+          return <blockquote key={key}>{renderMarkdownLines(block.lines, key)}</blockquote>;
+        }
+        if (block.type === "code") {
+          return (
+            <pre key={key}>
+              <code>{block.lines.join("\n")}</code>
+            </pre>
+          );
+        }
+        if (block.type === "rule") {
+          return <hr key={key} />;
+        }
+        return <p key={key}>{renderMarkdownLines(block.lines, key)}</p>;
+      })}
+    </div>
+  );
 }
 
 function ArrowDefs() {
@@ -485,7 +711,7 @@ function EventPanel({
       ) : null}
 
       {activePhase?.text ? (
-        <div className="scenario-event-text">{activePhase.text}</div>
+        <MarkdownText className="scenario-event-text" text={activePhase.text} />
       ) : (
         <div className="subtle-copy scenario-event-text-empty">No text.</div>
       )}
@@ -688,6 +914,7 @@ function NodeEditorModal({ node, isStart, mapTemplates, meta, onSave, onDelete, 
   const [defaultPhaseId, setDefaultPhaseId] = useState(initialNode.defaultPhaseId || initialNode.phases[0].id);
   const [mapRef, setMapRef] = useState(initialNode.combat?.mapRef || "");
   const [enemyEntries, setEnemyEntries] = useState(initialNode.combat?.enemies || []);
+  const [textMode, setTextMode] = useState("plain");
   const activePhase = phases[activePhaseIndex] || phases[0];
 
   function updatePhase(index, patch) {
@@ -790,10 +1017,44 @@ function NodeEditorModal({ node, isStart, mapTemplates, meta, onSave, onDelete, 
                     </button>
                   </div>
                 </div>
-                <label className="field">
-                  <span>Text</span>
-                  <textarea rows={6} value={activePhase.text || ""} onChange={(event) => updatePhase(activePhaseIndex, { text: event.target.value })} />
-                </label>
+                <div className="field scenario-text-field">
+                  <div className="scenario-text-editor-header">
+                    <span>Text</span>
+                    <div className="scenario-text-mode-tabs" role="group" aria-label="Scene text mode">
+                      <button
+                        type="button"
+                        className={textMode === "plain" ? "active" : ""}
+                        onClick={() => setTextMode("plain")}
+                      >
+                        Plain
+                      </button>
+                      <button
+                        type="button"
+                        className={textMode === "markdown" ? "active" : ""}
+                        onClick={() => setTextMode("markdown")}
+                      >
+                        Markdown
+                      </button>
+                    </div>
+                  </div>
+                  <div className={textMode === "markdown" ? "scenario-markdown-editor-layout" : ""}>
+                    <textarea
+                      aria-label="Scene text"
+                      rows={textMode === "markdown" ? 10 : 6}
+                      value={activePhase.text || ""}
+                      onChange={(event) => updatePhase(activePhaseIndex, { text: event.target.value })}
+                    />
+                    {textMode === "markdown" ? (
+                      <div className="scenario-markdown-preview" aria-label="Markdown preview">
+                        {(activePhase.text || "").trim() ? (
+                          <MarkdownText text={activePhase.text} />
+                        ) : (
+                          <div className="subtle-copy">No text.</div>
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
               </div>
             ) : null}
           </div>

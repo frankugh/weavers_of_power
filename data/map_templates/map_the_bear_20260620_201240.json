@@ -3163,10 +3163,6 @@
       "f5c461bb",
       "17faa2ab"
     ],
-    "11,9,e": [
-      "2b33efd2",
-      "17faa2ab"
-    ],
     "11,1,e": [
       "dc2961fa",
       "17faa2ab"
@@ -3208,9 +3204,39 @@
     "x": 5,
     "y": -1
   },
+  "info_markers": [
+    {
+      "id": "info_7681ada0",
+      "x": 9,
+      "y": 6,
+      "title": "Info",
+      "text": "A group of Goblins and a large Warg inhabit this room",
+      "trigger": "auto",
+      "interactionRange": "same_room"
+    },
+    {
+      "id": "info_8996f594",
+      "x": 8,
+      "y": 3,
+      "title": "Info",
+      "text": "A sinister voice commands two of his companions. The voice stems from a Goblin with clearly magical powers. A weaver of sorts.",
+      "trigger": "click",
+      "interactionRange": "same_room"
+    }
+  ],
+  "search_check": {
+    "allowedChecks": [
+      {
+        "type": "ability",
+        "key": "intelligence"
+      }
+    ],
+    "dc": 2,
+    "allowUntrained": false
+  },
   "units": [
     {
-      "instance_id": "unit_71060c52",
+      "instance_id": "unit_45d145cd",
       "template_id": "C_GOBLIN",
       "name": "Goblin 10",
       "image": "Changelings/Greenskins/C_GOBLIN.png",
@@ -3281,6 +3307,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": 1,
       "grid_y": 7,
@@ -3288,7 +3316,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_42743fa9",
+      "instance_id": "unit_580cd599",
       "template_id": "C_GOBLIN",
       "name": "Goblin 11",
       "image": "Changelings/Greenskins/C_GOBLIN.png",
@@ -3359,6 +3387,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": 2,
       "grid_y": 8,
@@ -3366,7 +3396,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_ba5eb1aa",
+      "instance_id": "unit_5df5685d",
       "template_id": "C_GOBLIN",
       "name": "Goblin 12",
       "image": "Changelings/Greenskins/C_GOBLIN.png",
@@ -3437,6 +3467,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": -1,
       "grid_y": 8,
@@ -3444,7 +3476,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_89540136",
+      "instance_id": "unit_6c08aaf6",
       "template_id": "C_GOBLIN",
       "name": "Goblin 13",
       "image": "Changelings/Greenskins/C_GOBLIN.png",
@@ -3515,6 +3547,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": 7,
       "grid_y": 9,
@@ -3522,7 +3556,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_5a5ee02e",
+      "instance_id": "unit_798af88a",
       "template_id": "C_GOBLIN",
       "name": "Goblin 14",
       "image": "Changelings/Greenskins/C_GOBLIN.png",
@@ -3593,6 +3627,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": 8,
       "grid_y": 8,
@@ -3600,7 +3636,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_24ccbaed",
+      "instance_id": "unit_5bdbf6b3",
       "template_id": "C_GOBLIN_ARCHER",
       "name": "Goblin Archer 1",
       "image": "Changelings/Greenskins/C_GOBLIN_ARCHER.png",
@@ -3671,6 +3707,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": 0,
       "grid_y": 7,
@@ -3678,7 +3716,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_8b5a853e",
+      "instance_id": "unit_6b1e6f7f",
       "template_id": "C_GOBLIN_ARCHER",
       "name": "Goblin Archer 2",
       "image": "Changelings/Greenskins/C_GOBLIN_ARCHER.png",
@@ -3749,6 +3787,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": 0,
       "grid_y": 9,
@@ -3756,7 +3796,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_d6ab1d1e",
+      "instance_id": "unit_a6985754",
       "template_id": "C_WORG",
       "name": "Worg 1",
       "image": "Changelings/Beasts_and_Predators/C_WORG.png",
@@ -3827,6 +3867,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": 11,
       "grid_y": 6,
@@ -3834,7 +3876,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_37e4257d",
+      "instance_id": "unit_ee1ecf4d",
       "template_id": "C_GOBLIN_HEXER",
       "name": "Goblin Hexer 1",
       "image": "Changelings/Greenskins/C_GOBLIN_HEXER.png",
@@ -3905,6 +3947,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": 8,
       "grid_y": 1,
@@ -3912,7 +3956,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_bf082569",
+      "instance_id": "unit_b51686ff",
       "template_id": "C_HOBGOBLIN",
       "name": "Hobgoblin 1",
       "image": "Changelings/Greenskins/C_HOBGOBLIN.png",
@@ -3983,6 +4027,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": 9,
       "grid_y": 1,
@@ -3990,7 +4036,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_8196d9b8",
+      "instance_id": "unit_dabb6696",
       "template_id": "C_HOBGOBLIN",
       "name": "Hobgoblin 2",
       "image": "Changelings/Greenskins/C_HOBGOBLIN.png",
@@ -4061,6 +4107,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": 8,
       "grid_y": 2,
@@ -4068,7 +4116,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_e6ccff26",
+      "instance_id": "unit_dd84ff60",
       "template_id": "C_GOBLIN_HEXER",
       "name": "Goblin Hexer 2",
       "image": "Changelings/Greenskins/C_GOBLIN_HEXER.png",
@@ -4139,6 +4187,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": 10,
       "grid_y": 9,
@@ -4146,7 +4196,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "unit_a46011d9",
+      "instance_id": "unit_7c41c45f",
       "template_id": "C_GOBLIN",
       "name": "Goblin 15",
       "image": "Changelings/Greenskins/C_GOBLIN.png",
@@ -4217,6 +4267,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": 9,
       "grid_y": 8,
@@ -4224,7 +4276,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "6e4063e16e",
+      "instance_id": "unit_b4dc7caa",
       "template_id": "TT_POSSESSED_GREAT_BEAR",
       "name": "Possessed Great Bear 1",
       "image": null,
@@ -4295,6 +4347,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": -32,
       "grid_y": 0,
@@ -4302,7 +4356,7 @@
       "visible_draw": []
     },
     {
-      "instance_id": "2474d8ec1f",
+      "instance_id": "unit_546d3fce",
       "template_id": "TRD_SKELETON",
       "name": "Skeleton 1",
       "image": "The_Restless_Dead/The_Restless_Dead/TRD_SKELETON.png",
@@ -4373,6 +4427,8 @@
       "melee_weapon": {},
       "character_profile": {},
       "card_library": {},
+      "abilities": {},
+      "specializations": [],
       "statuses": {},
       "grid_x": -19,
       "grid_y": -3,
@@ -4380,6 +4436,6 @@
       "visible_draw": []
     }
   ],
-  "name": "map1",
-  "saved_at": "2026-06-14T20:11:33"
+  "name": "map_the_bear",
+  "saved_at": "2026-06-20T20:12:40"
 }

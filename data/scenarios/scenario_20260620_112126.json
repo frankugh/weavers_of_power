@@ -1,0 +1,110 @@
+{
+  "id": "scenario_20260620_112126",
+  "name": "The Bear",
+  "startNodeId": "start",
+  "nodes": [
+    {
+      "id": "start",
+      "type": "scene",
+      "label": "1 — Arrival",
+      "position": {
+        "x": 109.0,
+        "y": 85.0
+      },
+      "defaultPhaseId": "phase_default",
+      "phases": [
+        {
+          "id": "phase_default",
+          "label": "Default",
+          "text": "1 — Arrival\n \n> You've been on the road since dawn, and the forest has been with you for most of it — close, old, and quiet in a way that doesn't feel like rest. As the light begins to fail, the trees finally thin, and a village comes into view, tucked against the treeline. A few chimneys breathe smoke. A weathered post by the path reads: **Greywood Crossing**.\n>\n> It's the first sign of other people you've seen all day.\n \n**Ask the table:**\n \n- Before tonight — do you already know one another, or have your roads only just crossed?\n- Take a moment and tell the table who your character is, and what brought them this far from anywhere.\n*No checks. This is the beat where the party forms and introduces itself.*",
+          "imageRef": null
+        }
+      ],
+      "combat": null
+    },
+    {
+      "id": "node_mqmo752e",
+      "type": "scene",
+      "label": "2 — The Village",
+      "position": {
+        "x": 346.33333333333337,
+        "y": 113.55555555555556
+      },
+      "phases": [
+        {
+          "id": "phase_default",
+          "label": "Default",
+          "text": "> As you walk in, people stop what they're doing to look at you. Not hostile — but intent, weighing you, the way you'd look at someone you'd been waiting for without knowing it. A woman draws her child a little closer. An old man holds your gaze a beat too long, then nods.\n>\n> It's quiet. Too quiet for early evening. You get the sense that strangers haven't passed through here in a long while.\n>\n> One of them steps forward — broad, flour on his apron, the kind of man who either runs the bakery or just drew the short straw. He spreads his hands.\n>\n> *\"Welcome, travelers. You'll want the Moody Mule — best roof in Greywood, and the only one worth the name. First round's on the house for guests.\"* He smiles. It doesn't quite reach his eyes.\n \n**GM notes:**\n \n- **If asked why the attention, or why the free drinks:** he deflects, warmly — they don't get many new faces, it's only good manners, a village likes to make an impression. Friendly, and a little too eager.\n- **Social check (DC 2) — on a success:** the player reads it plainly. This isn't hospitality, it's *need.* The man is frightened, and he wants something from these strangers so badly he can barely keep it behind his teeth — but he won't say what, not here, not in the open.\n- What he's hiding is **not** the bounty (that's posted openly in the inn). It's the shame underneath it: every group before them is dead, and the village has run out of its own people to send. Don't volunteer the job here — let them find the sign. This beat is about the *wrongness,* not the work.",
+          "imageRef": null
+        }
+      ],
+      "defaultPhaseId": "phase_default",
+      "combat": null
+    },
+    {
+      "id": "node_mqmoc5lw",
+      "type": "scene",
+      "label": "3 — The Moody Mule",
+      "position": {
+        "x": 328.55555555555554,
+        "y": 255.16666666666669
+      },
+      "phases": [
+        {
+          "id": "phase_default",
+          "label": "Default",
+          "text": "> The Moody Mule is warm and low-ceilinged, the air thick with woodsmoke, tallow, and old ale gone into the floorboards. A fire snaps in a blackened hearth. It should be a comfortable room. It isn't, quite — the talk runs too low, the laughter comes a half-second late, and more than one pair of eyes keeps drifting to the door, as though the dark outside might decide to come in.\n>\n> A handful of locals are scattered across the benches. By the wall, a lean man sits alone with his back to the corner and a cup he isn't really drinking from, staring at nothing. Near the fire, a small, ancient woman watches you with sharp, unhurried eyes. A younger woman in the far corner hasn't looked up since you entered; the man across from her keeps a hand on her arm. A boy of maybe ten weaves between the tables, collecting cups.\n>\n> Behind the bar, a broad-shouldered woman is already pulling your drinks, her jaw set like she decided something about you before you'd said a word. Nailed to the board behind her is a notice, the lettering careful, as if someone wanted it to look official:\n \n> **WANTED — THE BEAR**\n>\n> *To any adventurer or sword-for-hire brave enough: slay the beast that dens in the hills nearby, and Greywood Crossing will give 50 gold pieces — and a roof over your head, free, for the rest of your days.*\n \n> She sets your drinks down without being asked.\n \n**GM notes — the bear:**\n \n- **At first**, the locals talk about it like a problem animal: a big bear, bolder than most, that's taken to killing anyone who goes into the woods. Bad luck. A dangerous season.\n- **If the party presses** (questions, Social checks), the story comes apart. It's killed the village's *best hunters* — every group that went after it. None came back whole, or came back at all. The reward isn't generosity; it's desperation. Nobody goes into the forest now. Kendor is too far and too busy to send help.\n- **They have a map** of where it dens, and press it on the party gladly. They warn that **goblins** infest the same hills — the party won't be the only thing in there.\n- They can't, or won't, say much about the bear itself — only that it's *\"not right,\"* and *\"clever, like it knows what you're thinking.\"* (That line does double duty: plain terror, or a hint at something that reads the Weave.)\n- **Optional — Arcana or Intelligence check:** a character who knows Kendor's old stories recognizes what no one here will say aloud — that in this country, great bears are sometimes **Günduru**, Weave-touched and sacred, not to be hunted lightly. Half the village half-believes it, and is more afraid of being *right* than wrong. (Mechanically it stays a plain Great Bear — leave the ambiguity open.)\n### The people here\n \n**Maela — the innkeeper.** Runs the Mule, and the one who set the bounty's terms. Blunt, bone-tired, holding the village together by sheer will. Her brother went after the bear with one of the parties and didn't come back — which is why the reward is what it is, and why she'll look a sword-for-hire dead in the eye and not blink.\n \n- Confirms the job, names the terms, and presses the map on the party. Warns about the goblins. Doesn't dress it up: *\"I'm not going to tell you it's a fair trade. I'm telling you it's the trade we've got.\"* She won't beg — the desperation is in what she leaves unsaid.\n**Cael — the survivor.** The lean man by the wall. The only one who walked out of the last hunt; the rest of his party didn't. He doesn't want to talk about it.\n \n- **Coax him (Social check), or just buy him a drink and sit a while:** he gives the only firsthand account in the village. It's big — bigger than a bear should be, and *fast.* But what broke him wasn't the size. *\"It was waiting where we were going. Not where we were. Like it knew the plan before we did.\"* He'll tell them the den lies deep in the hills, and that the goblins sit between the mouth and the bear — *\"they're scared of it too. You'll see.\"*\n- He won't go back. Don't let him be talked into guiding them; his use is the warning, not a fourth sword.\n**Gisla — the old woman by the fire.** The village's keeper of old stories, and the only one who'll say aloud what the rest only fear. *(In-person route to the Günduru thread — she or the Arcana/Intelligence check surfaces it.)*\n \n- **If approached:** a great bear in Kendor that hunts like this may be no animal at all — a **Günduru**, Weave-touched and sacred. *\"You don't put a bounty on one of those. You set your house in order, and you pray.\"* She thinks the whole quest is a sin, and she isn't certain she's wrong. She offers no map and no tactics — only the weight of the choice.\n**The room itself (ambient, no checks).** The silent young woman in the corner is a hunter's widow; her husband was in Cael's party. The man beside her is her father. The boy collecting cups is Maela's nephew — the brother she lost was his father. None of them will say any of this. It's just *there,* under the noise: a small village wearing its grief politely for the strangers who might, finally, be the ones to end it.",
+          "imageRef": null
+        }
+      ],
+      "defaultPhaseId": "phase_default",
+      "combat": null
+    },
+    {
+      "id": "node_mqmoe56l",
+      "type": "combat",
+      "label": "4 — Cave",
+      "position": {
+        "x": 327.0,
+        "y": 400.0
+      },
+      "phases": [
+        {
+          "id": "phase_default",
+          "label": "Default",
+          "text": "",
+          "imageRef": null
+        }
+      ],
+      "defaultPhaseId": "phase_default",
+      "combat": {
+        "enemies": [],
+        "mapRef": "map_the_bear_20260620_201240"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_mqmo9739",
+      "from": "start",
+      "to": "node_mqmo752e",
+      "label": "",
+      "condition": null
+    },
+    {
+      "id": "edge_mqmoczv8",
+      "from": "node_mqmo752e",
+      "to": "node_mqmoc5lw",
+      "label": "",
+      "condition": null
+    },
+    {
+      "id": "edge_mqmoelz9",
+      "from": "node_mqmoc5lw",
+      "to": "node_mqmoe56l",
+      "label": "",
+      "condition": null
+    }
+  ],
+  "saved_at": "2026-06-20T20:13:41"
+}

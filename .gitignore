@@ -64,6 +64,9 @@ Thumbs.db
 desktop.ini
 *.swp
 *.swo
+*.lnk
+~$*.xlsx
+data/~$*.xlsx
 
 # --- Logs ---
 *.log
@@ -74,6 +77,7 @@ desktop.ini
 
 # --- Project-specific: generated runtime state ---
 saves/
+data/creature_workbook_backups/
 # If you DO want to version example saves, remove the line above and use:
 # saves/*
 # !saves/README.md

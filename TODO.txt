@@ -2,7 +2,7 @@
 Protocol voor AI:  Je mag hier een todo weghalen als opgepakt, maar zet hem dan wel helemaal onderaan dit bestand onderop bij de voltooide taken
 
 
-
+- Pijlen ('edges') tussen scene's gaat de pijl naar het midden van target ipv naar de edge, waardoor je geen pijl ziet maar een lijn tussen 2 nodes. 
 
 ----
 
