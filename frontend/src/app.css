@@ -5594,18 +5594,59 @@ button.draw-card:hover {
 
 .scenario-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
-  gap: 10px;
+  grid-template-columns: minmax(280px, 1fr) 14px minmax(280px, var(--scenario-detail-width, 28%));
+  gap: 0;
   min-height: 0;
 }
 
 .scenario-viewport,
 .scenario-event-panel {
+  min-width: 0;
   min-height: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: rgba(10, 8, 6, 0.9);
   box-shadow: var(--shadow-md);
+}
+
+.scenario-splitter {
+  display: grid;
+  min-width: 14px;
+  min-height: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.scenario-splitter span {
+  width: 2px;
+  height: 54px;
+  border-radius: 999px;
+  background: rgba(216, 182, 106, 0.3);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.16);
+}
+
+.scenario-splitter:hover span,
+.scenario-splitter:focus-visible span,
+.scenario-main-resizing .scenario-splitter span {
+  background: rgba(245, 216, 150, 0.84);
+}
+
+.scenario-splitter:focus-visible {
+  outline: 2px solid rgba(245, 216, 150, 0.55);
+  outline-offset: 2px;
+}
+
+.scenario-main-resizing {
+  cursor: col-resize;
+}
+
+.scenario-main-resizing .scenario-viewport,
+.scenario-main-resizing .scenario-event-panel {
+  user-select: none;
 }
 
 .scenario-viewport {
@@ -6367,6 +6408,11 @@ button.draw-card:hover {
   .scenario-main {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(360px, 1fr) auto;
+    gap: 10px;
+  }
+
+  .scenario-splitter {
+    display: none;
   }
 
   .scenario-library-layout,

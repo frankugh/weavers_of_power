@@ -720,6 +720,20 @@ describe("App", () => {
     await screen.findByText("Edit Template");
     expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Opening" })).toBeInTheDocument();
+    const scenarioMain = document.querySelector(".scenario-main");
+    Object.defineProperty(scenarioMain, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 0, right: 1000, top: 0, bottom: 600, width: 1000, height: 600 }),
+    });
+    const splitter = screen.getByRole("separator", { name: "Resize scenario panels" });
+    expect(splitter).toHaveAttribute("aria-valuenow", "28");
+    fireEvent.pointerDown(splitter, { pointerId: 41, clientX: 720 });
+    fireEvent.pointerMove(window, { pointerId: 41, clientX: 600 });
+    fireEvent.pointerUp(window, { pointerId: 41, clientX: 600 });
+    await waitFor(() => {
+      expect(window.localStorage.getItem("weavers-scenario-detail-percent")).toBe("40");
+    });
+    expect(scenarioMain).toHaveStyle({ "--scenario-detail-width": "40%" });
     const scenarioLine = document.querySelector(".scenario-edge line");
     expect(Number(scenarioLine?.getAttribute("x1"))).toBe(250);
     expect(Number(scenarioLine?.getAttribute("y1"))).toBe(133);

@@ -6,6 +6,33 @@ const NODE_LABELS = { scene: "Scene", combat: "Combat" };
 const LEGACY_SCENE_TYPES = new Set(["start", "story", "event"]);
 const NODE_W = 150;
 const NODE_H = 66;
+const SCENARIO_SPLIT_STORAGE_KEY = "weavers-scenario-detail-percent";
+const SCENARIO_SPLIT_DEFAULT = 28;
+const SCENARIO_SPLIT_MIN = 18;
+const SCENARIO_SPLIT_MAX = 62;
+
+function clampScenarioSplit(value) {
+  if (value == null || value === "") return SCENARIO_SPLIT_DEFAULT;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return SCENARIO_SPLIT_DEFAULT;
+  return Math.max(SCENARIO_SPLIT_MIN, Math.min(SCENARIO_SPLIT_MAX, numeric));
+}
+
+function loadScenarioSplitPercent() {
+  try {
+    return clampScenarioSplit(window.localStorage.getItem(SCENARIO_SPLIT_STORAGE_KEY));
+  } catch {
+    return SCENARIO_SPLIT_DEFAULT;
+  }
+}
+
+function storeScenarioSplitPercent(value) {
+  try {
+    window.localStorage.setItem(SCENARIO_SPLIT_STORAGE_KEY, String(Math.round(value)));
+  } catch {
+    // Local storage can be unavailable in locked-down contexts.
+  }
+}
 
 function normalizeNodeType(type) {
   const normalized = String(type || "").trim().toLowerCase();
@@ -647,6 +674,89 @@ function FlowOverview({
   );
 }
 
+function ScenarioSplitLayout({ detailPercent, onDetailPercentChange, children }) {
+  const containerRef = useRef(null);
+  const [dragging, setDragging] = useState(false);
+  const [leftPane, rightPane] = children;
+
+  function updateFromClientX(clientX) {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return;
+    const next = clampScenarioSplit(((rect.right - clientX) / rect.width) * 100);
+    onDetailPercentChange(next);
+  }
+
+  function updateByDelta(delta) {
+    onDetailPercentChange(clampScenarioSplit(detailPercent + delta));
+  }
+
+  function handlePointerDown(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setDragging(true);
+    updateFromClientX(event.clientX);
+
+    function handlePointerMove(moveEvent) {
+      updateFromClientX(moveEvent.clientX);
+    }
+
+    function handlePointerUp(upEvent) {
+      updateFromClientX(upEvent.clientX);
+      setDragging(false);
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+  }
+
+  function handleKeyDown(event) {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      updateByDelta(2);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      updateByDelta(-2);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      onDetailPercentChange(SCENARIO_SPLIT_MAX);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      onDetailPercentChange(SCENARIO_SPLIT_MIN);
+    }
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className={`scenario-main ${dragging ? "scenario-main-resizing" : ""}`.trim()}
+      style={{ "--scenario-detail-width": `${detailPercent}%` }}
+    >
+      {leftPane}
+      <div
+        className="scenario-splitter"
+        role="separator"
+        aria-label="Resize scenario panels"
+        aria-orientation="vertical"
+        aria-valuemin={SCENARIO_SPLIT_MIN}
+        aria-valuemax={SCENARIO_SPLIT_MAX}
+        aria-valuenow={Math.round(detailPercent)}
+        aria-valuetext={`${Math.round(detailPercent)}% detail panel`}
+        tabIndex={0}
+        onPointerDown={handlePointerDown}
+        onKeyDown={handleKeyDown}
+      >
+        <span aria-hidden="true" />
+      </div>
+      {rightPane}
+    </div>
+  );
+}
+
 function EventPanel({
   definition,
   node,
@@ -1188,6 +1298,7 @@ export default function ScenarioView({
   const [modal, setModal] = useState(null);
   const [replaceRunScenario, setReplaceRunScenario] = useState(null);
   const [saveChoiceOpen, setSaveChoiceOpen] = useState(false);
+  const [scenarioDetailPercent, setScenarioDetailPercent] = useState(loadScenarioSplitPercent);
 
   const scenarioRun = getScenarioRun(snapshot);
   const runDefinition = snapshot?.scenario?.definition ? normalizeDefinition(snapshot.scenario.definition) : null;
@@ -1209,6 +1320,12 @@ export default function ScenarioView({
     ? dirty ? "Save & Update Run" : "Continue Run"
     : dirty ? activeRun ? "Save & Replace Run" : "Save & Start Run"
       : activeRun ? "Replace Run" : "Start Run";
+
+  function updateScenarioDetailPercent(value) {
+    const next = clampScenarioSplit(value);
+    setScenarioDetailPercent(next);
+    storeScenarioSplitPercent(next);
+  }
 
   useEffect(() => {
     fetchScenarios();
@@ -1744,7 +1861,7 @@ export default function ScenarioView({
           <button type="button" className="menu-button" onClick={() => setScreen("library")}>Library</button>
         </div>
 
-        <div className="scenario-main">
+        <ScenarioSplitLayout detailPercent={scenarioDetailPercent} onDetailPercentChange={updateScenarioDetailPercent}>
           <FlowOverview
             definition={templateDefinition}
             runtime={activeRuntime}
@@ -1772,7 +1889,7 @@ export default function ScenarioView({
             onUpdateEdgeLabel={updateEdgeLabel}
             onDeleteEdge={deleteEdge}
           />
-        </div>
+        </ScenarioSplitLayout>
 
         {modal?.type === "node" ? (
           <NodeEditorModal
@@ -1817,7 +1934,7 @@ export default function ScenarioView({
       </div>
 
       {runDefinition ? (
-        <div className="scenario-main">
+        <ScenarioSplitLayout detailPercent={scenarioDetailPercent} onDetailPercentChange={updateScenarioDetailPercent}>
           <FlowOverview
             definition={runDefinition}
             runtime={runRuntime}
@@ -1845,7 +1962,7 @@ export default function ScenarioView({
             onUpdateEdgeLabel={() => {}}
             onDeleteEdge={() => {}}
           />
-        </div>
+        </ScenarioSplitLayout>
       ) : (
         <div className="scenario-empty">
           <div className="scenario-empty-content">
