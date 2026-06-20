@@ -135,7 +135,7 @@ const MAP_MODES = {
   WALK: "walk",
   PARTY_WALK: "party-walk",
   REPOSITION: "reposition",
-  GM_REPOSITION: "gm-reposition",
+  GM: "gm",
   GM_DUNGEON: "gm-dungeon",
 };
 
@@ -1281,6 +1281,7 @@ function App() {
   const bootstrapped = useRef(false);
   const actionMenuRef = useRef(null);
   const unitContextMenuRef = useRef(null);
+  const infoMarkerContextMenuRef = useRef(null);
   const repositionReturnModeRef = useRef(null);
   const autoInfoOpeningRef = useRef(new Set());
 
@@ -1327,6 +1328,7 @@ function App() {
   const [helpTargets, setHelpTargets] = useState([]);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [unitContextMenu, setUnitContextMenu] = useState(null);
+  const [infoMarkerContextMenu, setInfoMarkerContextMenu] = useState(null);
   const [previewEntityId, setPreviewEntityId] = useState(null);
   const [unitDetailsMode, setUnitDetailsMode] = useState("show");
   const [unitDetailsTab, setUnitDetailsTab] = useState("overview");
@@ -1410,7 +1412,7 @@ function App() {
 
   useEffect(() => {
     setMapMode((current) =>
-      current === MAP_MODES.GM_REPOSITION || current === MAP_MODES.GM_DUNGEON || current === MAP_MODES.PARTY_WALK
+      current === MAP_MODES.GM || current === MAP_MODES.GM_DUNGEON || current === MAP_MODES.PARTY_WALK
         ? current
         : MAP_MODES.IDLE,
     );
@@ -1431,6 +1433,7 @@ function App() {
 
   useEffect(() => {
     setUnitContextMenu(null);
+    setInfoMarkerContextMenu(null);
   }, [snapshot?.sid, modal]);
 
   useEffect(() => {
@@ -1534,6 +1537,31 @@ function App() {
   }, [unitContextMenu]);
 
   useEffect(() => {
+    if (!infoMarkerContextMenu) {
+      return undefined;
+    }
+
+    function handlePointerDown(event) {
+      if (infoMarkerContextMenuRef.current && !infoMarkerContextMenuRef.current.contains(event.target)) {
+        setInfoMarkerContextMenu(null);
+      }
+    }
+
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        setInfoMarkerContextMenu(null);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [infoMarkerContextMenu]);
+
+  useEffect(() => {
     if (activeView === APP_VIEWS.BATTLE && snapshot?.pendingNewRound) {
       setModal("new-round");
     }
@@ -1635,6 +1663,9 @@ function App() {
   const contextMenuActor = unitContextMenu?.actorId
     ? orderedEnemies.find((entity) => entity.instance_id === unitContextMenu.actorId) || null
     : null;
+  const infoMarkerContextMarker = infoMarkerContextMenu
+    ? (snapshot?.dungeon?.infoMarkers || []).find((marker) => marker.id === infoMarkerContextMenu.markerId) || null
+    : null;
   const previewEntity = previewEntityId
     ? orderedEnemies.find((entity) => entity.instance_id === previewEntityId) || null
     : null;
@@ -1699,11 +1730,11 @@ function App() {
       selectedMovementRemaining > 0,
   );
   const canReposition = Boolean(selectedEntity);
-  const isGmRepositionMode = mapMode === MAP_MODES.GM_REPOSITION;
+  const isGmMode = mapMode === MAP_MODES.GM;
   const isGmDungeonMode = mapMode === MAP_MODES.GM_DUNGEON;
   const isWalkMode = mapMode === MAP_MODES.WALK;
   const isPartyWalkMode = mapMode === MAP_MODES.PARTY_WALK;
-  const canUseGmReposition = orderedEnemies.length > 0;
+  const canUseGmMode = orderedEnemies.length > 0;
   const canUseMapWalk = Boolean(
     !snapshot?.encounterStarted &&
     !snapshot?.activeTurnId &&
@@ -2161,6 +2192,7 @@ function App() {
     setManualSearchSuccesses(0);
     setFlavourTitle("Search");
     setInfoMarkerForm(null);
+    setInfoMarkerContextMenu(null);
     setSearchCheckForm(null);
   }
 
@@ -2367,7 +2399,7 @@ function App() {
       "Undid last action",
     );
     if (payload) {
-      setMapMode((current) => (current === MAP_MODES.GM_DUNGEON ? current : MAP_MODES.IDLE));
+      setMapMode((current) => (current === MAP_MODES.GM || current === MAP_MODES.GM_DUNGEON ? current : MAP_MODES.IDLE));
     }
   }
 
@@ -2380,7 +2412,7 @@ function App() {
       "Redid last action",
     );
     if (payload) {
-      setMapMode((current) => (current === MAP_MODES.GM_DUNGEON ? current : MAP_MODES.IDLE));
+      setMapMode((current) => (current === MAP_MODES.GM || current === MAP_MODES.GM_DUNGEON ? current : MAP_MODES.IDLE));
     }
   }
 
@@ -2425,21 +2457,23 @@ function App() {
     setModal("add");
   }
 
-  function toggleGmRepositionMode() {
+  function toggleGmMode() {
     setActionMenuOpen(false);
     setUnitContextMenu(null);
-    if (isGmRepositionMode) {
+    setInfoMarkerContextMenu(null);
+    if (isGmMode) {
       setSelectedUnitIds([]);
       setMapMode(MAP_MODES.IDLE);
       return;
     }
     setSelectedUnitIds(selectedEntity ? [selectedEntity.instance_id] : []);
-    setMapMode(MAP_MODES.GM_REPOSITION);
+    setMapMode(MAP_MODES.GM);
   }
 
   function toggleGmDungeonMode() {
     setActionMenuOpen(false);
     setUnitContextMenu(null);
+    setInfoMarkerContextMenu(null);
     if (isGmDungeonMode) {
       exitGmDungeonMode();
     } else {
@@ -2737,7 +2771,7 @@ function App() {
     const syncLocalSelection = options.syncLocalSelection !== false;
     if (preserveMapMode && syncLocalSelection) {
       setSelectedUnitIds([instanceId]);
-    } else if (mapMode !== MAP_MODES.GM_REPOSITION && mapMode !== MAP_MODES.GM_DUNGEON) {
+    } else if (mapMode !== MAP_MODES.GM && mapMode !== MAP_MODES.GM_DUNGEON) {
       setSelectedUnitIds([]);
     }
     if (snapshot?.selectedId === instanceId) {
@@ -2852,7 +2886,8 @@ function App() {
         : null;
     setActionMenuOpen(false);
     setUnitContextMenu(null);
-    const payload = await selectEntityForAction(instanceId, { preserveMapMode: isGmRepositionMode || isGmDungeonMode });
+    setInfoMarkerContextMenu(null);
+    const payload = await selectEntityForAction(instanceId, { preserveMapMode: isGmMode || isGmDungeonMode });
     if (!payload?.enemies?.some((entity) => entity.instance_id === instanceId)) {
       return;
     }
@@ -2866,7 +2901,7 @@ function App() {
     }
     setUnitContextMenu(null);
     setActionMenuOpen(false);
-    setMapMode((m) => (m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
+    setMapMode((m) => (m === MAP_MODES.GM || m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
     setAttackTarget(null);
     setAttackForm(EMPTY_ATTACK_FORM);
     setModal("attack");
@@ -2880,7 +2915,7 @@ function App() {
     }
     setUnitContextMenu(null);
     setActionMenuOpen(false);
-    setMapMode((m) => (m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
+    setMapMode((m) => (m === MAP_MODES.GM || m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
     setAttackTarget({
       targetId: grapple.targetId,
       targetMode: "grapple",
@@ -2898,7 +2933,7 @@ function App() {
     }
     setUnitContextMenu(null);
     setActionMenuOpen(false);
-    setMapMode((m) => (m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
+    setMapMode((m) => (m === MAP_MODES.GM || m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
     setHealForm(EMPTY_HEAL_FORM);
     setModal("heal");
   }
@@ -2911,7 +2946,14 @@ function App() {
     setUnitContextMenu(null);
     setActionMenuOpen(false);
     setMapMode((current) => {
-      repositionReturnModeRef.current = current === MAP_MODES.GM_DUNGEON ? current : null;
+      // In GM / map-edit (gm-dungeon) the entity is repositioned by dragging it
+      // directly, so stay in the current mode instead of bouncing through the
+      // regular reposition map and back (which also blocked cross-room moves).
+      if (current === MAP_MODES.GM || current === MAP_MODES.GM_DUNGEON) {
+        repositionReturnModeRef.current = null;
+        return current;
+      }
+      repositionReturnModeRef.current = null;
       return MAP_MODES.REPOSITION;
     });
   }
@@ -2919,7 +2961,7 @@ function App() {
   async function inspectLootForEntity(instanceId) {
     setUnitContextMenu(null);
     setActionMenuOpen(false);
-    setMapMode((m) => (m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
+    setMapMode((m) => (m === MAP_MODES.GM || m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
     await applySnapshotRequest(
       `/api/battle/sessions/${snapshot.sid}/entities/${instanceId}/loot/inspect`,
       {
@@ -2948,7 +2990,7 @@ function App() {
     }
     setUnitContextMenu(null);
     setActionMenuOpen(false);
-    setMapMode((m) => (m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
+    setMapMode((m) => (m === MAP_MODES.GM || m === MAP_MODES.GM_DUNGEON ? m : MAP_MODES.IDLE));
     await applySnapshotRequest(
       `/api/battle/sessions/${snapshot.sid}/entities/${instanceId}/loot/take`,
       {
@@ -2965,6 +3007,7 @@ function App() {
       return;
     }
     setUnitContextMenu(null);
+    setInfoMarkerContextMenu(null);
     setActionMenuOpen(false);
     setPreviewEntityId(instanceId);
     setUnitDetailsMode(mode);
@@ -2981,6 +3024,23 @@ function App() {
 
   function openUnitEditor(instanceId) {
     openUnitDetails(instanceId, "edit");
+  }
+
+  function toggleUnitDetailsGmMode(enabled) {
+    const targetId = previewEntity?.instance_id || selectedEntity?.instance_id || "";
+    setUnitDetailsSourceConfirm(false);
+    setActionMenuOpen(false);
+    setUnitContextMenu(null);
+    setInfoMarkerContextMenu(null);
+    if (enabled) {
+      setSelectedUnitIds(targetId ? [targetId] : []);
+      setMapMode(MAP_MODES.GM);
+      setUnitDetailsMode("edit");
+      return;
+    }
+    setSelectedUnitIds([]);
+    setMapMode((current) => (current === MAP_MODES.GM ? MAP_MODES.IDLE : current));
+    setUnitDetailsMode("show");
   }
 
   function updateUnitDetailsForm(path, value) {
@@ -3010,15 +3070,11 @@ function App() {
     setUnitDetailsSourceConfirm(false);
   }
 
-  async function handleInfoMarkerClick(markerId) {
+  async function showInfoMarker(markerId) {
     const marker = (dungeon?.infoMarkers || []).find((item) => item.id === markerId);
     if (!marker) return;
-    if (isGmDungeonMode && gmDungeonDrawSubmode === GM_DUNGEON_DRAW_SUBMODES.INFO) {
-      openInfoMarkerEditor(marker);
-      return;
-    }
     const state = dungeon?.infoMarkerStates?.[markerId] || {};
-    const gmMode = Boolean(isGmRepositionMode || isGmDungeonMode);
+    const gmMode = Boolean(isGmMode || isGmDungeonMode);
     if (marker.trigger === "check" && !state.unlocked) {
       const payload = await applySnapshotRequest(`/api/battle/sessions/${snapshot.sid}/dungeon/info-markers/${encodeURIComponent(markerId)}/check`, {
         method: "POST",
@@ -3045,6 +3101,36 @@ function App() {
       body: JSON.stringify({ gmMode }),
     });
     showSearchFlavour(payload);
+  }
+
+  async function showInfoMarkerFromMenu(markerId) {
+    setInfoMarkerContextMenu(null);
+    await showInfoMarker(markerId);
+  }
+
+  function editInfoMarkerFromMenu(marker) {
+    setInfoMarkerContextMenu(null);
+    openInfoMarkerEditor(marker);
+  }
+
+  async function handleInfoMarkerClick(markerId, point = null) {
+    const marker = (dungeon?.infoMarkers || []).find((item) => item.id === markerId);
+    if (!marker) return;
+    if (isGmDungeonMode && gmDungeonDrawSubmode === GM_DUNGEON_DRAW_SUBMODES.INFO) {
+      openInfoMarkerEditor(marker);
+      return;
+    }
+    if (isGmMode) {
+      setActionMenuOpen(false);
+      setUnitContextMenu(null);
+      setInfoMarkerContextMenu({
+        markerId,
+        x: Number.isFinite(point?.clientX) ? point.clientX : 0,
+        y: Number.isFinite(point?.clientY) ? point.clientY : 0,
+      });
+      return;
+    }
+    await showInfoMarker(markerId);
   }
 
   function updateUnitCondition(key, stacks) {
@@ -3173,23 +3259,26 @@ function App() {
     }
   }
 
-  async function submitReposition(x, y) {
-    if (!selectedEntity) {
+  async function submitReposition(x, y, instanceId) {
+    const entity = instanceId
+      ? (orderedEnemies.find((candidate) => candidate.instance_id === instanceId) || selectedEntity)
+      : selectedEntity;
+    if (!entity) {
       return;
     }
     const payload = await applySnapshotRequest(
-      `/api/battle/sessions/${snapshot.sid}/entities/${selectedEntity.instance_id}/position`,
+      `/api/battle/sessions/${snapshot.sid}/entities/${entity.instance_id}/position`,
       {
         method: "POST",
         body: JSON.stringify({ x, y }),
       },
-      `Repositioned ${selectedEntity.name}`,
+      `Repositioned ${entity.name}`,
     );
     if (payload) {
       const returnMode = repositionReturnModeRef.current;
       repositionReturnModeRef.current = null;
       setMapMode((current) => {
-        if (current === MAP_MODES.GM_REPOSITION) return current;
+        if (current === MAP_MODES.GM || current === MAP_MODES.GM_DUNGEON) return current;
         return returnMode ?? MAP_MODES.IDLE;
       });
     }
@@ -3239,8 +3328,8 @@ function App() {
   }
 
   async function handleMoveSelectedToCell(x, y, target = {}) {
-    if (mapMode === MAP_MODES.REPOSITION || mapMode === MAP_MODES.GM_REPOSITION || target.mode === "reposition") {
-      await submitReposition(x, y);
+    if (mapMode === MAP_MODES.REPOSITION || mapMode === MAP_MODES.GM || target.mode === "reposition") {
+      await submitReposition(x, y, target.instanceId);
       return;
     }
     if (mapMode === MAP_MODES.WALK || target.mode === "walk") {
@@ -3593,7 +3682,7 @@ function App() {
     }
     setActionMenuOpen(false);
     setUnitContextMenu(null);
-    setMapMode((current) => (current === MAP_MODES.GM_DUNGEON ? current : MAP_MODES.IDLE));
+    setMapMode((current) => (current === MAP_MODES.GM || current === MAP_MODES.GM_DUNGEON ? current : MAP_MODES.IDLE));
     setStrengthenTargetId("");
     setActionTargeting({
       action: "strengthen",
@@ -4387,13 +4476,13 @@ function App() {
                 </>
               )}
               <button
-                className={`menu-button gm-reposition-button ${isGmRepositionMode ? "gm-reposition-active" : ""}`.trim()}
+                className={`menu-button gm-mode-button ${isGmMode ? "gm-mode-active" : ""}`.trim()}
                 type="button"
-                title={isGmRepositionMode ? "Exit GM Mode." : "GM Mode: reposition units, reveal hidden map details, and edit live units."}
-                onClick={toggleGmRepositionMode}
-                disabled={busy || !canUseGmReposition}
+                title={isGmMode ? "Exit GM Mode." : "GM Mode: reveal hidden map details, edit live units, and use GM actions."}
+                onClick={toggleGmMode}
+                disabled={busy || !canUseGmMode}
               >
-                {isGmRepositionMode ? "Exit GM Mode" : "GM Mode"}
+                {isGmMode ? "Exit GM Mode" : "GM Mode"}
               </button>
               <button
                 className={`menu-button gm-dungeon-button ${isGmDungeonMode ? "gm-dungeon-active" : ""}`.trim()}
@@ -4452,7 +4541,10 @@ function App() {
             />
           ) : null}
 
-          <section className="battle-stage">
+          <section
+            className={`battle-stage ${isGmMode ? "battle-stage-gm-active" : ""}`.trim()}
+            data-gm-active={isGmMode ? "true" : "false"}
+          >
             <BattleRoom
               room={room}
               entities={isGmDungeonMode ? orderedEnemies : orderedEnemies.filter(isEntityVisible)}
@@ -4494,7 +4586,12 @@ function App() {
               onUnitContextMenu={handleUnitContextMenu}
               onUnitDoubleClick={handleUnitDoubleClick}
             />
-            {(isGmDungeonMode || (isGmRepositionMode && gmSelectedSecretDoorKey)) && dungeon && (
+            {isGmMode ? (
+              <div className="gm-map-banner" aria-hidden="true">
+                GM Mode
+              </div>
+            ) : null}
+            {(isGmDungeonMode || (isGmMode && gmSelectedSecretDoorKey)) && dungeon && (
               <div className="dungeon-room-panel">
                 <div className="dungeon-room-panel-header">
                   <button
@@ -5212,7 +5309,7 @@ function App() {
                       {selectedEntity.is_player ? <span className="badge">Player</span> : <span className="badge badge-enemy">Enemy</span>}
                       {selectedUsesPhysicalCards ? <span className="badge badge-status">Physical cards</span> : null}
                       {selectedEntity.is_down ? <span className="badge badge-down">{selectedIsKo ? "KO" : "Down"}</span> : null}
-                      {isGmRepositionMode ? (
+                      {isGmMode ? (
                         <button
                           className="small-button unit-inspector-edit-button"
                           type="button"
@@ -5670,10 +5767,40 @@ function App() {
             className="secondary-button unit-context-item"
             type="button"
             role="menuitem"
-            onClick={() => (isGmRepositionMode ? openUnitEditor(contextMenuEntity.instance_id) : openUnitPreview(contextMenuEntity.instance_id))}
+            onClick={() => (isGmMode ? openUnitEditor(contextMenuEntity.instance_id) : openUnitPreview(contextMenuEntity.instance_id))}
             disabled={busy}
           >
-            {isGmRepositionMode ? "Edit Unit" : "Show unit"}
+            {isGmMode ? "Edit Unit" : "Show unit"}
+          </button>
+        </div>
+      ) : null}
+
+      {infoMarkerContextMenu && infoMarkerContextMarker ? (
+        <div
+          ref={infoMarkerContextMenuRef}
+          className="unit-context-menu info-marker-context-menu"
+          role="menu"
+          aria-label={`Info marker actions for ${infoMarkerContextMarker.title || "info marker"}`}
+          style={{ left: `${infoMarkerContextMenu.x}px`, top: `${infoMarkerContextMenu.y}px` }}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <button
+            className="secondary-button unit-context-item"
+            type="button"
+            role="menuitem"
+            onClick={() => showInfoMarkerFromMenu(infoMarkerContextMarker.id)}
+            disabled={busy}
+          >
+            Show info
+          </button>
+          <button
+            className="secondary-button unit-context-item"
+            type="button"
+            role="menuitem"
+            onClick={() => editInfoMarkerFromMenu(infoMarkerContextMarker)}
+            disabled={busy}
+          >
+            Edit marker
           </button>
         </div>
       ) : null}
@@ -5710,6 +5837,8 @@ function App() {
             onApply={() => applyUnitDetails({ close: true })}
             onSaveSource={() => applyUnitDetails({ close: true, sourceCharacter: true })}
             onCancel={closeModal}
+            gmModeActive={isGmMode}
+            onGmModeToggle={toggleUnitDetailsGmMode}
           />
         ) : null}
       </ModalShell>
@@ -9587,6 +9716,8 @@ function UnitDetailsModalContent({
   onApply,
   onSaveSource,
   onCancel,
+  gmModeActive = false,
+  onGmModeToggle,
 }) {
   if (!entity || !form) {
     return null;
@@ -9603,19 +9734,30 @@ function UnitDetailsModalContent({
 
   return (
     <div className={`unit-details ${editable ? "unit-details-editable" : "unit-details-readonly"}`.trim()}>
-      <div className="add-unit-tabs unit-detail-tabs" role="tablist">
-        {UNIT_DETAIL_TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            role="tab"
-            className={activeTab === tab.id ? "active" : ""}
-            aria-selected={activeTab === tab.id}
-            onClick={() => onTabChange(tab.id)}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="unit-details-topbar">
+        <div className="add-unit-tabs unit-detail-tabs" role="tablist">
+          {UNIT_DETAIL_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              className={activeTab === tab.id ? "active" : ""}
+              aria-selected={activeTab === tab.id}
+              onClick={() => onTabChange(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <label className={`toggle-field unit-details-gm-toggle ${gmModeActive ? "toggle-active" : ""}`.trim()}>
+          <input
+            type="checkbox"
+            checked={gmModeActive}
+            onChange={(event) => onGmModeToggle?.(event.target.checked)}
+            disabled={busy}
+          />
+          <span>GM Mode</span>
+        </label>
       </div>
 
       {error ? <div className="status-banner status-error unit-details-error">{error}</div> : null}

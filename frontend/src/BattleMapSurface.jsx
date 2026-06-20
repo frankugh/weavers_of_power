@@ -784,10 +784,8 @@ function drawInfoMarkers(PIXI, container, dungeon, renderIndex, range, cellSize,
     const y = Number(marker.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
     if (!isCellInRange(x, y, range)) continue;
-    if (!isGmMode) {
-      const roomCell = roomCellToRoom.get(`${x},${y}`);
-      if (roomCell && !revealedSet.has(roomCell.room_id)) continue;
-    }
+    const roomCell = roomCellToRoom.get(`${x},${y}`);
+    if (roomCell && !revealedSet.has(roomCell.room_id)) continue;
     const cx = padding + x * step + cellSize / 2;
     const cy = padding + y * step + cellSize / 2;
     const radius = Math.max(6, Math.round(cellSize * 0.2));
@@ -1085,7 +1083,7 @@ function drawMoveHighlights(
     return;
   }
 
-  const isRepositionMode = mapMode === "reposition" || mapMode === "gm-reposition";
+  const isRepositionMode = mapMode === "reposition";
   const isRouteMode = mapMode === "move" || mapMode === "walk" || mapMode === "party-walk";
   const usesDungeonGrid = Boolean(dungeon?.tiles);
   if (isRepositionMode) {
@@ -1351,7 +1349,7 @@ function drawStaticMapLayer(
   }
   const { layers } = renderer;
   const isGmDungeonMode = mapMode === "gm-dungeon";
-  const isGmInfoMode = mapMode === "gm-dungeon" || mapMode === "gm-reposition";
+  const isGmInfoMode = mapMode === "gm-dungeon" || mapMode === "gm";
   const unbounded = Boolean(dungeon?.tiles);
   const range = visibleCellRange(camera, viewport, cellSize);
   drawGrid(layers.terrain, room, cellSize, { unbounded, camera, viewport });
@@ -1604,6 +1602,13 @@ function BattleMapSurface({
   const cameraRef = useRef({ x: 0, y: 0 });
   const viewportRef = useRef(VIEWPORT_FALLBACK);
   const usesDungeonGrid = Boolean(dungeon?.tiles);
+  // GM contexts where any unit can be freely drag-repositioned with the regular
+  // drag preview: live GM mode, and map-edit (gm-dungeon) while in Select.
+  const isGmRepositionContext =
+    mapMode === "gm" || (mapMode === "gm-dungeon" && gmDungeonInteractionMode === "select");
+  // Map-edit (gm-dungeon) may drop onto any non-wall cell, including rooms that
+  // are still hidden from players. Live GM mode still restricts to visible cells.
+  const allowsHiddenRepositionTargets = mapMode === "gm-dungeon" && gmDungeonInteractionMode === "select";
 
   const [cellSize, setCellSize] = useState(MAP_ZOOM.defaultSize);
   const [camera, setCamera] = useState(() =>
@@ -2177,9 +2182,6 @@ function BattleMapSurface({
     if (!marker) {
       return false;
     }
-    if (mapMode === "gm-dungeon" || mapMode === "gm-reposition") {
-      return true;
-    }
     return isDungeonCellVisibleToPlayers(dungeon, renderIndex, Number(marker.x), Number(marker.y));
   }
 
@@ -2231,6 +2233,9 @@ function BattleMapSurface({
     if (mapMode === "reposition" && selectedEntity?.instance_id === occupant.instance_id) {
       return "reposition";
     }
+    if (isGmRepositionContext) {
+      return "reposition";
+    }
     if (
       mapMode === "party-walk" &&
       canUsePartyWalk &&
@@ -2249,7 +2254,14 @@ function BattleMapSurface({
   }
 
   function isRepositionDropCell(cell, entity) {
-    if (!cell || !isVisibleWalkableRepositionCell(cell)) {
+    if (!cell) {
+      return false;
+    }
+    if (allowsHiddenRepositionTargets) {
+      if (usesDungeonGrid && dungeonBlocksCell(dungeon, cell.x, cell.y)) {
+        return false;
+      }
+    } else if (!isVisibleWalkableRepositionCell(cell)) {
       return false;
     }
     const blocking = blockingByPosition.get(positionKey(cell.x, cell.y));
@@ -2361,7 +2373,7 @@ function BattleMapSurface({
   }
 
   function currentSelectionIds() {
-    if ((mapMode === "gm-dungeon" && gmDungeonInteractionMode === "select") || mapMode === "gm-reposition") {
+    if ((mapMode === "gm-dungeon" && gmDungeonInteractionMode === "select") || mapMode === "gm") {
       return selectedUnitIds || [];
     }
     return selectedId ? [selectedId] : [];
@@ -2579,8 +2591,8 @@ function BattleMapSurface({
     const isGmDungeonWallDraw = isGmDungeonDrawMode && gmDungeonDrawSubmode === "walls";
     const isGmDungeonSelectMode = mapMode === "gm-dungeon" && gmDungeonInteractionMode === "select";
     const isGmDungeonDragMode = mapMode === "gm-dungeon" && gmDungeonInteractionMode === "drag";
-    const canSelectSecretDoorEdge = isGmDungeonSelectMode || mapMode === "gm-reposition";
-    const isMultiSelectMode = isGmDungeonSelectMode || mapMode === "gm-reposition";
+    const canSelectSecretDoorEdge = isGmDungeonSelectMode || mapMode === "gm";
+    const isMultiSelectMode = isGmDungeonSelectMode || mapMode === "gm";
 
     if (isGmDungeonDragMode && !busy && (isMiddleMouse || isLeftMouse || pointerType === "touch")) {
       event.preventDefault();
@@ -2674,16 +2686,19 @@ function BattleMapSurface({
       const occupant = getTopSelectableEntity(getEntitiesAtPosition(entitiesByPosition, cell));
       const selectedSet = new Set(currentSelectionIds());
       if (occupant && selectedSet.has(occupant.instance_id) && !isAdditiveSelect(event) && !isSubtractiveSelect(event)) {
-        groupDragRef.current = {
-          pointerId,
-          startX: point.x,
-          startY: point.y,
-          startCell: cell,
-          dragging: false,
-          positions: selectedGroupPositions(),
-        };
-        surfaceRef.current?.setPointerCapture?.(pointerId);
-        return;
+        const isGroupDrag = selectedSet.size > 1;
+        if (isGroupDrag) {
+          groupDragRef.current = {
+            pointerId,
+            startX: point.x,
+            startY: point.y,
+            startCell: cell,
+            dragging: false,
+            positions: selectedGroupPositions(),
+          };
+          surfaceRef.current?.setPointerCapture?.(pointerId);
+          return;
+        }
       }
       if (!occupant) {
         selectionDragRef.current = {
@@ -2897,7 +2912,10 @@ function BattleMapSurface({
               input: "drag",
             });
           } else if (unitDrag.mode === "reposition") {
-            onMoveToCell?.(targetCell.x, targetCell.y, { mode: "reposition" });
+            onMoveToCell?.(targetCell.x, targetCell.y, {
+              mode: "reposition",
+              instanceId: unitDrag.entity.instance_id,
+            });
           }
         }
         return;
@@ -2920,7 +2938,10 @@ function BattleMapSurface({
               x: position.x + deltaX,
               y: position.y + deltaY,
             }));
-            if (mapMode !== "gm-reposition" || placements.every((placement) => isVisibleWalkableRepositionCell(placement))) {
+            const placementsAllowed = allowsHiddenRepositionTargets
+              ? placements.every((placement) => !usesDungeonGrid || !dungeonBlocksCell(dungeon, placement.x, placement.y))
+              : mapMode !== "gm" || placements.every((placement) => isVisibleWalkableRepositionCell(placement));
+            if (placementsAllowed) {
               onGroupMove?.(placements);
             }
           }
@@ -2978,8 +2999,8 @@ function BattleMapSurface({
     const blockingOccupant = getBlockingEntity(cellEntities);
     const occupant = getTopSelectableEntity(cellEntities);
     const isGmDungeonSelectMode = mapMode === "gm-dungeon" && gmDungeonInteractionMode === "select";
-    const canSelectSecretDoorEdge = isGmDungeonSelectMode || mapMode === "gm-reposition";
-    const isMultiSelectMode = isGmDungeonSelectMode || mapMode === "gm-reposition";
+    const canSelectSecretDoorEdge = isGmDungeonSelectMode || mapMode === "gm";
+    const isMultiSelectMode = isGmDungeonSelectMode || mapMode === "gm";
 
     if (actionTargeting) {
       if (clickedGrapple) {
@@ -3025,10 +3046,10 @@ function BattleMapSurface({
       }
     }
 
-    if (!occupant && !isMultiSelectMode && onInfoMarkerClick) {
-      const marker = getInfoMarkerAtCell(clickCell, { includeHidden: mapMode === "gm-reposition" || mapMode === "gm-dungeon" });
+    if (!occupant && (!isMultiSelectMode || mapMode === "gm") && onInfoMarkerClick) {
+      const marker = getInfoMarkerAtCell(clickCell, { includeHidden: mapMode === "gm" || mapMode === "gm-dungeon" });
       if (marker) {
-        onInfoMarkerClick(marker.id);
+        onInfoMarkerClick(marker.id, { clientX: event.clientX, clientY: event.clientY });
         return;
       }
     }
@@ -3072,15 +3093,11 @@ function BattleMapSurface({
       onSelect(selectedOccupant.instance_id);
       return;
     }
-    const canSingleReposition =
-      mapMode !== "gm-reposition" ||
-      (currentSelection.length === 1 && currentSelection[0] === selectedEntity?.instance_id);
     if (
-      (mapMode === "reposition" || mapMode === "gm-reposition") &&
+      mapMode === "reposition" &&
       selectedEntity &&
       !busy &&
       !blockingOccupant &&
-      canSingleReposition &&
       isVisibleWalkableRepositionCell(clickCell)
     ) {
       onMoveToCell(clickCell.x, clickCell.y, { mode: "reposition" });
@@ -3260,7 +3277,7 @@ function BattleMapSurface({
         data-camera-y={camera.y}
         data-pixi-ready={pixiReady ? "true" : "false"}
         data-map-mode={mapMode}
-        data-gm-interaction-mode={mapMode === "gm-dungeon" ? gmDungeonInteractionMode : mapMode === "gm-reposition" ? "select" : ""}
+        data-gm-interaction-mode={mapMode === "gm-dungeon" ? gmDungeonInteractionMode : mapMode === "gm" ? "select" : ""}
         data-selected-unit-ids={(selectedUnitIds || []).join(",")}
         data-action-target-mode={actionTargeting?.action || ""}
         data-action-target-ids={(actionTargeting?.validTargetIds || []).join(",")}

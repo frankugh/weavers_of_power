@@ -1,18 +1,17 @@
 
 Protocol voor AI:  Je mag hier een todo weghalen als opgepakt, maar zet hem dan wel helemaal onderaan dit bestand onderop bij de voltooide taken
 
-
-- GM mode moet niet continue loop modus zijn
-- GM mode moet ieder zichtbaar i'tje kunnen klikken (klik, komt menu met show info, waar je o kunt doorklikken
-- Drag & draw in gm modus moet hetzelfde ogen en werken als daarbuiten en mag als reposition gelden
-- Miss een blauwe gm mode banner zichtbaar boven de map view
-- GM Mode toggle optie in het show unit scherm?
+- Het was niet de bedoeling om invisible info markers visible te maken in GM modus, alleen visible info markers zijn klikbaar / zichtbaar
 
 ----
 
 TODO:
 
+- Large creatures moeten 2x2 velden in beslag nemen, Huge 3x3, gargantuan 4x4
+
 - Dubbelklik op plaatje in show unit toont plaatje zo groot als netjes te doen is. en dan erbuiten klikken sluit die extra pop-up. Kan dit? Dit is in principe een pop-up op een pop-up natuurlijk
+
+- Ik wil plaatjes bij scene's en bij info/interaction markers (in map) willen kunnen plaatsen. 
 
 Equipment, loot, show unit:
 
@@ -272,8 +271,15 @@ f Als GM modus aan staat wil ik de optie hebben om stats en condities te wijzige
 
 - Gangup in combat sim fixed
 
-- De secret door met DC 0 vond ik niet toen ik 0 successen had, maar die zou je moeten auto finden als je zoekt.
+- De secret door met DC 0 vond ik niet toen ik 0 successen had, maar die zou je moeten auto finden als je zoekt. 
 
 - markdown voor scene's
 
-- Pijlen ('edges') tussen scene's gaat de pijl naar het midden van target ipv naar de edge, waardoor je geen pijl ziet maar een lijn tussen 2 nodes.
+- Pijlen ('edges') tussen scene's gaat de pijl naar het midden van target ipv naar de edge, waardoor je geen pijl ziet maar een lijn tussen 2 nodes. 
+
+- GM Modus:
+	o GM mode moet niet continue loop modus zijn
+	o GM mode moet ieder zichtbaar i'tje kunnen klikken (klik komt dan menu met show info, waar je op kunt doorklikken 
+	o Drag & draw in gm modus moet hetzelfde ogen en werken als daarbuiten en mag als reposition gelden
+	o Miss een blauwe gm mode banner zichtbaar boven de map view 
+	o GM Mode toggle optie in het show unit scherm? 

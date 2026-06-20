@@ -5313,6 +5313,18 @@ describe("App", () => {
     expect(previewImage).toHaveAttribute("src", "/images/Outlaws/bandit.png");
     expect(within(previewModal).getByRole("tab", { name: "Stats" })).toBeInTheDocument();
     expect(within(previewModal).queryByRole("button", { name: "Apply" })).not.toBeInTheDocument();
+    const gmToggle = within(previewModal).getByLabelText("GM Mode");
+    expect(gmToggle).not.toBeChecked();
+
+    fireEvent.click(gmToggle);
+    expect(getMapViewport().dataset.mapMode).toBe("gm");
+    expect(within(previewModal).getByText("Edit Unit")).toBeInTheDocument();
+    expect(within(previewModal).getByRole("button", { name: "Apply" })).toBeInTheDocument();
+
+    fireEvent.click(within(previewModal).getByLabelText("GM Mode"));
+    expect(getMapViewport().dataset.mapMode).toBe("idle");
+    expect(within(previewModal).getByText("Show Unit")).toBeInTheDocument();
+    expect(within(previewModal).queryByRole("button", { name: "Apply" })).not.toBeInTheDocument();
 
     await user.click(within(previewModal).getAllByRole("button", { name: "Close" })[1]);
     expect(screen.queryByRole("img", { name: "Bandit 1 portrait" })).not.toBeInTheDocument();
@@ -5376,7 +5388,7 @@ describe("App", () => {
     );
 
     const gmButton = await screen.findByRole("button", { name: "GM Mode" });
-    expect(gmButton).toHaveAttribute("title", "GM Mode: reposition units, reveal hidden map details, and edit live units.");
+    expect(gmButton).toHaveAttribute("title", "GM Mode: reveal hidden map details, edit live units, and use GM actions.");
     await user.click(gmButton);
     pointerRightClickMapCell(5, 3);
     const menu = await screen.findByRole("menu", { name: "Unit actions for Bandit 1" });
@@ -5647,7 +5659,7 @@ describe("App", () => {
     expect(await screen.findByText("Quick Attack: Goblin 1 attacks Bandit 1 with Attack 3.")).toBeInTheDocument();
   });
 
-  it("keeps GM reposition mode active while selecting and placing units", async () => {
+  it("keeps GM mode active while selecting and drag-repositioning units", async () => {
     const user = userEvent.setup();
     const bandit = buildEnemy({
       instance_id: "enemy-2",
@@ -5668,6 +5680,7 @@ describe("App", () => {
       enemies: [buildEnemy(), { ...bandit, grid_x: 0, grid_y: 0 }],
       combatLog: ["Repositioned Bandit 1 to (1, 1)"],
     });
+    const repositionCalls = [];
 
     renderWithSnapshot(
       buildSnapshot({
@@ -5680,6 +5693,7 @@ describe("App", () => {
             return jsonResponse(selectedBanditSnapshot);
           }
           if (url === "/api/battle/sessions/sid-123/entities/enemy-2/position" && requestOptions?.method === "POST") {
+            repositionCalls.push(JSON.parse(requestOptions.body));
             return jsonResponse(repositionedSnapshot);
           }
           return undefined;
@@ -5689,7 +5703,10 @@ describe("App", () => {
 
     await findMapToken("Bandit 1");
     await user.click(screen.getByRole("button", { name: "GM Mode" }));
-    expect(getMapViewport().dataset.mapMode).toBe("gm-reposition");
+    expect(getMapViewport().dataset.mapMode).toBe("gm");
+    expect(document.querySelector(".battle-stage")).toHaveAttribute("data-gm-active", "true");
+    expect(document.querySelector(".battle-stage-gm-active")).not.toBeNull();
+    expect(document.querySelector(".gm-map-banner")).toHaveTextContent("GM Mode");
 
     pointerClickMapCell(5, 3);
     await waitFor(() => {
@@ -5702,24 +5719,21 @@ describe("App", () => {
       );
     });
     await waitFor(() => {
-      expect(getMapViewport().dataset.mapMode).toBe("gm-reposition");
+      expect(getMapViewport().dataset.mapMode).toBe("gm");
     });
 
     pointerClickMapCell(0, 0);
+    expect(repositionCalls).toEqual([]);
+
+    pointerDragBetweenCells(5, 3, 0, 0, { pointerId: 94 });
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(
-        "/api/battle/sessions/sid-123/entities/enemy-2/position",
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({ x: 0, y: 0 }),
-        }),
-      );
+      expect(repositionCalls).toEqual([{ x: 0, y: 0 }]);
     });
     expect(screen.getByRole("button", { name: "Exit GM Mode" })).toBeInTheDocument();
-    expect(getMapViewport().dataset.mapMode).toBe("gm-reposition");
+    expect(getMapViewport().dataset.mapMode).toBe("gm");
   });
 
-  it("lets GM reposition select and reveal a secret door edge", async () => {
+  it("lets GM mode select and reveal a secret door edge", async () => {
     const user = userEvent.setup();
     const dungeon = buildDungeon({
       walls: { "0,0,e": { wall_type: "secret_door", door_open: false, secret_discovered: false, secret_dc: 2 } },
@@ -5747,7 +5761,7 @@ describe("App", () => {
     expect(revealCalls).toEqual([{ x: 0, y: 0, side: "e" }]);
   });
 
-  it("limits GM reposition dungeon targets to visible rooms", async () => {
+  it("limits GM drag reposition dungeon targets to visible rooms", async () => {
     const user = userEvent.setup();
     const dungeon = buildDungeon({
       tiles: {
@@ -5772,12 +5786,12 @@ describe("App", () => {
       enemies: [{ ...goblin, grid_x: 1, grid_y: 0 }],
       combatLog: ["Repositioned Goblin 1 to (2, 1)"],
     });
-    const positionCalls = [];
+    const repositionCalls = [];
 
     renderWithSnapshot(buildSnapshot({ dungeon, enemies: [goblin] }), {
       extraFetch: (url, requestOptions) => {
         if (url === "/api/battle/sessions/sid-123/entities/enemy-1/position" && requestOptions?.method === "POST") {
-          positionCalls.push(JSON.parse(requestOptions.body));
+          repositionCalls.push(JSON.parse(requestOptions.body));
           return jsonResponse(movedSnapshot);
         }
         return undefined;
@@ -5787,12 +5801,12 @@ describe("App", () => {
     await findMapToken("Goblin 1");
     await user.click(screen.getByRole("button", { name: "GM Mode" }));
 
-    pointerClickMapCell(3, 0, 93);
-    expect(positionCalls).toEqual([]);
+    pointerDragBetweenCells(0, 0, 3, 0, { pointerId: 93 });
+    expect(repositionCalls).toEqual([]);
 
-    pointerClickMapCell(1, 0, 94);
+    pointerDragBetweenCells(0, 0, 1, 0, { pointerId: 95 });
     await waitFor(() => {
-      expect(positionCalls).toEqual([{ x: 1, y: 0 }]);
+      expect(repositionCalls).toEqual([{ x: 1, y: 0 }]);
     });
   });
 
@@ -6807,6 +6821,58 @@ describe("App", () => {
       trigger: "auto",
       interactionRange: "visible",
     }));
+  });
+
+  it("opens a GM info marker menu with show info and edit marker actions", async () => {
+    const user = userEvent.setup();
+    const dungeon = buildDungeon({
+      infoMarkers: [{
+        id: "mural",
+        x: 1,
+        y: 0,
+        title: "Old mural",
+        text: "The mural shows a fallen sun.",
+        trigger: "click",
+        interactionRange: "visible",
+      }],
+      infoMarkerStates: { mural: {} },
+    });
+    let openBody = null;
+
+    renderWithSnapshot(buildSnapshot({ dungeon, enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })] }), {
+      extraFetch: (url, requestOptions) => {
+        if (url === "/api/battle/sessions/sid-123/dungeon/info-markers/mural/open" && requestOptions?.method === "POST") {
+          openBody = JSON.parse(requestOptions.body);
+          return jsonResponse(buildSnapshot({
+            dungeon: {
+              ...dungeon,
+              infoMarkerStates: { mural: { opened: true } },
+            },
+            enemies: [buildEnemy({ grid_x: 0, grid_y: 0 })],
+            flavourText: "The mural shows a fallen sun.",
+            infoMarkerOpened: { title: "Old mural" },
+          }));
+        }
+        return undefined;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "GM Mode" }));
+    pointerClickMapCell(1, 0, 91);
+
+    const menu = await screen.findByRole("menu", { name: "Info marker actions for Old mural" });
+    expect(within(menu).getByRole("menuitem", { name: "Show info" })).toBeInTheDocument();
+    await user.click(within(menu).getByRole("menuitem", { name: "Edit marker" }));
+
+    const editor = screen.getByText("Edit info marker").closest(".modal-shell");
+    expect(within(editor).getByLabelText("Title")).toHaveValue("Old mural");
+    await user.click(within(editor).getByRole("button", { name: "Cancel" }));
+
+    pointerClickMapCell(1, 0, 92);
+    await user.click(await screen.findByRole("menuitem", { name: "Show info" }));
+
+    await waitFor(() => expect(openBody).toEqual({ gmMode: true }));
+    expect(await screen.findByText("The mural shows a fallen sun.")).toBeInTheDocument();
   });
 
   it("saves the active map directly from the Map Edit toolbar", async () => {
