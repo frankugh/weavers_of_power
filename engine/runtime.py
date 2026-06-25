@@ -79,6 +79,7 @@ def spawn_enemy(
 
         deck_state=DeckState(draw_pile=card_ids, discard_pile=[], hand=[]),
         statuses={},
+        size=getattr(template, "size", None),
     )
 
 

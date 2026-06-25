@@ -482,6 +482,46 @@ class BattleSessionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not walkable|outside"):
             session.set_entity_position(second_id, 99, 0)
 
+    def test_large_creature_occupies_two_by_two_footprint(self) -> None:
+        session = self.context.create_session("map-large-footprint")
+        session.add_enemy_from_template("C_GOBLIN")
+        large_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        other_id = session.selected_id
+
+        session.state.enemies[large_id].size = "Large"
+
+        # Anchor a Large creature at (2, 2); it should fill (2,2),(3,2),(2,3),(3,3).
+        session.set_entity_position(large_id, 2, 2)
+        large = session.state.enemies[large_id]
+        self.assertEqual(set(session._entity_footprint(large)), {(2, 2), (3, 2), (2, 3), (3, 3)})
+
+        # Any cell inside the footprint is occupied for other units.
+        for cell in [(2, 2), (3, 2), (2, 3), (3, 3)]:
+            with self.assertRaisesRegex(ValueError, "occupied"):
+                session.set_entity_position(other_id, cell[0], cell[1])
+
+        # A cell just outside the footprint is free.
+        session.set_entity_position(other_id, 4, 2)
+        self.assertEqual(
+            (session.state.enemies[other_id].grid_x, session.state.enemies[other_id].grid_y),
+            (4, 2),
+        )
+
+    def test_large_creature_cannot_be_placed_overlapping_with_neighbour(self) -> None:
+        session = self.context.create_session("map-large-overlap")
+        session.add_enemy_from_template("C_GOBLIN")
+        small_id = session.selected_id
+        session.add_enemy_from_template("C_GOBLIN")
+        large_id = session.selected_id
+
+        session.set_entity_position(small_id, 3, 3)
+        session.state.enemies[large_id].size = "Large"
+
+        # Anchoring the Large creature at (2,2) would cover (3,3), where the small unit sits.
+        with self.assertRaisesRegex(ValueError, "occupied"):
+            session.set_entity_position(large_id, 2, 2)
+
     def test_set_entity_positions_moves_group_atomically(self) -> None:
         session = self.context.create_session("map-group-position")
         session.add_enemy_from_template("C_GOBLIN")

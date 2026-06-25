@@ -48,7 +48,7 @@ from engine.loader import load_decks
 from engine.loot import roll_loot
 from engine.models import Card, Deck, Effect, EnemyTemplate, LootEntry
 from engine.runtime import BattleState, draw_additional_cards, draw_cards, end_turn, spawn_enemy, start_turn
-from engine.runtime_models import DeckState, DungeonState, DungeonWall, EnemyInstance, GrappleInstance, Tile
+from engine.runtime_models import DeckState, DungeonState, DungeonWall, EnemyInstance, GrappleInstance, Tile, footprint_cells, footprint_for_size
 from persistence import (
     _atomic_write_json,
     dungeon_state_from_dict,
@@ -3536,19 +3536,37 @@ class BattleSession:
             return not self._dungeon_blocks_cell(int(x), int(y))
         return self._position_in_bounds_for_room(x, y, self.room_columns, self.room_rows)
 
+    def _footprint_anchored_at(self, entity: EnemyInstance, x: int, y: int) -> list[tuple[int, int]]:
+        """Cells an entity would occupy if its anchor were placed at (x, y)."""
+        return footprint_cells(x, y, getattr(entity, "size", None))
+
+    def _assert_footprint_placeable(
+        self,
+        entity: EnemyInstance,
+        x: int,
+        y: int,
+        *,
+        exclude_ids: Optional[set[str]] = None,
+    ) -> None:
+        """Validate that an entity's whole footprint fits at the anchor (x, y)."""
+        excluded = set(exclude_ids or set())
+        excluded.add(entity.instance_id)
+        for (cx, cy) in self._footprint_anchored_at(entity, x, y):
+            if not self._position_in_bounds(cx, cy):
+                raise BattleSessionError(f"Position ({cx + 1}, {cy + 1}) is outside the battle map")
+            if not self._position_is_walkable(cx, cy):
+                raise BattleSessionError(f"Position ({cx + 1}, {cy + 1}) is not walkable")
+            occupying = self._entity_at_position(cx, cy, exclude_ids=excluded, blocking_only=True)
+            if occupying:
+                raise BattleSessionError(f"Position ({cx + 1}, {cy + 1}) is occupied by {occupying.name}")
+
     def set_entity_position(self, instance_id: str, x: int, y: int) -> None:
         entity = self.state.enemies.get(instance_id)
         if not entity:
             raise BattleSessionError(f"Entity '{instance_id}' does not exist")
         x = int(x)
         y = int(y)
-        if not self._position_in_bounds(x, y):
-            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is outside the battle map")
-        if not self._position_is_walkable(x, y):
-            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is not walkable")
-        occupying = self._entity_at_position(x, y, exclude_id=instance_id, blocking_only=True)
-        if occupying:
-            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is occupied by {occupying.name}")
+        self._assert_footprint_placeable(entity, x, y)
 
         self._set_position(entity, x, y)
         self.selected_id = instance_id
@@ -3578,21 +3596,21 @@ class BattleSession:
                 y = int(placement.get("y"))
             except (TypeError, ValueError) as exc:
                 raise BattleSessionError(f"Position update for '{instance_id}' needs numeric x and y") from exc
-            if not self._position_in_bounds(x, y):
-                raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is outside the battle map")
-            if not self._position_is_walkable(x, y):
-                raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is not walkable")
-            if (x, y) in target_positions:
-                raise BattleSessionError(f"Multiple units cannot move to ({x + 1}, {y + 1})")
+            footprint = self._footprint_anchored_at(entity, x, y)
+            for (cx, cy) in footprint:
+                if not self._position_in_bounds(cx, cy):
+                    raise BattleSessionError(f"Position ({cx + 1}, {cy + 1}) is outside the battle map")
+                if not self._position_is_walkable(cx, cy):
+                    raise BattleSessionError(f"Position ({cx + 1}, {cy + 1}) is not walkable")
+                if (cx, cy) in target_positions:
+                    raise BattleSessionError(f"Multiple units cannot occupy ({cx + 1}, {cy + 1})")
 
             moving_ids.add(instance_id)
-            target_positions.add((x, y))
+            target_positions.update(footprint)
             normalized.append((entity, x, y))
 
         for entity, x, y in normalized:
-            occupying = self._entity_at_position(x, y, exclude_ids=moving_ids, blocking_only=True)
-            if occupying:
-                raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is occupied by {occupying.name}")
+            self._assert_footprint_placeable(entity, x, y, exclude_ids=moving_ids)
 
         for entity, x, y in normalized:
             self._set_position(entity, x, y)
@@ -3637,13 +3655,7 @@ class BattleSession:
 
         x = int(x)
         y = int(y)
-        if not self._position_in_bounds(x, y):
-            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is outside the battle map")
-        if not self._position_is_walkable(x, y):
-            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is not walkable")
-        occupying = self._entity_at_position(x, y, exclude_id=entity.instance_id, blocking_only=True)
-        if occupying:
-            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is occupied by {occupying.name}")
+        self._assert_footprint_placeable(entity, x, y)
 
         route = self._movement_route(entity, x, y, diagonal_steps_used=0, max_cost=None)
         if route is None:
@@ -3657,9 +3669,7 @@ class BattleSession:
         route_positions = [(int(entity.grid_x), int(entity.grid_y))]
         route_positions.extend((int(step["x"]), int(step["y"])) for step in route_steps)
         actual_x, actual_y = route_positions[-1]
-        actual_occupying = self._entity_at_position(actual_x, actual_y, exclude_id=entity.instance_id, blocking_only=True)
-        if actual_occupying:
-            raise BattleSessionError(f"Position ({actual_x + 1}, {actual_y + 1}) is occupied by {actual_occupying.name}")
+        self._assert_footprint_placeable(entity, actual_x, actual_y)
 
         if self.dungeon:
             for room_id in revealed_rooms:
@@ -4040,13 +4050,7 @@ class BattleSession:
 
         x = int(x)
         y = int(y)
-        if not self._position_in_bounds(x, y):
-            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is outside the battle map")
-        if not self._position_is_walkable(x, y):
-            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is not walkable")
-        occupying = self._entity_at_position(x, y, exclude_id=instance_id, blocking_only=True)
-        if occupying:
-            raise BattleSessionError(f"Position ({x + 1}, {y + 1}) is occupied by {occupying.name}")
+        self._assert_footprint_placeable(entity, x, y)
 
         movement_state = self._movement_state_for_active()
         if movement_state.get("movement_stopped", False):
@@ -7495,6 +7499,15 @@ class BattleSession:
     def _has_position(entity: EnemyInstance) -> bool:
         return getattr(entity, "grid_x", None) is not None and getattr(entity, "grid_y", None) is not None
 
+    @staticmethod
+    def _entity_footprint(entity: EnemyInstance) -> list[tuple[int, int]]:
+        """Cells occupied by an entity, accounting for its creature size."""
+        return footprint_cells(
+            getattr(entity, "grid_x", None),
+            getattr(entity, "grid_y", None),
+            getattr(entity, "size", None),
+        )
+
     def _set_position(self, entity: EnemyInstance, x: Optional[int], y: Optional[int]) -> None:
         entity.grid_x = int(x) if x is not None else None
         entity.grid_y = int(y) if y is not None else None
@@ -7556,7 +7569,9 @@ class BattleSession:
                 continue
             if blocking_only and not self._blocks_position(entity):
                 continue
-            if self._has_position(entity) and int(entity.grid_x) == x and int(entity.grid_y) == y:
+            if not self._has_position(entity):
+                continue
+            if (x, y) in self._entity_footprint(entity):
                 return entity
         return None
 
@@ -7578,8 +7593,10 @@ class BattleSession:
             # Same-faction units are passable during movement (can't stop on them, but can pass through)
             if passthrough_entity is not None and self.is_player(entity) == self.is_player(passthrough_entity):
                 continue
-            if self._has_position(entity) and self._position_in_bounds(entity.grid_x, entity.grid_y):
-                positions.add((int(entity.grid_x), int(entity.grid_y)))
+            if self._has_position(entity):
+                for (cx, cy) in self._entity_footprint(entity):
+                    if self._position_in_bounds(cx, cy):
+                        positions.add((cx, cy))
         return positions
 
     @staticmethod
@@ -7611,10 +7628,20 @@ class BattleSession:
             key=lambda pos: (abs(pos[0] - center_x) + abs(pos[1] - center_y), pos[1], pos[0]),
         )
 
-    def _first_free_position(self, *, exclude_id: Optional[str] = None) -> Optional[tuple[int, int]]:
+    def _first_free_position(
+        self,
+        *,
+        exclude_id: Optional[str] = None,
+        size: Optional[str] = None,
+    ) -> Optional[tuple[int, int]]:
         occupied = self._occupied_positions(exclude_id=exclude_id)
+        side = footprint_for_size(size)
+        candidate_set = set(self._candidate_positions())
         for position in self._candidate_positions():
-            if position not in occupied:
+            footprint = footprint_cells(position[0], position[1], size)
+            if side > 1 and any(cell not in candidate_set for cell in footprint):
+                continue
+            if all(cell not in occupied for cell in footprint):
                 return position
         return None
 
@@ -7654,20 +7681,36 @@ class BattleSession:
         return None
 
     def _auto_place_entity(self, entity: EnemyInstance) -> bool:
-        if self._has_position(entity) and self._position_is_walkable(entity.grid_x, entity.grid_y):
+        if self._has_position(entity) and self._footprint_is_clear(entity):
             return True
-        position = self._first_free_position(exclude_id=entity.instance_id)
+        position = self._first_free_position(
+            exclude_id=entity.instance_id,
+            size=getattr(entity, "size", None),
+        )
         if position is None:
             self._set_position(entity, None, None)
             return False
         self._set_position(entity, position[0], position[1])
         return True
 
+    def _footprint_is_clear(self, entity: EnemyInstance) -> bool:
+        """Whether every cell of an already-placed entity's footprint is valid and unobstructed."""
+        cells = self._entity_footprint(entity)
+        if not cells:
+            return False
+        for (cx, cy) in cells:
+            if not self._position_is_walkable(cx, cy):
+                return False
+            occupying = self._entity_at_position(cx, cy, exclude_id=entity.instance_id, blocking_only=True)
+            if occupying:
+                return False
+        return True
+
     def _auto_place_unplaced_entities(self, instance_ids: Optional[list[str]] = None) -> None:
         ids = instance_ids if instance_ids is not None else self._ordered_enemy_ids()
         for instance_id in ids:
             entity = self.state.enemies.get(instance_id)
-            if entity and not (self._has_position(entity) and self._position_is_walkable(entity.grid_x, entity.grid_y)):
+            if entity and not (self._has_position(entity) and self._footprint_is_clear(entity)):
                 self._auto_place_entity(entity)
 
     def _ordered_enemy_ids(self) -> list[str]:

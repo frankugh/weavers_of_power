@@ -7,6 +7,38 @@ def empty_loot() -> dict:
     return {"currency": {}, "resources": {}, "other": []}
 
 
+# How many grid cells (per side) a creature of a given size occupies.
+# Tiny/Small/Medium share a single cell; Large+ scale up to a square block.
+SIZE_FOOTPRINT: dict[str, int] = {
+    "tiny": 1,
+    "small": 1,
+    "medium": 1,
+    "large": 2,
+    "huge": 3,
+    "gargantuan": 4,
+}
+
+
+def footprint_for_size(size: Optional[str]) -> int:
+    """Return the side length (in cells) of a creature's square footprint."""
+    if not size:
+        return 1
+    return SIZE_FOOTPRINT.get(str(size).strip().lower(), 1)
+
+
+def footprint_cells(grid_x: Optional[int], grid_y: Optional[int], size: Optional[str]) -> list[tuple[int, int]]:
+    """All grid cells occupied by a creature anchored at (grid_x, grid_y).
+
+    The anchor is the top-left cell of the footprint. Returns an empty list
+    when the creature is not placed on the grid.
+    """
+    if grid_x is None or grid_y is None:
+        return []
+    side = footprint_for_size(size)
+    ox, oy = int(grid_x), int(grid_y)
+    return [(ox + dx, oy + dy) for dy in range(side) for dx in range(side)]
+
+
 @dataclass
 class Tile:
     tile_type: str          # "floor"
@@ -132,3 +164,12 @@ class EnemyInstance:
     grid_x: Optional[int] = None
     grid_y: Optional[int] = None
     room_id: Optional[str] = None
+
+    # Creature size (e.g. "Large"), drives the multi-cell grid footprint.
+    size: Optional[str] = None
+
+    def footprint(self) -> int:
+        return footprint_for_size(self.size)
+
+    def occupied_cells(self) -> list[tuple[int, int]]:
+        return footprint_cells(self.grid_x, self.grid_y, self.size)

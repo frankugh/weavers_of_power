@@ -6,6 +6,9 @@ import {
   clampCamera,
   clampCellSize,
   clientPointToCell,
+  footprintCells,
+  footprintCenter,
+  footprintForSize,
   mapContentSize,
   worldToCell,
   zoomCameraAt,
@@ -60,6 +63,35 @@ describe("map geometry", () => {
     expect(zoomed.camera.x).toBeCloseTo(-4.86, 1);
     expect(zoomed.camera.y).toBeCloseTo(-3.78, 1);
     expect(clampCellSize(MAP_ZOOM.defaultSize * 2.4)).toBe(MAP_ZOOM.max);
+  });
+
+  it("maps creature sizes to square footprints", () => {
+    expect(footprintForSize("Medium")).toBe(1);
+    expect(footprintForSize("Large")).toBe(2);
+    expect(footprintForSize("Huge")).toBe(3);
+    expect(footprintForSize("Gargantuan")).toBe(4);
+    expect(footprintForSize(undefined)).toBe(1);
+    expect(footprintForSize("nonsense")).toBe(1);
+  });
+
+  it("expands a creature anchor into the cells it occupies", () => {
+    expect(footprintCells(2, 2, "Medium")).toEqual([{ x: 2, y: 2 }]);
+    expect(footprintCells(2, 2, "Large")).toEqual([
+      { x: 2, y: 2 },
+      { x: 3, y: 2 },
+      { x: 2, y: 3 },
+      { x: 3, y: 3 },
+    ]);
+    expect(footprintCells(null, 2, "Large")).toEqual([]);
+  });
+
+  it("centers a large footprint over the middle of its block", () => {
+    const single = footprintCenter(2, 2, "Medium");
+    expect({ x: single.x, y: single.y }).toEqual(cellToWorld(2, 2));
+    const large = footprintCenter(2, 2, "Large");
+    expect(large.side).toBe(2);
+    // Anchored at cell 2, a 2x2 block spans two cells plus the gap between them.
+    expect(large.span).toBe(MAP_ZOOM.defaultSize * 2 + 2);
   });
 
   it("centers a selected cell in the viewport when possible", () => {

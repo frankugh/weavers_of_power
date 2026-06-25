@@ -33,6 +33,48 @@ export function mapStep(cellSize = MAP_ZOOM.defaultSize, gap = MAP_GRID_GAP) {
   return cellSize + gap;
 }
 
+// How many grid cells (per side) a creature of a given size occupies.
+// Mirrors SIZE_FOOTPRINT in engine/runtime_models.py.
+const SIZE_FOOTPRINT = {
+  tiny: 1,
+  small: 1,
+  medium: 1,
+  large: 2,
+  huge: 3,
+  gargantuan: 4,
+};
+
+export function footprintForSize(size) {
+  if (!size) return 1;
+  return SIZE_FOOTPRINT[String(size).trim().toLowerCase()] || 1;
+}
+
+// All grid cells occupied by an entity anchored at (gridX, gridY) with the given size.
+export function footprintCells(gridX, gridY, size) {
+  if (!Number.isInteger(gridX) || !Number.isInteger(gridY)) return [];
+  const side = footprintForSize(size);
+  const cells = [];
+  for (let dy = 0; dy < side; dy += 1) {
+    for (let dx = 0; dx < side; dx += 1) {
+      cells.push({ x: gridX + dx, y: gridY + dy });
+    }
+  }
+  return cells;
+}
+
+// World-space center of an entity's square footprint anchored at (gridX, gridY).
+export function footprintCenter(gridX, gridY, size, cellSize = MAP_ZOOM.defaultSize, gap = MAP_GRID_GAP, padding = MAP_VIEWPORT_PADDING) {
+  const step = mapStep(cellSize, gap);
+  const side = footprintForSize(size);
+  const span = side * cellSize + (side - 1) * gap;
+  return {
+    x: padding + gridX * step + span / 2,
+    y: padding + gridY * step + span / 2,
+    side,
+    span,
+  };
+}
+
 export function mapContentSize(room, cellSize = MAP_ZOOM.defaultSize, gap = MAP_GRID_GAP, padding = MAP_VIEWPORT_PADDING) {
   const columns = Math.max(0, Number(room?.columns) || 0);
   const rows = Math.max(0, Number(room?.rows) || 0);

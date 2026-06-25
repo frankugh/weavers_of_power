@@ -371,6 +371,7 @@ def enemy_from_dict(d: Dict[str, Any]) -> EnemyInstance:
     e.grid_x = int(d["grid_x"]) if d.get("grid_x") is not None else None
     e.grid_y = int(d["grid_y"]) if d.get("grid_y") is not None else None
     e.room_id = d.get("room_id", None)
+    e.size = d.get("size", None)
 
     return e
 

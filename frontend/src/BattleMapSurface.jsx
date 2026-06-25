@@ -6,6 +6,9 @@ import {
   MAP_ZOOM,
   cellBounds,
   cellToWorld,
+  footprintCells,
+  footprintCenter,
+  footprintForSize,
   centerCameraOnExtents,
   centerCameraOnCell,
   clampCamera,
@@ -987,11 +990,15 @@ function getReachableMovementCells(room, selectedEntity, movementState, blocking
 function passthroughPositionsForEntity(placedEntities, entity) {
   if (!entity) return new Map();
   const entityIsPlayer = Boolean(entity.is_player);
-  return new Map(
-    placedEntities
-      .filter((candidate) => isBlockingEntity(candidate) && Boolean(candidate.is_player) === entityIsPlayer && candidate.instance_id !== entity.instance_id)
-      .map((candidate) => [positionKey(candidate.grid_x, candidate.grid_y), candidate]),
-  );
+  const next = new Map();
+  placedEntities
+    .filter((candidate) => isBlockingEntity(candidate) && Boolean(candidate.is_player) === entityIsPlayer && candidate.instance_id !== entity.instance_id)
+    .forEach((candidate) => {
+      footprintCells(candidate.grid_x, candidate.grid_y, candidate.size).forEach((cell) => {
+        next.set(positionKey(cell.x, cell.y), candidate);
+      });
+    });
+  return next;
 }
 
 function getUnlimitedWalkCells(room, entity, blockingByPosition, dungeon, passthroughByPosition = new Map()) {
@@ -1142,9 +1149,13 @@ function drawMoveHighlights(
 }
 
 function drawUnit(PIXI, layer, entity, entityState, cellSize, texture, options = {}) {
-  const center = options.center || cellToWorld(entity.grid_x, entity.grid_y, cellSize);
+  const side = footprintForSize(entity.size);
+  const footprint = footprintCenter(entity.grid_x, entity.grid_y, entity.size, cellSize);
+  // Large creatures fill an NxN block: scale the token to the full footprint span.
+  const tokenCellSize = side > 1 ? footprint.span : cellSize;
+  const center = options.center || (side > 1 ? { x: footprint.x, y: footprint.y } : cellToWorld(entity.grid_x, entity.grid_y, cellSize));
   const token = new PIXI.Container();
-  const radius = Math.max(10, cellSize / 2 - 5);
+  const radius = Math.max(10, tokenCellSize / 2 - 5);
   const hpValue = entity.is_player ? 100 : percent(entity.toughness_current, entity.toughness_max);
   const statusKeys = Object.keys(entity.statuses || {});
 
@@ -1187,7 +1198,7 @@ function drawUnit(PIXI, layer, entity, entityState, cellSize, texture, options =
     style: {
       fill: entity.is_player ? 0xe8f7fb : 0xf0cf85,
       fontFamily: "Inter, Segoe UI, sans-serif",
-      fontSize: Math.max(12, Math.round(cellSize * 0.36)),
+      fontSize: Math.max(12, Math.round(tokenCellSize * 0.36)),
       fontWeight: "700",
     },
     anchor: 0.5,
@@ -1520,13 +1531,17 @@ function drawDragPreviewLayer(renderer, dragPreview, cellSize) {
   }
 
   if (dragPreview.targetCell && dragPreview.targetValid) {
-    const bounds = cellBounds(dragPreview.targetCell.x, dragPreview.targetCell.y, cellSize);
-    const target = new PIXI.Graphics();
-    target
-      .rect(bounds.x, bounds.y, bounds.width, bounds.height)
-      .fill({ color: 0x7db97f, alpha: 0.18 })
-      .stroke({ color: 0x7db97f, alpha: 0.86, width: 2 });
-    layers.dragPreview.addChild(target);
+    const targetCells = footprintCells(dragPreview.targetCell.x, dragPreview.targetCell.y, dragPreview.entity.size);
+    const highlightCells = targetCells.length ? targetCells : [dragPreview.targetCell];
+    for (const fpCell of highlightCells) {
+      const bounds = cellBounds(fpCell.x, fpCell.y, cellSize);
+      const target = new PIXI.Graphics();
+      target
+        .rect(bounds.x, bounds.y, bounds.width, bounds.height)
+        .fill({ color: 0x7db97f, alpha: 0.18 })
+        .stroke({ color: 0x7db97f, alpha: 0.86, width: 2 });
+      layers.dragPreview.addChild(target);
+    }
   }
 
   if (dragPreview.pointerWorld) {
@@ -1662,21 +1677,25 @@ function BattleMapSurface({
   const entitiesByPosition = useMemo(() => {
     const next = new Map();
     placedEntities.forEach((entity) => {
-      const key = positionKey(entity.grid_x, entity.grid_y);
-      const current = next.get(key) || [];
-      next.set(key, [...current, entity]);
+      footprintCells(entity.grid_x, entity.grid_y, entity.size).forEach((cell) => {
+        const key = positionKey(cell.x, cell.y);
+        const current = next.get(key) || [];
+        next.set(key, [...current, entity]);
+      });
     });
     return next;
   }, [placedEntities]);
-  const blockingByPosition = useMemo(
-    () =>
-      new Map(
-        placedEntities
-          .filter(isBlockingEntity)
-          .map((entity) => [positionKey(entity.grid_x, entity.grid_y), entity]),
-      ),
-    [placedEntities],
-  );
+  const blockingByPosition = useMemo(() => {
+    const next = new Map();
+    placedEntities
+      .filter(isBlockingEntity)
+      .forEach((entity) => {
+        footprintCells(entity.grid_x, entity.grid_y, entity.size).forEach((cell) => {
+          next.set(positionKey(cell.x, cell.y), entity);
+        });
+      });
+    return next;
+  }, [placedEntities]);
   // Same-faction non-down units: can be traversed during movement but cannot be stopped on
   const passthroughByPosition = useMemo(() => {
     return passthroughPositionsForEntity(placedEntities, selectedEntity);
@@ -2259,15 +2278,20 @@ function BattleMapSurface({
     if (!cell) {
       return false;
     }
-    if (allowsHiddenRepositionTargets) {
-      if (usesDungeonGrid && dungeonBlocksCell(dungeon, cell.x, cell.y)) {
+    // A large creature only fits if every cell of its footprint is a valid drop cell.
+    const cells = footprintCells(cell.x, cell.y, entity?.size);
+    const footprint = cells.length ? cells : [cell];
+    return footprint.every((fpCell) => {
+      if (allowsHiddenRepositionTargets) {
+        if (usesDungeonGrid && dungeonBlocksCell(dungeon, fpCell.x, fpCell.y)) {
+          return false;
+        }
+      } else if (!isVisibleWalkableRepositionCell(fpCell)) {
         return false;
       }
-    } else if (!isVisibleWalkableRepositionCell(cell)) {
-      return false;
-    }
-    const blocking = blockingByPosition.get(positionKey(cell.x, cell.y));
-    return !blocking || blocking.instance_id === entity?.instance_id;
+      const blocking = blockingByPosition.get(positionKey(fpCell.x, fpCell.y));
+      return !blocking || blocking.instance_id === entity?.instance_id;
+    });
   }
 
   function isUnitDragTargetValid(drag, cell) {
