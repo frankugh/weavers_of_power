@@ -1,8 +1,6 @@
 
 Protocol voor AI:  Je mag hier een todo weghalen als opgepakt, maar zet hem dan wel helemaal onderaan dit bestand onderop bij de voltooide taken
 
-- Het was niet de bedoeling om invisible info markers visible te maken in GM modus, alleen visible info markers zijn klikbaar / zichtbaar
-
 ----
 
 TODO:
@@ -283,3 +281,5 @@ f Als GM modus aan staat wil ik de optie hebben om stats en condities te wijzige
 	o Drag & draw in gm modus moet hetzelfde ogen en werken als daarbuiten en mag als reposition gelden
 	o Miss een blauwe gm mode banner zichtbaar boven de map view 
 	o GM Mode toggle optie in het show unit scherm? 
+
+- Het was niet de bedoeling om invisible info markers visible te maken in GM modus, alleen visible info markers zijn klikbaar / zichtbaar
