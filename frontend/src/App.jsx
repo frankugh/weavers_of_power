@@ -9719,6 +9719,7 @@ function UnitDetailsModalContent({
   gmModeActive = false,
   onGmModeToggle,
 }) {
+  const [imageZoomed, setImageZoomed] = useState(false);
   if (!entity || !form) {
     return null;
   }
@@ -9766,7 +9767,13 @@ function UnitDetailsModalContent({
         {activeTab === "overview" ? (
           <div className="unit-details-overview">
             <div className="unit-details-portrait">
-              <img src={entity.image_url} alt={`${entity.name} portrait`} />
+              <img
+                src={entity.image_url}
+                alt={`${entity.name} portrait`}
+                onDoubleClick={() => entity.image_url && setImageZoomed(true)}
+                title="Double-click to enlarge"
+                style={{ cursor: entity.image_url ? "zoom-in" : undefined }}
+              />
             </div>
             <div className="unit-details-overview-main">
               <div className="selected-kicker">{entity.is_player ? "Player" : titleCaseFromSnake(entity.template_id)}</div>
@@ -10065,6 +10072,27 @@ function UnitDetailsModalContent({
       {sourceConfirm ? (
         <div className="status-banner status-notice unit-source-confirm">
           This updates the saved character used for future spawns. The live unit is also updated.
+        </div>
+      ) : null}
+      {imageZoomed && entity.image_url ? (
+        <div
+          className="unit-image-zoom-overlay"
+          onClick={() => setImageZoomed(false)}
+          role="button"
+          tabIndex={0}
+          aria-label="Close enlarged image"
+          onKeyDown={(event) => {
+            if (event.key === "Escape" || event.key === "Enter" || event.key === " ") {
+              setImageZoomed(false);
+            }
+          }}
+        >
+          <img
+            className="unit-image-zoom-image"
+            src={entity.image_url}
+            alt={`${entity.name} portrait, enlarged`}
+            onClick={(event) => event.stopPropagation()}
+          />
         </div>
       ) : null}
     </div>

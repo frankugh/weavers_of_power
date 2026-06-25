@@ -5,10 +5,6 @@ Protocol voor AI:  Je mag hier een todo weghalen als opgepakt, maar zet hem dan 
 
 TODO:
 
-- Large creatures moeten 2x2 velden in beslag nemen, Huge 3x3, gargantuan 4x4
-
-- Dubbelklik op plaatje in show unit toont plaatje zo groot als netjes te doen is. en dan erbuiten klikken sluit die extra pop-up. Kan dit? Dit is in principe een pop-up op een pop-up natuurlijk
-
 - Ik wil plaatjes bij scene's en bij info/interaction markers (in map) willen kunnen plaatsen. 
 
 Equipment, loot, show unit:
@@ -283,3 +279,7 @@ f Als GM modus aan staat wil ik de optie hebben om stats en condities te wijzige
 	o GM Mode toggle optie in het show unit scherm? 
 
 - Het was niet de bedoeling om invisible info markers visible te maken in GM modus, alleen visible info markers zijn klikbaar / zichtbaar
+
+- Large creatures moeten 2x2 velden in beslag nemen, Huge 3x3, gargantuan 4x4
+
+- Dubbelklik op plaatje in show unit toont plaatje zo groot als netjes te doen is. en dan erbuiten klikken sluit die extra pop-up. Kan dit? Dit is in principe een pop-up op een pop-up natuurlijk

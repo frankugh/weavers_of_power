@@ -2610,6 +2610,29 @@ button.draw-card:hover {
   object-fit: contain;
 }
 
+.unit-image-zoom-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(5, 4, 3, 0.88);
+  display: grid;
+  place-items: center;
+  padding: clamp(16px, 4dvh, 48px);
+  cursor: zoom-out;
+}
+
+.unit-image-zoom-image {
+  display: block;
+  max-width: min(92vw, 1100px);
+  max-height: 92dvh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 10px;
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+  cursor: default;
+}
+
 .unit-details-overview-main,
 .unit-details-form,
 .unit-condition-editor,
