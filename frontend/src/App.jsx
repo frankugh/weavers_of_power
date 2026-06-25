@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { requestJson } from "./api.js";
 import BattleMapSurface from "./BattleMapSurface.jsx";
 import ScenarioView from "./ScenarioView.jsx";
@@ -9766,14 +9767,21 @@ function UnitDetailsModalContent({
       <div className="unit-details-panel">
         {activeTab === "overview" ? (
           <div className="unit-details-overview">
-            <div className="unit-details-portrait">
-              <img
-                src={entity.image_url}
-                alt={`${entity.name} portrait`}
-                onDoubleClick={() => entity.image_url && setImageZoomed(true)}
-                title="Double-click to enlarge"
-                style={{ cursor: entity.image_url ? "zoom-in" : undefined }}
-              />
+            <div
+              className="unit-details-portrait"
+              role={entity.image_url ? "button" : undefined}
+              tabIndex={entity.image_url ? 0 : undefined}
+              onClick={() => entity.image_url && setImageZoomed(true)}
+              onKeyDown={(event) => {
+                if (entity.image_url && (event.key === "Enter" || event.key === " ")) {
+                  event.preventDefault();
+                  setImageZoomed(true);
+                }
+              }}
+              title={entity.image_url ? "Click to enlarge" : undefined}
+              style={{ cursor: entity.image_url ? "zoom-in" : undefined }}
+            >
+              <img src={entity.image_url} alt={`${entity.name} portrait`} />
             </div>
             <div className="unit-details-overview-main">
               <div className="selected-kicker">{entity.is_player ? "Player" : titleCaseFromSnake(entity.template_id)}</div>
@@ -10074,27 +10082,30 @@ function UnitDetailsModalContent({
           This updates the saved character used for future spawns. The live unit is also updated.
         </div>
       ) : null}
-      {imageZoomed && entity.image_url ? (
-        <div
-          className="unit-image-zoom-overlay"
-          onClick={() => setImageZoomed(false)}
-          role="button"
-          tabIndex={0}
-          aria-label="Close enlarged image"
-          onKeyDown={(event) => {
-            if (event.key === "Escape" || event.key === "Enter" || event.key === " ") {
-              setImageZoomed(false);
-            }
-          }}
-        >
-          <img
-            className="unit-image-zoom-image"
-            src={entity.image_url}
-            alt={`${entity.name} portrait, enlarged`}
-            onClick={(event) => event.stopPropagation()}
-          />
-        </div>
-      ) : null}
+      {imageZoomed && entity.image_url
+        ? createPortal(
+            <div
+              className="unit-image-zoom-overlay"
+              onClick={() => setImageZoomed(false)}
+              role="button"
+              tabIndex={0}
+              aria-label="Close enlarged image"
+              onKeyDown={(event) => {
+                if (event.key === "Escape" || event.key === "Enter" || event.key === " ") {
+                  setImageZoomed(false);
+                }
+              }}
+            >
+              <img
+                className="unit-image-zoom-image"
+                src={entity.image_url}
+                alt={`${entity.name} portrait, enlarged`}
+                onClick={(event) => event.stopPropagation()}
+              />
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
