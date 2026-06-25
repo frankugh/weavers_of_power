@@ -770,7 +770,7 @@ function drawSecretSuspects(PIXI, container, dungeon, renderIndex, range, cellSi
   }
 }
 
-function drawInfoMarkers(PIXI, container, dungeon, renderIndex, range, cellSize, isGmMode = false) {
+function drawInfoMarkers(PIXI, container, dungeon, renderIndex, range, cellSize, isGmMode = false, showAll = false) {
   while (container.children.length > 0) container.removeChildAt(0);
   if (!dungeon?.infoMarkers?.length) return;
   const step = mapStep(cellSize);
@@ -784,8 +784,10 @@ function drawInfoMarkers(PIXI, container, dungeon, renderIndex, range, cellSize,
     const y = Number(marker.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
     if (!isCellInRange(x, y, range)) continue;
-    const roomCell = roomCellToRoom.get(`${x},${y}`);
-    if (roomCell && !revealedSet.has(roomCell.room_id)) continue;
+    if (!showAll) {
+      const roomCell = roomCellToRoom.get(`${x},${y}`);
+      if (roomCell && !revealedSet.has(roomCell.room_id)) continue;
+    }
     const cx = padding + x * step + cellSize / 2;
     const cy = padding + y * step + cellSize / 2;
     const radius = Math.max(6, Math.round(cellSize * 0.2));
@@ -1356,7 +1358,7 @@ function drawStaticMapLayer(
   drawDungeonTiles(layers.dungeonTiles, dungeon, renderIndex, range, cellSize, isGmDungeonMode, highlightedRoomId);
   drawWallEdges(layers.dungeonWalls, dungeon, renderIndex?.wallChunks, renderIndex, range, cellSize, isGmDungeonMode);
   drawSecretSuspects(renderer.PIXI, layers.secretSuspects, dungeon, renderIndex, range, cellSize, isGmDungeonMode);
-  drawInfoMarkers(renderer.PIXI, layers.infoMarkers, dungeon, renderIndex, range, cellSize, isGmInfoMode);
+  drawInfoMarkers(renderer.PIXI, layers.infoMarkers, dungeon, renderIndex, range, cellSize, isGmInfoMode, isGmDungeonMode);
   drawDungeonIssues(layers.dungeonIssues, dungeon, range, cellSize);
   drawPlayerSpawn(layers.playerSpawn, dungeon, cellSize, isGmDungeonMode);
   renderPixi(renderer);
